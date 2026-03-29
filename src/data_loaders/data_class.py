@@ -16,8 +16,7 @@ class CSVDataLoader():
                  series_split_size=100,
                  patch_size=10,
                  mask_ratio=0.15):
-
-        input_variables = "OT"
+        input_variables = ["open_r", "high_r", "low_r", "close_r", "volume_r"]
         timestamp_col = "date"
         validation_fraction = 0.05
         test_fraction = 0.3

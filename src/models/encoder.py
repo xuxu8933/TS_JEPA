@@ -79,7 +79,13 @@ class Encoder(nn.Module):
         self.jepa = jepa
 
     def forward(self, x, mask=None):
-        batch_size, num_patches, patch_length = x.size()
+        if x.dim() == 4:
+            batch_size, num_patches, patch_length, num_features = x.size()
+            x = x.reshape(batch_size, num_patches, patch_length * num_features)
+        elif x.dim() == 3:
+            batch_size, num_patches, patch_length = x.size()
+        else:
+            raise ValueError(f"Unexpected input shape: {x.shape}")
 
         # Embed the data using the Tokenizer
         x = self.tokenizer(x)

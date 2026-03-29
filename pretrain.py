@@ -66,11 +66,29 @@ if __name__ == "__main__":
         config["mask_ratio"],
     )
 
-    input_dim = len(loader.dataset[0][0][0])
+    sample_patches, _, _ = loader.dataset[0]
+
+    # 单变量时: [num_patches, patch_length]
+    # 多变量时: [num_patches, patch_length, num_features]
+    if sample_patches.dim() == 3:
+        num_patches = sample_patches.shape[0]
+        patch_length = sample_patches.shape[1]
+        num_features = sample_patches.shape[2]
+        input_dim = patch_length * num_features
+    elif sample_patches.dim() == 2:
+        num_patches = sample_patches.shape[0]
+        patch_length = sample_patches.shape[1]
+        input_dim = patch_length
+    else:
+        raise ValueError(f"Unexpected sample_patches shape: {sample_patches.shape}")
+
+    print("sample_patches shape:", sample_patches.shape)
+    print("num_patches:", num_patches)
+    print("input_dim:", input_dim)
 
     # Load Encoder
     encoder = Encoder(
-        num_patches=len(loader.dataset[0][0]),
+        num_patches=num_patches,
         dim_in=input_dim,
         kernel_size=config["encoder_kernel_size"],
         embed_dim=config["encoder_embed_dim"],
@@ -79,6 +97,9 @@ if __name__ == "__main__":
         num_layers=config["encoder_num_layers"],
         jepa=True,
     )
+
+
+
 
     # Load Predictor
     predictor = Predictor(
