@@ -13,11 +13,11 @@ class CSVDataLoader():
     def __init__(self,
                  path_data,
                  batch_size=32,
-                 series_split_size=100,
+                 series_split_size=120,
                  patch_size=10,
                  mask_ratio=0.15):
 
-        input_variables = "OT"
+        input_variables = "close_r"
         timestamp_col = "date"
         validation_fraction = 0.05
         test_fraction = 0.3
@@ -110,7 +110,7 @@ class EvaluationDataLoader():
         self.patch_size = patch_size
         self.context_size = context_size
 
-        input_variables = "OT"
+        input_variables = "close_r"
         timestamp_col = "date"
         validation_fraction = 0.05
         test_fraction = 0.3
