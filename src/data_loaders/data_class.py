@@ -14,7 +14,7 @@ class CSVDataLoader():
                  path_data,
                  batch_size=32,
                  series_split_size=120,
-                 patch_size=10,
+                 patch_size=5,
                  mask_ratio=0.15):
 
         input_variables = "close_r"

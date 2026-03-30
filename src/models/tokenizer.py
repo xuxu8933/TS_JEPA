@@ -45,6 +45,7 @@ class TS_Tokenizer(nn.Module):
 
     def forward(self, x):
         batch_size, num_patches, length_patch = x.shape
+        # print(batch_size,num_patches,length_patch)
         x = x.view(-1, 1, length_patch)
 
         # Apply the Conv

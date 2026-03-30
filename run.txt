@@ -1,6 +1,6 @@
  python pretrain.py \
     --data nike \
-    --batch_size 5 \
+    --batch_size 32 \
     --lr 1e-07 \
     --ema_momentum 0.998 \
     --ratio_patches 10 \
