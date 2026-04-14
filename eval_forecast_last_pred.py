@@ -34,7 +34,7 @@ if __name__ == "__main__":
 
     # Define some parameters
     num_epochs = 500
-    context = 32
+    context = 5
     num_patches = 10
 
     # Load device
@@ -52,11 +52,13 @@ if __name__ == "__main__":
         config["ratio_patches"],
         config["mask_ratio"],
     )
-
-    input_dim = len(loader.dataset[0][0][0])
+    sample_context, sample_target = loader.dataset[0]
+    print("sample_context.shape =", sample_context.shape)
+    print("sample_target.shape =", sample_target.shape)
+    input_dim = len(loader.dataset[0][0][0])#
     # Encoder
     encoder = Encoder(
-        num_patches=len(loader.dataset[0][0]),
+        num_patches=24,
         dim_in=input_dim,
         kernel_size=config["pretrain_encoder_kernel_size"],
         embed_dim=config["pretrain_encoder_embed_dim"],
@@ -66,7 +68,7 @@ if __name__ == "__main__":
         jepa=True,
     )
 
-    decoder = LinearDecoder(emb_dim=config["pretrain_encoder_embed_dim"], patch_size=32)
+    decoder = LinearDecoder(emb_dim=config["pretrain_encoder_embed_dim"], patch_size=5)
 
     # Load the pretrained model
     # path_name = "lr_" + str(config["lr_pretrain"]) \
