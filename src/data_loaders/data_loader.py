@@ -18,7 +18,7 @@ def get_jepa_loaders(path, batch_size, ratio_patches=10, mask_ratio=0.9):
         Load and prepare the data to be used with the TS-JEPA
     """
     dataloader = CSVDataLoader(path_data=path,
-                              series_split_size=120,
+                              series_split_size=60,
                               patch_size=5,
                               mask_ratio=mask_ratio)
 
@@ -39,7 +39,7 @@ def get_evaluation_loaders(path,
 
     dataloader = EvaluationDataLoader(path_data=path,
                                       patch_size=5,
-                                      context_size=10)
+                                      context_size=12)
     dataloader = DataLoader(dataloader, batch_size=batch_size, shuffle=False)
 
     return dataloader

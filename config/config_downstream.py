@@ -1,5 +1,6 @@
 config = {
     # Data Path
+    "data" : "nike",
     "path_train" : "./data/FordB/train_data.ts",
     "path_test" : "./data/FordB/test_data.ts",
     "path_save" : "./logs/output_model/",
@@ -13,13 +14,13 @@ config = {
     "checkpoint_print": 20,
 
     # Loader
-    "ratio_patches" : 20,
+    "ratio_patches" : 10,
     "ratio_supervision": 1.0,
 
     # Optim
-    "num_epochs": 101,
-    "batch_size" : 512,
-    "lr": 1e-05,
+    "num_epochs": 151,
+    "batch_size" : 32,
+    "lr": 1e-03,
 
     # CNN Model
     "cnn_out_channels": [32, 64, 128],
@@ -40,9 +41,9 @@ config = {
     "pooling": "Mean",
 
     # Pretrained Transformer -- Config
-    "pretrain_encoder_embed_dim" : 256,
-    "pretrain_encoder_nhead" : 4,
-    "pretrain_encoder_num_layers": 2,
+    "pretrain_encoder_embed_dim" : 128,
+    "pretrain_encoder_nhead" : 2,
+    "pretrain_encoder_num_layers": 1,
     "pretrain_encoder_kernel_size" : 3,
     "pretrain_encoder_embed_bias" : True,
     "pretrain_transformer_dense_dim" : 128,
@@ -51,9 +52,9 @@ config = {
     "pretrain_decoder_nhead" : 2,
     "pretrain_decoder_num_layers": 1,
 
-    "checkpoint_to_use": 3000,
+    "checkpoint_to_use": 500,
     "lr_pretrain": 1e-05,
     "batch_size_pretrain": 256,
-    "mask_ratio" : 0.9,
-    "ema_pretrain" : 0.999
+    "mask_ratio" : 0.7,
+    "ema_pretrain" : 0.998
 }

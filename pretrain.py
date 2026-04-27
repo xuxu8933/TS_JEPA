@@ -67,7 +67,13 @@ if __name__ == "__main__":
     )
 
     input_dim = len(loader.dataset[0][0][0])
-
+    print("\n=== Encoder config ===")
+    print("num_patches =", len(loader.dataset[0][0]))
+    print("dim_in =", input_dim)
+    print("kernel_size =", config["encoder_kernel_size"])
+    print("embed_dim =", config["encoder_embed_dim"])
+    print("nhead =", config["encoder_nhead"])
+    print("num_layers =", config["encoder_num_layers"])
     # Load Encoder
     encoder = Encoder(
         num_patches=len(loader.dataset[0][0]),

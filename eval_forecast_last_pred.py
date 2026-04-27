@@ -33,9 +33,9 @@ if __name__ == "__main__":
     config = prepare_args(config)
 
     # Define some parameters
-    num_epochs = 500
-    context = 5
-    num_patches = 10
+    # num_epochs = 100
+    context = 12
+    num_patches = 12
 
     # Load device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -58,7 +58,7 @@ if __name__ == "__main__":
     input_dim = len(loader.dataset[0][0][0])#
     # Encoder
     encoder = Encoder(
-        num_patches=24,
+        num_patches=num_patches,
         dim_in=input_dim,
         kernel_size=config["pretrain_encoder_kernel_size"],
         embed_dim=config["pretrain_encoder_embed_dim"],
@@ -68,8 +68,11 @@ if __name__ == "__main__":
         jepa=True,
     )
 
-    decoder = LinearDecoder(emb_dim=config["pretrain_encoder_embed_dim"], patch_size=5)
-
+    decoder = torch.nn.Sequential(
+        torch.nn.Linear(config["pretrain_encoder_embed_dim"], 128),
+        torch.nn.GELU(),
+        torch.nn.Linear(128, 5)
+    )
     # Load the pretrained model
     # path_name = "lr_" + str(config["lr_pretrain"]) \
     #         + "_encoder_" + str(config["pretrain_encoder_embed_dim"]) + "_" \
@@ -111,19 +114,31 @@ if __name__ == "__main__":
     # We consider training only the decoder head
     param_groups = [{"params": (p for n, p in decoder.named_parameters())}]
 
-    optimizer = torch.optim.AdamW(param_groups, lr=config["lr"])
-
+    # optimizer = torch.optim.AdamW(param_groups, lr=config["lr"])
+    optimizer = torch.optim.AdamW([
+        {"params": encoder.parameters(), "lr": 1e-4},
+        {"params": decoder.parameters(), "lr": 1e-4},
+    ], weight_decay=1e-4)
     # We train the model on the train set
     print("start train")
-    for epoch in range(num_epochs):
-        encoder.eval()
+    loss_history = []
+    patch_size = 5
+
+    for epoch in range(config["num_epochs"]):
+        # encoder.eval()
+        encoder.train()
         decoder.train()
         total_loss = 0
         for context_patches, target_patch in loader:
             optimizer.zero_grad()
+            # with torch.no_grad():
             encoded_patches = encoder(context_patches)
-            summed_embedding = torch.sum(encoded_patches, dim=1)
-            predicted_next_patch = decoder(summed_embedding)
+
+            # summed_embedding = torch.sum(encoded_patches, dim=1)
+            # context_embedding = encoded_patches[:, -1, :]
+            context_embedding = encoded_patches.mean(dim=1)
+            predicted_next_patch = decoder(context_embedding)
+            # predicted_next_patch = decoder(summed_embedding)
             loss = torch.nn.functional.mse_loss(
                 predicted_next_patch, target_patch, reduction="mean"
             )
@@ -131,51 +146,100 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
-            total_loss += loss / config["batch_size"]
+            # total_loss += loss / config["batch_size"]
+            total_loss += loss.item()
+
+            # total_loss += loss.item()
+            # loss_value = total_loss.item() if torch.is_tensor(total_loss) else float(total_loss)
+            # loss_history.append(loss_value)
+        avg_loss = total_loss / len(loader)
+        loss_history.append(avg_loss)
+
         if epoch % 10 == 0:
-            print("Epoch: {} - Total loss: {}".format(epoch, total_loss))
+            print(f"Epoch: {epoch} - Total loss: {avg_loss}")
+    save_path = "./results/loss.txt"
 
-    # We test the model on the last prediction
-    # We define the number of steps we will have
-    num_steps = (len(loader.dataset.test_df[context * num_patches :])) // context
+    with open(save_path, "w") as f:
+        for epoch, loss in enumerate(loss_history):
+            f.write(f"{epoch},{loss}\n")
 
-    predictions = []
-    total_diff = 0
+    print(f"Loss saved to {save_path}")
+
+    # =========================
+    # Test on rolling prediction
+    # =========================
+
+    encoder.eval()
+    decoder.eval()
+
+    num_steps = (
+        len(loader.dataset.test_df) - num_patches * patch_size
+    ) // patch_size
+
     l_val_mse = []
     l_val_mae = []
-    for step in range(num_steps):
-        # Encode the current context patches
-        current_context = (
-            loader.dataset.test_df[
-                context * step : context * num_patches + context * step
+    all_preds = []
+    all_targets = []    
+    # We test the model on the last prediction
+    # We define the number of steps we will have
+    # num_steps = (len(loader.dataset.test_df[context * num_patches :])) // context
+    with torch.no_grad():
+        for step in range(num_steps):
+            current_series = loader.dataset.test_df[
+                step * patch_size :
+                step * patch_size + num_patches * patch_size
             ]
-            .reshape(num_patches, context)
-            .unsqueeze(0)
-        )
-        target_value = loader.dataset.test_df[
-            context * num_patches
-            + step * context : context * num_patches
-            + (step + 1) * context
-        ]
 
-        encoded_patches = encoder(current_context)
+            current_context = current_series.reshape(
+                num_patches,
+                patch_size
+            ).unsqueeze(0)
 
-        # Sum the embeddings of the context patches
-        summed_embedding = torch.sum(encoded_patches, dim=1)
+            target_value = loader.dataset.test_df[
+                step * patch_size + num_patches * patch_size :
+                step * patch_size + (num_patches + 1) * patch_size
+            ]
 
-        # Predict the next patch using the decoder
-        predicted_next_patch = decoder(summed_embedding)
+            encoded_patches = encoder(current_context)
 
-        # Compute the Loss
-        val_mse = mse(
-            predicted_next_patch.flatten().detach().numpy(), target_value.numpy()
-        )
-        val_mae = mae(
-            predicted_next_patch.flatten().detach().numpy(), target_value.numpy()
-        )
+            # Same strategy as training
+            # context_embedding = encoded_patches[:, -1, :]
+            context_embedding = encoded_patches.mean(dim=1)
 
-        l_val_mse.append(val_mse)
-        l_val_mae.append(val_mae)
+            predicted_next_patch = decoder(context_embedding)
+            # predicted_next_patch = current_context[:, -1, :]
+            all_preds.append(predicted_next_patch.flatten().cpu().numpy())
+            all_targets.append(target_value.cpu().numpy())
+            val_mse = mse(
+                predicted_next_patch.flatten().detach().numpy(),
+                target_value.numpy()
+            )
 
-    print("MSE Loss is: {}".format(np.mean(val_mse)))
+            val_mae = mae(
+                predicted_next_patch.flatten().detach().numpy(),
+                target_value.numpy()
+            )
+
+            l_val_mse.append(val_mse)
+            l_val_mae.append(val_mae)
+
+    print("MSE Loss is: {}".format(np.mean(l_val_mse)))
     print("MAE Loss is: {}".format(np.mean(l_val_mae)))
+    trend_pred = np.sign(np.diff(all_preds))
+    trend_true = np.sign(np.diff(all_targets))
+
+    accuracy = (trend_pred == trend_true).mean()
+
+    print("Trend accuracy:", accuracy)
+    import numpy as np
+
+    pred_series = np.concatenate(all_preds)
+    target_series = np.concatenate(all_targets)
+    import matplotlib.pyplot as plt
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(target_series, label="Ground Truth")
+    plt.plot(pred_series, label="Prediction")
+    plt.legend()
+    plt.title("Prediction vs Ground Truth")
+    plt.show()    

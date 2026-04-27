@@ -21,7 +21,7 @@ def prepare_args(config):
     torch.manual_seed(seed)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, default="uniform_uni_data")
+    parser.add_argument("--data", type=str, default=config["data"])
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--name_model", type=str, default="pre_train")
 
@@ -32,6 +32,7 @@ def prepare_args(config):
     parser.add_argument("--pooling", type=str, default=config["pooling"])
     parser.add_argument("--pre_train_mask", type=bool, default=False)
     parser.add_argument("--batch_size", type=int, default=config["batch_size"])
+    parser.add_argument("--num_epochs", type=int, default=config["num_epochs"])
 
     parser.add_argument(
         "--checkpoint_to_use", type=int, default=config["checkpoint_to_use"]
@@ -158,7 +159,7 @@ def prepare_args_pretrain(config):
     torch.manual_seed(seed)
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, default="weather")
+    parser.add_argument("--data", type=str, default=config["data"])
 
     parser.add_argument("--mask_ratio", type=float, default=config["mask_ratio"])
     parser.add_argument("--batch_size", type=int, default=config["batch_size"])

@@ -3,26 +3,20 @@ import torch
 import random
 
 class CSVDataLoader():
-    """
-        Data Loader for the JEPA -- generates the necessary masked parts.
-        ---
-            - Load the data from the CSV
-            - Normalize the data
-            - Divide into Train/Test/Val
-    """
-    def __init__(self,
-                 path_data,
-                 batch_size=32,
-                 series_split_size=120,
-                 patch_size=5,
-                 mask_ratio=0.15):
-
+    def __init__(
+        self,
+        path_data,
+        batch_size=32,
+        series_split_size=120,
+        patch_size=5,
+        mask_ratio=0.15,
+        stride=None,
+    ):
         input_variables = "close_r"
         timestamp_col = "date"
         validation_fraction = 0.05
         test_fraction = 0.3
 
-        # Load and preprocess data
         df = pd.read_csv(
             path_data,
             parse_dates=[timestamp_col],
@@ -30,62 +24,65 @@ class CSVDataLoader():
             sep=",",
         )
 
-        # Normalize float columns
         fcols = df.select_dtypes("float").columns
         df[fcols] = df[fcols].apply(pd.to_numeric, downcast="float")
         df_mean = df[fcols].mean(0)
         df_std = df[fcols].std(0)
         df[fcols] = (df[fcols] - df_mean) / df_std
 
-        # Convert integer columns to numeric
         icols = df.select_dtypes("integer").columns
         df[icols] = df[icols].apply(pd.to_numeric, downcast="integer")
 
-        # Sort by timestamp
         df.sort_values(by=[timestamp_col], inplace=True)
 
-        # Split into train, validation, and test sets
         val_len = int(len(df) * validation_fraction)
         test_len = int(len(df) * test_fraction)
         train_len = len(df) - val_len - test_len
+
         df = torch.tensor(df[input_variables].values).float()
         train_df, val_df, test_df = torch.split(df, [train_len, val_len, test_len])
 
-        # Store data
         self.train_df = train_df
         self.val_df = val_df
         self.test_df = test_df
 
-        # Parameters for patching and masking
         self.series_split_size = series_split_size
         self.patch_size = patch_size
         self.mask_ratio = mask_ratio
+        self.stride = stride if stride is not None else patch_size
+
         self.time_series_list = train_df
 
+        # sliding windows
+        self.split_series = [
+            self.time_series_list[i:i + self.series_split_size]
+            for i in range(
+                0,
+                len(self.time_series_list) - self.series_split_size + 1,
+                self.stride
+            )
+        ]
+
     def __getitem__(self, idx):
-        # Split the original time series into smaller time series chunks
-        ts = self.time_series_list
-        num_splits = len(ts) // self.series_split_size
-        split_series = [ts[i*self.series_split_size:(i+1)*self.series_split_size] for i in range(num_splits)]
+        selected_series = self.split_series[idx]
 
-        # Select the series based on the index (assuming batched access)
-        selected_series = split_series[idx % len(split_series)]
-
-        # Now divide the selected smaller time series into patches
         num_patches = len(selected_series) // self.patch_size
-        patches = [selected_series[i*self.patch_size:(i+1)*self.patch_size] for i in range(num_patches)]
 
-        # Convert patches to tensor
+        patches = [
+            selected_series[i*self.patch_size:(i+1)*self.patch_size]
+            for i in range(num_patches)
+        ]
+
         patches_tensor = torch.stack(patches)
 
         # Create the mask for the patches
         num_masked_patches = int(num_patches * self.mask_ratio)
+
+        # 至少 mask 一个 patch，避免 mask_ratio 太小时为 0
+        num_masked_patches = max(1, num_masked_patches)
+
         mask_indices = random.sample(range(num_patches), num_masked_patches)
         non_mask_indices = [i for i in range(num_patches) if i not in mask_indices]
-
-        # Separate masked and non-masked patches
-        masked_patches = torch.stack([patches_tensor[i] for i in mask_indices])
-        non_masked_patches = torch.stack([patches_tensor[i] for i in non_mask_indices])
 
         mask_indices = torch.tensor(mask_indices)
         non_mask_indices = torch.tensor(non_mask_indices)
@@ -93,8 +90,7 @@ class CSVDataLoader():
         return patches_tensor, mask_indices, non_mask_indices
 
     def __len__(self):
-        # Number of smaller time series created from the full series
-        return len(self.time_series_list) // self.series_split_size
+        return len(self.split_series)
 
 
 class EvaluationDataLoader():
@@ -145,7 +141,7 @@ class EvaluationDataLoader():
         self.test_df = test_df
 
         self.series = self.train_df
-
+        print("series len: ", len(self.series))
         # Split the entire time series into patches
         self.patches_tensor = self.split_into_patches(self.series, self.patch_size)
 
