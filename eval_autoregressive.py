@@ -46,7 +46,7 @@ if __name__ == "__main__":
     # Load Data
     print("Load data")
 
-    config["path_data"] = "./data/" + "weather" + "/" + "weather" + ".csv"
+    config["path_data"] = "./data/" + "nike" + "/" + "nike" + ".csv"
 
     loader = get_evaluation_loaders(
         config["path_data"],
