@@ -18,7 +18,7 @@ config = {
     "ratio_supervision": 1.0,
 
     # Optim
-    "num_epochs": 151,
+    "num_epochs": 301,
     "batch_size" : 32,
     "lr": 1e-03,
 
@@ -56,5 +56,7 @@ config = {
     "lr_pretrain": 1e-05,
     "batch_size_pretrain": 256,
     "mask_ratio" : 0.7,
-    "ema_pretrain" : 0.998
+    "ema_pretrain" : 0.998,
+
+    "eval_type" : "last" # or "last"
 }

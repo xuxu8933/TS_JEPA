@@ -27,6 +27,13 @@ import warnings
 
 warnings.filterwarnings("ignore")
 
+def get_context_embedding(encoded_patches, eval_type):
+    if eval_type == "last":
+        return encoded_patches[:, -1, :]
+    elif eval_type == "mean":
+        return encoded_patches.mean(dim=1)
+    else:
+        raise ValueError(f"Unknown eval_type: {eval_type}")
 
 if __name__ == "__main__":
     # Parse the args and get the config setup
@@ -34,7 +41,7 @@ if __name__ == "__main__":
 
     # Define some parameters
     # num_epochs = 100
-    context = 12
+    context = 24
     num_patches = 12
 
     # Load device
@@ -73,6 +80,13 @@ if __name__ == "__main__":
         torch.nn.GELU(),
         torch.nn.Linear(128, 5)
     )
+    # decoder = torch.nn.Sequential(
+    #     torch.nn.Linear(config["pretrain_encoder_embed_dim"], 256),
+    #     torch.nn.GELU(),
+    #     torch.nn.Linear(256, 128),
+    #     torch.nn.GELU(),
+    #     torch.nn.Linear(128, 5)
+    # )    
     # Load the pretrained model
     # path_name = "lr_" + str(config["lr_pretrain"]) \
     #         + "_encoder_" + str(config["pretrain_encoder_embed_dim"]) + "_" \
@@ -125,24 +139,42 @@ if __name__ == "__main__":
     patch_size = 5
 
     for epoch in range(config["num_epochs"]):
-        # encoder.eval()
-        encoder.train()
+        encoder.eval()
+        # encoder.train()
         decoder.train()
         total_loss = 0
         for context_patches, target_patch in loader:
             optimizer.zero_grad()
-            # with torch.no_grad():
-            encoded_patches = encoder(context_patches)
+            with torch.no_grad():
+                encoded_patches = encoder(context_patches)
 
             # summed_embedding = torch.sum(encoded_patches, dim=1)
             # context_embedding = encoded_patches[:, -1, :]
-            context_embedding = encoded_patches.mean(dim=1)
-            predicted_next_patch = decoder(context_embedding)
+            # context_embedding = encoded_patches.mean(dim=1) # mean value of all encoded patches in one sample
+            context_embedding = get_context_embedding(
+                encoded_patches,
+                config["eval_type"]
+            )
+            predicted_next_patch = decoder(context_embedding) # decode from embedded token to patch context
+            # context_embedding = encoded_patches[:, -1, :]
+
+            # last_patch = context_patches[:, -1, :]
+
+            # predicted_residual = decoder(context_embedding)
+            # predicted_next_patch = last_patch + predicted_residual            
             # predicted_next_patch = decoder(summed_embedding)
-            loss = torch.nn.functional.mse_loss(
+            mse_loss = torch.nn.functional.mse_loss(
                 predicted_next_patch, target_patch, reduction="mean"
             )
+            pred_diff = predicted_next_patch[:, 1:] - predicted_next_patch[:, :-1]
+            true_diff = target_patch[:, 1:] - target_patch[:, :-1]
 
+            trend_loss = torch.nn.functional.l1_loss(
+                torch.sign(pred_diff),
+                torch.sign(true_diff)
+            )
+
+            loss = mse_loss + 0.0* trend_loss
             loss.backward()
             optimizer.step()
 
@@ -203,10 +235,44 @@ if __name__ == "__main__":
             encoded_patches = encoder(current_context)
 
             # Same strategy as training
-            # context_embedding = encoded_patches[:, -1, :]
-            context_embedding = encoded_patches.mean(dim=1)
-
+            context_embedding = get_context_embedding(
+                encoded_patches,
+                config["eval_type"]
+            )
+            # context_embedding = encoded_patches.mean(dim=1)
             predicted_next_patch = decoder(context_embedding)
+            # -----
+            # num_patches = encoded_patches.size(1)
+
+            # weights = torch.arange(
+            #     1, num_patches + 1,
+            #     device=encoded_patches.device,
+            #     dtype=encoded_patches.dtype
+            # )
+
+            # weights = weights / weights.sum()
+            # weights = weights.view(1, num_patches, 1)
+
+            # context_embedding = (encoded_patches * weights).sum(dim=1)
+            # -----
+            # attn_score = torch.softmax(
+            # torch.mean(encoded_patches, dim=-1),
+            # dim=1
+            # )
+
+            # context_embedding = torch.sum(
+            #     encoded_patches * attn_score.unsqueeze(-1),
+            #     dim=1
+            # )
+            # -----
+            # # 1. 改 context
+            # context_embedding = encoded_patches[:, -1, :]
+
+            # # 2. residual prediction
+            # last_patch = current_context[:, -1, :]
+            # predicted_residual = decoder(context_embedding)
+            # predicted_next_patch = last_patch + predicted_residual
+
             # predicted_next_patch = current_context[:, -1, :]
             all_preds.append(predicted_next_patch.flatten().cpu().numpy())
             all_targets.append(target_value.cpu().numpy())
@@ -225,12 +291,19 @@ if __name__ == "__main__":
 
     print("MSE Loss is: {}".format(np.mean(l_val_mse)))
     print("MAE Loss is: {}".format(np.mean(l_val_mae)))
-    trend_pred = np.sign(np.diff(all_preds))
-    trend_true = np.sign(np.diff(all_targets))
 
-    accuracy = (trend_pred == trend_true).mean()
+    all_preds = np.array(all_preds)
+    all_targets = np.array(all_targets)
 
-    print("Trend accuracy:", accuracy)
+    pred_last = all_preds[:, -1]
+    true_last = all_targets[:, -1]
+
+    trend_pred = np.sign(np.diff(pred_last))
+    trend_true = np.sign(np.diff(true_last))
+
+    trend_accuracy = (trend_pred == trend_true).mean()
+
+    print("Trend Accuracy is: {:.4f}".format(trend_accuracy))
     import numpy as np
 
     pred_series = np.concatenate(all_preds)
@@ -242,4 +315,5 @@ if __name__ == "__main__":
     plt.plot(pred_series, label="Prediction")
     plt.legend()
     plt.title("Prediction vs Ground Truth")
+    plt.savefig("./results/"+config["eval_type"]+"_prediction.png", dpi=300, bbox_inches="tight")
     plt.show()    
