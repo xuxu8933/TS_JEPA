@@ -168,6 +168,36 @@ def prepare_args_pretrain(config):
     parser.add_argument("--ratio_patches", type=int, default=config["ratio_patches"])
     parser.add_argument("--notes", type=str, default="")
 
+    # data / pretraining protocol
+    parser.add_argument(
+        "--pretrain_until_index",
+        type=int,
+        default=config.get("pretrain_until_index", None),
+        help="Only use observations up to this index for pretraining. "
+             "If None, the dataloader will use the default train split.",
+    )
+
+    parser.add_argument(
+        "--series_split_size",
+        type=int,
+        default=config.get("series_split_size", 120),
+        help="Length of each time-series window used for TS-JEPA pretraining.",
+    )
+
+    parser.add_argument(
+        "--patch_size",
+        type=int,
+        default=config.get("patch_size", 5),
+        help="Number of time steps per patch.",
+    )
+
+    parser.add_argument(
+        "--normalize_on_train_only",
+        action="store_true",
+        default=config.get("normalize_on_train_only", True),
+        help="Compute normalization statistics only from the pretraining period.",
+    )
+
     # Encoder
     parser.add_argument(
         "--encoder_embed_dim", type=int, default=config["encoder_embed_dim"]
@@ -199,6 +229,12 @@ def prepare_args_pretrain(config):
     config["ema_momentum"] = args.ema_momentum
     config["ratio_patches"] = args.ratio_patches
     config["data"] = args.data
+
+    # data / pretraining protocol
+    config["pretrain_until_index"] = args.pretrain_until_index
+    config["series_split_size"] = args.series_split_size
+    config["patch_size"] = args.patch_size
+    config["normalize_on_train_only"] = args.normalize_on_train_only
 
     config["seed"] = seed
 

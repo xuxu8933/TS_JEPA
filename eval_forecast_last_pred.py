@@ -1,31 +1,224 @@
 """
     Script to run the short-term forecasting task.
     ---
-        We consider the horizon and then predict a single value.
+    Impermanent-style downstream evaluation:
+        - pretrain encoder checkpoint is loaded
+        - encoder is frozen
+        - decoder is trained only on train split
+        - validation is done on val split
+        - final rolling evaluation is done on test split
 """
 
 from config.config_downstream import config
 
 import torch
-import json
-import copy
 import logging
-import argparse
-import pickle
-
-from main.utils import prepare_args
-from main.utils import mse, mae, _reduce
-
+import warnings
 import numpy as np
 import random
+import matplotlib.pyplot as plt
+import os
+from datetime import datetime
+import imageio.v2 as imageio
 
-from src.data_loaders.data_loader import get_jepa_loaders, get_evaluation_loaders
+from main.utils import prepare_args
+from main.utils import mse, mae
+
+from src.data_loaders.data_loader_roll import get_evaluation_loaders
 from src.models.encoder import Encoder
 from src.models.decoder import LinearDecoder
 
-import warnings
-
 warnings.filterwarnings("ignore")
+
+def visualize_all_rolling_predictions_as_series(
+    all_preds,
+    all_targets,
+    config,
+    save_dir="./results",
+):
+    os.makedirs(save_dir, exist_ok=True)
+
+    pred_series = all_preds.reshape(-1)
+    target_series = all_targets.reshape(-1)
+
+    plt.figure(figsize=(14, 5))
+    plt.plot(target_series, label="Ground Truth")
+    plt.plot(pred_series, label="Prediction")
+    plt.legend()
+    plt.xlabel("Time index in test rolling prediction")
+    plt.ylabel("Normalized price / return")
+    plt.title("All Rolling Forecasts: Prediction vs Ground Truth")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    save_path = os.path.join(
+        save_dir,
+        config["eval_type"] + f"_all_rolling_predictions_{timestamp}.png"
+    )
+
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.show()
+
+    print(f"All rolling prediction figure saved to {save_path}")
+
+def visualize_all_rolling_windows(
+    encoder,
+    decoder,
+    dataset,
+    device,
+    eval_type,
+    config,
+    save_dir="./results/rolling_windows",
+    max_samples=None,
+    make_gif=True,
+    gif_name="rolling_windows.gif",
+    gif_duration=0.5,
+):
+    os.makedirs(save_dir, exist_ok=True)
+
+    encoder.eval()
+    decoder.eval()
+
+    if max_samples is None:
+        num_samples = len(dataset)
+    else:
+        num_samples = min(len(dataset), max_samples)
+
+    print(f"Visualizing {num_samples} rolling windows...")
+
+    saved_paths = []
+
+    for sample_idx in range(num_samples):
+        context_patches, target_patch = dataset[sample_idx]
+
+        context_patches_input = context_patches.unsqueeze(0).to(device)
+
+        with torch.no_grad():
+            encoded_patches = encoder(context_patches_input)
+
+            context_embedding = get_context_embedding(
+                encoded_patches,
+                eval_type,
+            )
+
+            pred_patch = decoder(context_embedding)
+
+        context_np = context_patches.flatten().cpu().numpy()
+        target_np = target_patch.cpu().numpy()
+        pred_np = pred_patch.flatten().detach().cpu().numpy()
+
+        context_x = np.arange(len(context_np))
+        target_x = np.arange(
+            len(context_np),
+            len(context_np) + len(target_np)
+        )
+
+        plt.figure(figsize=(12, 5))
+
+        plt.plot(context_x, context_np, label="Context", linewidth=2)
+        plt.plot(target_x, target_np, marker="o", label="Ground Truth Future")
+        plt.plot(target_x, pred_np, marker="o", label="Predicted Future")
+
+        plt.axvline(
+            x=len(context_np) - 1,
+            linestyle="--",
+            label="Forecast Origin",
+        )
+
+        plt.legend()
+        plt.xlabel("Time index inside rolling window")
+        plt.ylabel("Normalized price / return")
+        plt.title(f"Rolling Forecast Window #{sample_idx}")
+
+        save_path = os.path.join(
+            save_dir,
+            f"{config['eval_type']}_rolling_window_{sample_idx:04d}.png"
+        )
+
+        plt.savefig(save_path, dpi=150)
+        plt.close()
+
+        saved_paths.append(save_path)
+
+    print(f"Saved {num_samples} rolling window figures to: {save_dir}")
+
+    # 自动生成 GIF
+    if make_gif and len(saved_paths) > 0:
+        gif_path = os.path.join(save_dir, gif_name)
+        frames = [imageio.imread(p) for p in saved_paths]
+        imageio.mimsave(gif_path, frames, duration=gif_duration)
+        print(f"GIF saved to: {gif_path}")
+
+def visualize_one_rolling_window(
+    encoder,
+    decoder,
+    dataset,
+    sample_idx,
+    device,
+    eval_type,
+    config,
+):
+    encoder.eval()
+    decoder.eval()
+
+    context_patches, target_patch = dataset[sample_idx]
+
+    context_patches_input = context_patches.unsqueeze(0).to(device)
+
+    with torch.no_grad():
+        encoded_patches = encoder(context_patches_input)
+
+        context_embedding = get_context_embedding(
+            encoded_patches,
+            eval_type,
+        )
+
+        pred_patch = decoder(context_embedding)
+
+    context_np = context_patches.flatten().cpu().numpy()
+    target_np = target_patch.cpu().numpy()
+    pred_np = pred_patch.flatten().detach().cpu().numpy()
+
+    context_x = np.arange(len(context_np))
+    target_x = np.arange(len(context_np), len(context_np) + len(target_np))
+
+    plt.figure(figsize=(12, 5))
+
+    plt.plot(context_x, context_np, label="Context", linewidth=2)
+    plt.plot(target_x, target_np, marker="o", label="Ground Truth Future")
+    plt.plot(target_x, pred_np, marker="o", label="Predicted Future")
+
+    plt.axvline(
+        x=len(context_np) - 1,
+        linestyle="--",
+        label="Forecast Origin",
+    )
+
+    plt.legend()
+    plt.xlabel("Time index inside rolling window")
+    plt.ylabel("Normalized price / return")
+    plt.title(f"Rolling Forecast Window #{sample_idx}")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    save_path = (
+        "./results/"
+        + config["eval_type"]
+        + f"_rolling_window_{sample_idx}_{timestamp}.png"
+    )
+
+    plt.savefig(save_path, dpi=300, bbox_inches="tight")
+    plt.show()
+
+    print(f"Rolling window figure saved to {save_path}")
+
+def set_seed(seed=42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def get_context_embedding(encoded_patches, eval_type):
     if eval_type == "last":
@@ -35,35 +228,176 @@ def get_context_embedding(encoded_patches, eval_type):
     else:
         raise ValueError(f"Unknown eval_type: {eval_type}")
 
+
+def evaluate_model(
+    encoder,
+    decoder,
+    loader,
+    device,
+    eval_type,
+):
+    encoder.eval()
+    decoder.eval()
+
+    l_mse = []
+    l_mae = []
+
+    all_preds = []
+    all_targets = []
+
+    with torch.no_grad():
+        for context_patches, target_patch in loader:
+            context_patches = context_patches.to(device)
+            target_patch = target_patch.to(device)
+
+            encoded_patches = encoder(context_patches)
+
+            context_embedding = get_context_embedding(
+                encoded_patches,
+                eval_type,
+            )
+
+            predicted_next_patch = decoder(context_embedding)
+
+            pred_np = predicted_next_patch.detach().cpu().numpy()
+            target_np = target_patch.detach().cpu().numpy()
+
+            all_preds.append(pred_np)
+            all_targets.append(target_np)
+
+            batch_mse = mse(
+                pred_np.reshape(-1),
+                target_np.reshape(-1),
+            )
+
+            batch_mae = mae(
+                pred_np.reshape(-1),
+                target_np.reshape(-1),
+            )
+
+            l_mse.append(batch_mse)
+            l_mae.append(batch_mae)
+
+    all_preds = np.concatenate(all_preds, axis=0)
+    all_targets = np.concatenate(all_targets, axis=0)
+
+    mean_mse = float(np.mean(l_mse))
+    mean_mae = float(np.mean(l_mae))
+
+    return mean_mse, mean_mae, all_preds, all_targets
+
+
+def compute_trend_accuracy(all_preds, all_targets):
+    """
+    Trend accuracy based on within-patch direction.
+
+    For each predicted target patch:
+
+        pred_diff = pred[:, 1:] - pred[:, :-1]
+        true_diff = true[:, 1:] - true[:, :-1]
+
+    Accuracy checks whether predicted direction matches true direction.
+    """
+    pred_diff = all_preds[:, 1:] - all_preds[:, :-1]
+    true_diff = all_targets[:, 1:] - all_targets[:, :-1]
+
+    trend_pred = np.sign(pred_diff)
+    trend_true = np.sign(true_diff)
+
+    trend_accuracy = (trend_pred == trend_true).mean()
+
+    return float(trend_accuracy)
+
+
 if __name__ == "__main__":
-    # Parse the args and get the config setup
+    set_seed(42)
+
+    # =========================
+    # Config
+    # =========================
+
     config = prepare_args(config)
 
-    # Define some parameters
-    # num_epochs = 100
-    context = 24
-    num_patches = 12
-
-    # Load device
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    # Init Encoder, Decoder, Optimizer
+    print("Device:", device)
 
-    # Load Data
-    print("Load data")
-    config["path_data"] = "./data/" + config["data"] + "/" + config["data"] + ".csv"
+    config["path_data"] = (
+        "./data/" + config["data"] + "/" + config["data"] + ".csv"
+    )
 
-    loader = get_evaluation_loaders(
+    print("Load data from:", config["path_data"])
+
+    # =========================
+    # Important parameters
+    # =========================
+    # These should match your pretraining patch setting.
+    patch_size = 5
+
+    # Number of context patches for downstream forecasting.
+    # For example:
+    # context_size=10 means 10 patches * 5 days = 50 days context.
+    context_size = config.get("context_size", 12)
+
+    # For rolling evaluation, stride=1 gives day-by-day rolling.
+    # If you want patch-by-patch rolling, use stride=patch_size.
+    eval_stride = config.get("eval_stride", 5)
+
+    # =========================
+    # Data loaders
+    # =========================
+
+    train_loader = get_evaluation_loaders(
         config["path_data"],
         config["batch_size"],
         config["ratio_patches"],
         config["mask_ratio"],
+        split="train",
+        patch_size=patch_size,
+        context_size=context_size,
+        stride=eval_stride,
+        normalize=True,
     )
-    sample_context, sample_target = loader.dataset[0]
+
+    val_loader = get_evaluation_loaders(
+        config["path_data"],
+        config["batch_size"],
+        config["ratio_patches"],
+        config["mask_ratio"],
+        split="val",
+        patch_size=patch_size,
+        context_size=context_size,
+        stride=eval_stride,
+        normalize=True,
+    )
+
+    test_loader = get_evaluation_loaders(
+        config["path_data"],
+        config["batch_size"],
+        config["ratio_patches"],
+        config["mask_ratio"],
+        split="test",
+        patch_size=patch_size,
+        context_size=context_size,
+        stride=eval_stride,
+        normalize=True,
+    )
+
+    sample_context, sample_target = train_loader.dataset[0]
+
     print("sample_context.shape =", sample_context.shape)
     print("sample_target.shape =", sample_target.shape)
-    input_dim = len(loader.dataset[0][0][0])#
-    # Encoder
+
+    num_patches = sample_context.shape[0]
+    input_dim = sample_context.shape[1]
+
+    print("num_patches =", num_patches)
+    print("input_dim / patch_size =", input_dim)
+
+    # =========================
+    # Model
+    # =========================
+
     encoder = Encoder(
         num_patches=num_patches,
         dim_in=input_dim,
@@ -75,24 +409,17 @@ if __name__ == "__main__":
         jepa=True,
     )
 
-    decoder = torch.nn.Sequential(
-        torch.nn.Linear(config["pretrain_encoder_embed_dim"], 128),
-        torch.nn.GELU(),
-        torch.nn.Linear(128, 5)
+    decoder = LinearDecoder(
+        emb_dim=config["pretrain_encoder_embed_dim"],
+        patch_size=patch_size,
     )
-    # decoder = torch.nn.Sequential(
-    #     torch.nn.Linear(config["pretrain_encoder_embed_dim"], 256),
-    #     torch.nn.GELU(),
-    #     torch.nn.Linear(256, 128),
-    #     torch.nn.GELU(),
-    #     torch.nn.Linear(128, 5)
-    # )    
-    # Load the pretrained model
-    # path_name = "lr_" + str(config["lr_pretrain"]) \
-    #         + "_encoder_" + str(config["pretrain_encoder_embed_dim"]) + "_" \
-    #         + str(config["pretrain_encoder_nhead"]) + "_" \
-    #         + str(config["pretrain_encoder_num_layers"]) \
-    #         + "_epoch_" + str(config["checkpoint_to_use"])
+
+    encoder.to(device)
+    decoder.to(device)
+
+    # =========================
+    # Load pretrained encoder
+    # =========================
 
     path_name = (
         "/lr_"
@@ -119,201 +446,291 @@ if __name__ == "__main__":
         + str(config["checkpoint_to_use"])
     )
 
-    name_loader = torch.load(
-        config["path_save"] + path_name + ".pt", map_location=torch.device("cpu")
-    )["encoder"]
-    encoder.load_state_dict(name_loader)
-    print("Model loaded")
+    checkpoint_path = config["path_save"] + path_name + ".pt"
 
-    # We consider training only the decoder head
-    param_groups = [{"params": (p for n, p in decoder.named_parameters())}]
+    print("Load checkpoint:", checkpoint_path)
 
-    # optimizer = torch.optim.AdamW(param_groups, lr=config["lr"])
-    optimizer = torch.optim.AdamW([
-        {"params": encoder.parameters(), "lr": 1e-4},
-        {"params": decoder.parameters(), "lr": 1e-4},
-    ], weight_decay=1e-4)
-    # We train the model on the train set
-    print("start train")
+    checkpoint = torch.load(
+        checkpoint_path,
+        map_location=device,
+    )
+
+    encoder.load_state_dict(checkpoint["encoder"])
+
+    print("Pretrained encoder loaded")
+
+    # Freeze encoder
+    for p in encoder.parameters():
+        p.requires_grad = False
+
+    encoder.eval()
+
+    # Train only decoder
+    optimizer = torch.optim.AdamW(
+        decoder.parameters(),
+        lr=config["lr"],
+    )
+
+    # =========================
+    # Train decoder
+    # =========================
+
+    print("Start downstream decoder training")
+
     loss_history = []
-    patch_size = 5
+    val_mse_history = []
+    val_mae_history = []
+
+    best_val_mse = float("inf")
+    best_decoder_state = None
 
     for epoch in range(config["num_epochs"]):
         encoder.eval()
-        # encoder.train()
         decoder.train()
-        total_loss = 0
-        for context_patches, target_patch in loader:
+
+        total_loss = 0.0
+
+        for context_patches, target_patch in train_loader:
             optimizer.zero_grad()
+
+            context_patches = context_patches.to(device)
+            target_patch = target_patch.to(device)
+
             with torch.no_grad():
                 encoded_patches = encoder(context_patches)
 
-            # summed_embedding = torch.sum(encoded_patches, dim=1)
-            # context_embedding = encoded_patches[:, -1, :]
-            # context_embedding = encoded_patches.mean(dim=1) # mean value of all encoded patches in one sample
             context_embedding = get_context_embedding(
                 encoded_patches,
-                config["eval_type"]
+                config["eval_type"],
             )
-            predicted_next_patch = decoder(context_embedding) # decode from embedded token to patch context
-            # context_embedding = encoded_patches[:, -1, :]
 
-            # last_patch = context_patches[:, -1, :]
+            predicted_next_patch = decoder(context_embedding)
 
-            # predicted_residual = decoder(context_embedding)
-            # predicted_next_patch = last_patch + predicted_residual            
-            # predicted_next_patch = decoder(summed_embedding)
             mse_loss = torch.nn.functional.mse_loss(
-                predicted_next_patch, target_patch, reduction="mean"
+                predicted_next_patch,
+                target_patch,
+                reduction="mean",
             )
+
             pred_diff = predicted_next_patch[:, 1:] - predicted_next_patch[:, :-1]
             true_diff = target_patch[:, 1:] - target_patch[:, :-1]
 
-            trend_loss = torch.nn.functional.l1_loss(
-                torch.sign(pred_diff),
-                torch.sign(true_diff)
-            )
+            trend_loss = torch.relu(
+                -pred_diff * true_diff
+            ).mean()
 
-            loss = mse_loss + 0.0* trend_loss
+            # You can change this weight later.
+            trend_weight = config.get("trend_weight", 0.0)
+
+            loss = mse_loss + trend_weight * trend_loss
+
             loss.backward()
             optimizer.step()
 
-            # total_loss += loss / config["batch_size"]
             total_loss += loss.item()
 
-            # total_loss += loss.item()
-            # loss_value = total_loss.item() if torch.is_tensor(total_loss) else float(total_loss)
-            # loss_history.append(loss_value)
-        avg_loss = total_loss / len(loader)
-        loss_history.append(avg_loss)
+        avg_train_loss = total_loss / len(train_loader)
+        loss_history.append(avg_train_loss)
+
+        # =========================
+        # Validation
+        # =========================
+
+        val_mse, val_mae, _, _ = evaluate_model(
+            encoder=encoder,
+            decoder=decoder,
+            loader=val_loader,
+            device=device,
+            eval_type=config["eval_type"],
+        )
+
+        val_mse_history.append(val_mse)
+        val_mae_history.append(val_mae)
+
+        if val_mse < best_val_mse:
+            best_val_mse = val_mse
+            best_decoder_state = {
+                k: v.detach().cpu().clone()
+                for k, v in decoder.state_dict().items()
+            }
 
         if epoch % 10 == 0:
-            print(f"Epoch: {epoch} - Total loss: {avg_loss}")
+            print(
+                f"Epoch {epoch}: "
+                f"train_loss={avg_train_loss:.6f}, "
+                f"val_mse={val_mse:.6f}, "
+                f"val_mae={val_mae:.6f}"
+            )
+
+    # Restore best decoder
+    if best_decoder_state is not None:
+        decoder.load_state_dict(best_decoder_state)
+        decoder.to(device)
+
+    # =========================
+    # Save training history
+    # =========================
+
     save_path = "./results/loss.txt"
 
     with open(save_path, "w") as f:
-        for epoch, loss in enumerate(loss_history):
-            f.write(f"{epoch},{loss}\n")
+        f.write("epoch,train_loss,val_mse,val_mae\n")
+        for epoch in range(len(loss_history)):
+            f.write(
+                f"{epoch},"
+                f"{loss_history[epoch]},"
+                f"{val_mse_history[epoch]},"
+                f"{val_mae_history[epoch]}\n"
+            )
 
     print(f"Loss saved to {save_path}")
 
     # =========================
-    # Test on rolling prediction
+    # Final test on future test split
     # =========================
 
-    encoder.eval()
-    decoder.eval()
+    test_mse, test_mae, all_preds, all_targets = evaluate_model(
+        encoder=encoder,
+        decoder=decoder,
+        loader=test_loader,
+        device=device,
+        eval_type=config["eval_type"],
+    )
 
-    num_steps = (
-        len(loader.dataset.test_df) - num_patches * patch_size
-    ) // patch_size
+    trend_accuracy = compute_trend_accuracy(
+        all_preds=all_preds,
+        all_targets=all_targets,
+    )
 
-    l_val_mse = []
-    l_val_mae = []
-    all_preds = []
-    all_targets = []    
-    # We test the model on the last prediction
-    # We define the number of steps we will have
-    # num_steps = (len(loader.dataset.test_df[context * num_patches :])) // context
-    with torch.no_grad():
-        for step in range(num_steps):
-            current_series = loader.dataset.test_df[
-                step * patch_size :
-                step * patch_size + num_patches * patch_size
-            ]
-
-            current_context = current_series.reshape(
-                num_patches,
-                patch_size
-            ).unsqueeze(0)
-
-            target_value = loader.dataset.test_df[
-                step * patch_size + num_patches * patch_size :
-                step * patch_size + (num_patches + 1) * patch_size
-            ]
-
-            encoded_patches = encoder(current_context)
-
-            # Same strategy as training
-            context_embedding = get_context_embedding(
-                encoded_patches,
-                config["eval_type"]
-            )
-            # context_embedding = encoded_patches.mean(dim=1)
-            predicted_next_patch = decoder(context_embedding)
-            # -----
-            # num_patches = encoded_patches.size(1)
-
-            # weights = torch.arange(
-            #     1, num_patches + 1,
-            #     device=encoded_patches.device,
-            #     dtype=encoded_patches.dtype
-            # )
-
-            # weights = weights / weights.sum()
-            # weights = weights.view(1, num_patches, 1)
-
-            # context_embedding = (encoded_patches * weights).sum(dim=1)
-            # -----
-            # attn_score = torch.softmax(
-            # torch.mean(encoded_patches, dim=-1),
-            # dim=1
-            # )
-
-            # context_embedding = torch.sum(
-            #     encoded_patches * attn_score.unsqueeze(-1),
-            #     dim=1
-            # )
-            # -----
-            # # 1. 改 context
-            # context_embedding = encoded_patches[:, -1, :]
-
-            # # 2. residual prediction
-            # last_patch = current_context[:, -1, :]
-            # predicted_residual = decoder(context_embedding)
-            # predicted_next_patch = last_patch + predicted_residual
-
-            # predicted_next_patch = current_context[:, -1, :]
-            all_preds.append(predicted_next_patch.flatten().cpu().numpy())
-            all_targets.append(target_value.cpu().numpy())
-            val_mse = mse(
-                predicted_next_patch.flatten().detach().numpy(),
-                target_value.numpy()
-            )
-
-            val_mae = mae(
-                predicted_next_patch.flatten().detach().numpy(),
-                target_value.numpy()
-            )
-
-            l_val_mse.append(val_mse)
-            l_val_mae.append(val_mae)
-
-    print("MSE Loss is: {}".format(np.mean(l_val_mse)))
-    print("MAE Loss is: {}".format(np.mean(l_val_mae)))
-
-    all_preds = np.array(all_preds)
-    all_targets = np.array(all_targets)
-
-    pred_last = all_preds[:, -1]
-    true_last = all_targets[:, -1]
-
-    trend_pred = np.sign(np.diff(pred_last))
-    trend_true = np.sign(np.diff(true_last))
-
-    trend_accuracy = (trend_pred == trend_true).mean()
-
+    print("========== Final Test ==========")
+    print("Test MSE is: {:.6f}".format(test_mse))
+    print("Test MAE is: {:.6f}".format(test_mae))
     print("Trend Accuracy is: {:.4f}".format(trend_accuracy))
-    import numpy as np
 
-    pred_series = np.concatenate(all_preds)
-    target_series = np.concatenate(all_targets)
-    import matplotlib.pyplot as plt
+    # =========================
+    # Visualization 1:
+    # Rolling error over time
+    # =========================
+
+    rolling_mse = ((all_preds - all_targets) ** 2).mean(axis=1)
+    rolling_mae = np.abs(all_preds - all_targets).mean(axis=1)
 
     plt.figure(figsize=(12, 5))
-    plt.plot(target_series, label="Ground Truth")
-    plt.plot(pred_series, label="Prediction")
+    plt.plot(rolling_mse, label="Rolling MSE")
+    plt.plot(rolling_mae, label="Rolling MAE")
     plt.legend()
-    plt.title("Prediction vs Ground Truth")
-    plt.savefig("./results/"+config["eval_type"]+"_prediction.png", dpi=300, bbox_inches="tight")
-    plt.show()    
+    plt.xlabel("Rolling evaluation step")
+    plt.ylabel("Error")
+    plt.title("Rolling Forecast Error over Time")
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    metric_png_path = (
+        "./results/"
+        + config["eval_type"]
+        + f"_rolling_metrics_test_{timestamp}.png"
+    )
+
+    plt.savefig(metric_png_path, dpi=300, bbox_inches="tight")
+    plt.show()
+
+    print(f"Rolling metric figure saved to {metric_png_path}")
+
+
+    # =========================
+    # Visualization 2:
+    # Last point of each predicted patch
+    # =========================
+
+    pred_last = all_preds[:, 0]
+    true_last = all_targets[:, 0]
+
+    plt.figure(figsize=(12, 5))
+    plt.plot(true_last, label="Ground Truth")
+    plt.plot(pred_last, label="Prediction")
+    plt.legend()
+    plt.xlabel("Rolling evaluation step")
+    plt.ylabel("Normalized price / return")
+    plt.title("Rolling Forecast: Last Point of Each Predicted Patch")
+
+    last_point_png_path = (
+        "./results/"
+        + config["eval_type"]
+        + f"_rolling_last_point_test_{timestamp}.png"
+    )
+
+    plt.savefig(last_point_png_path, dpi=300, bbox_inches="tight")
+    plt.show()
+
+    print(f"Rolling last-point figure saved to {last_point_png_path}")
+
+
+    # =========================
+    # Visualization 3:
+    # Example rolling window
+    # =========================
+
+    # visualize_one_rolling_window(
+    #     encoder=encoder,
+    #     decoder=decoder,
+    #     dataset=test_loader.dataset,
+    #     sample_idx=min(60, len(test_loader.dataset) - 1),
+    #     device=device,
+    #     eval_type=config["eval_type"],
+    #     config=config,
+    # )
+
+    # visualize_all_rolling_windows(
+    #     encoder=encoder,
+    #     decoder=decoder,
+    #     dataset=test_loader.dataset,
+    #     device=device,
+    #     eval_type=config["eval_type"],
+    #     config=config,
+    # )    
+    visualize_all_rolling_windows(
+        encoder=encoder,
+        decoder=decoder,
+        dataset=test_loader.dataset,
+        device=device,
+        eval_type=config["eval_type"],
+        config=config,
+        save_dir="./results/rolling_windows",
+        max_samples=100,         # 或者 None 表示全部
+        make_gif=True,
+        gif_name="rolling_windows.gif",
+        gif_duration=0.4,
+    )
+    visualize_all_rolling_predictions_as_series(
+        all_preds=all_preds,
+        all_targets=all_targets,
+        config=config,
+    )
+
+    # # =========================
+    # # Plot prediction vs ground truth
+    # # =========================
+
+    # pred_series = all_preds.reshape(-1)
+    # target_series = all_targets.reshape(-1)
+
+    # plt.figure(figsize=(12, 5))
+    # plt.plot(target_series, label="Ground Truth")
+    # plt.plot(pred_series, label="Prediction")
+    # plt.legend()
+    # plt.title(
+    #     "Prediction vs Ground Truth "
+    #     f"({config['eval_type']}, split=test)"
+    # )
+
+    # timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    # pred_png_path = (
+    #     "./results/"
+    #     + config["eval_type"]
+    #     + f"_prediction_test_{timestamp}.png"
+    # )
+
+    # plt.savefig(pred_png_path, dpi=300, bbox_inches="tight")
+    # plt.show()
+
+    # print(f"Prediction figure saved to {pred_png_path}")

@@ -2,7 +2,7 @@ import pandas as pd
 from pathlib import Path
 
 # Input file
-input_path = Path("/Users/yuwei/TS_JEPA/data/nike/NKE.csv")
+input_path = Path("/home/xujiang/TS_JEPA/data/nike/NKEOrinigal.csv")
 
 # Output file
 output_path = input_path.parent / "NKENew.csv"

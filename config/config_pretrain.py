@@ -1,13 +1,19 @@
 config = {
     "data": "nike",
 
+    "pretrain_until_index": 999,
+    "series_split_size": 60,
+    "patch_size": 5,    
+    "normalize_on_train_only": True,
+
+
     "wandb_project_name": "",
     "log_wandb" : False,
 
     "batch_size" : 32,
 
     # Printing and Logging settings
-    "checkpoint_save" : 200,
+    "checkpoint_save" : 500,
     "checkpoint_print": 30,
 
     # Loader
@@ -21,11 +27,11 @@ config = {
     "lr": 1e-5,
     "end_lr": 1e-4,
 
-    "num_epochs": 201,
+    "num_epochs": 2001,
     "ema_momentum" : 0.998,
 
     # Encoder
-    "encoder_embed_dim" : 128,
+    "encoder_embed_dim" : 256,
     "encoder_nhead" : 2,
     "encoder_num_layers": 1,
     "encoder_kernel_size" : 3,

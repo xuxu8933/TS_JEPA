@@ -18,7 +18,7 @@ from src.models.encoder import Encoder
 from src.models.predictor import Predictor
 
 from src.models.utils.mask_utils import apply_mask
-from src.data_loaders.data_loader import get_jepa_loaders
+from src.data_loaders.data_loader_roll import get_jepa_loaders
 
 from config.config_pretrain import config
 
@@ -64,6 +64,7 @@ if __name__ == "__main__":
         config["batch_size"],
         config["ratio_patches"],
         config["mask_ratio"],
+        config["series_split_size"]
     )
 
     input_dim = len(loader.dataset[0][0][0])
@@ -144,10 +145,12 @@ if __name__ == "__main__":
     total_loss, total_var_encoder, total_var_decoder = 0.0, 0.0, 0.0
 
     # Save Initial Model -- Useful to compare when evaluating
-    save_model(encoder, 0)
+    # save_model(encoder, 0)
 
     # Training loop
     for epoch in range(config["num_epochs"]):
+        total_loss = 0.0
+
         scheduler.step()
         m = next(ema_scheduler)
         encoder.train()
@@ -191,7 +194,7 @@ if __name__ == "__main__":
 
         total_loss = total_loss / num_batches
 
-        if epoch % 10 == 0:
+        if epoch % checkpoint_print == 0:
             print(
                 f"Epoch {epoch}, lr: {optimizer.param_groups[0]['lr']:.3g} - JEPA Loss: {total_loss:.4f},"
             )

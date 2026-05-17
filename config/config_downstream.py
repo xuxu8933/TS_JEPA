@@ -41,7 +41,7 @@ config = {
     "pooling": "Mean",
 
     # Pretrained Transformer -- Config
-    "pretrain_encoder_embed_dim" : 128,
+    "pretrain_encoder_embed_dim" : 256,
     "pretrain_encoder_nhead" : 2,
     "pretrain_encoder_num_layers": 1,
     "pretrain_encoder_kernel_size" : 3,
