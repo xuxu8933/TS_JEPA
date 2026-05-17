@@ -61,6 +61,68 @@ def visualize_all_rolling_predictions_as_series(
 
     print(f"All rolling prediction figure saved to {save_path}")
 
+def make_baseline_prediction(context_patches, horizon, baseline_name):
+    """
+    Generate baseline forecast from historical context.
+
+    Parameters
+    ----------
+    context_patches : torch.Tensor
+        Shape: [context_size, patch_size]
+        Historical context window before the forecast cutoff.
+
+    horizon : int
+        Number of future time steps to forecast.
+
+    baseline_name : str
+        Baseline model name:
+            - "naive_last"
+            - "previous_patch"
+            - "mean_context"
+            - "drift"
+
+    Returns
+    -------
+    np.ndarray
+        Shape: [horizon]
+        Baseline prediction.
+    """
+
+    context_np = context_patches.detach().cpu().numpy()
+    context_flat = context_np.reshape(-1)
+
+    if baseline_name == "naive_last":
+        # Repeat the last observed value for all future steps
+        pred = np.repeat(context_flat[-1], horizon)
+
+    elif baseline_name == "previous_patch":
+        # Use the last context patch as the forecast
+        last_patch = context_np[-1].reshape(-1)
+
+        if len(last_patch) >= horizon:
+            pred = last_patch[:horizon]
+        else:
+            pred = np.resize(last_patch, horizon)
+
+    elif baseline_name == "mean_context":
+        # Repeat the mean value of the whole context window
+        pred = np.repeat(context_flat.mean(), horizon)
+
+    elif baseline_name == "drift":
+        # Linear extrapolation based on the first and last context values
+        if len(context_flat) <= 1:
+            pred = np.repeat(context_flat[-1], horizon)
+        else:
+            slope = (context_flat[-1] - context_flat[0]) / (len(context_flat) - 1)
+            steps = np.arange(1, horizon + 1)
+            pred = context_flat[-1] + slope * steps
+
+    else:
+        raise ValueError(f"Unknown baseline_name: {baseline_name}")
+
+    return pred.astype(np.float32)
+
+
 def visualize_all_rolling_windows(
     encoder,
     decoder,
@@ -73,26 +135,136 @@ def visualize_all_rolling_windows(
     make_gif=True,
     gif_name="rolling_windows.gif",
     gif_duration=0.5,
+    sample_indices=None,
+    baseline_names=None,
 ):
+    """
+    Visualize rolling forecast windows with TS-JEPA prediction and baseline predictions.
+
+    This function supports two modes:
+
+    1. Visualize selected rolling windows:
+        sample_indices=[60]
+
+    2. Visualize the first N rolling windows:
+        max_samples=100
+
+    If sample_indices is given, max_samples is ignored.
+
+    Each figure contains:
+        - Historical context
+        - Ground truth future
+        - TS-JEPA prediction
+        - Baseline predictions
+
+    Parameters
+    ----------
+    encoder : torch.nn.Module
+        Pretrained and frozen TS-JEPA encoder.
+
+    decoder : torch.nn.Module
+        Trained downstream forecasting decoder.
+
+    dataset : torch.utils.data.Dataset
+        Rolling evaluation dataset.
+        Each item should return:
+            context_patches, target_patch
+
+    device : torch.device
+        Device used for model inference.
+
+    eval_type : str
+        Context embedding strategy:
+            - "last"
+            - "mean"
+
+    config : dict
+        Experiment config.
+
+    save_dir : str
+        Directory to save generated figures.
+
+    max_samples : int or None
+        Number of rolling windows to visualize if sample_indices is None.
+
+    make_gif : bool
+        Whether to generate a GIF from saved figures.
+
+    gif_name : str
+        GIF filename.
+
+    gif_duration : float
+        Duration per frame in the GIF.
+
+    sample_indices : list[int] or None
+        Specific rolling window indices to visualize.
+        Example:
+            sample_indices=[60]
+            sample_indices=[0, 20, 40, 60]
+
+    baseline_names : list[str] or None
+        Baselines to plot.
+        Default:
+            [
+                "naive_last",
+                "previous_patch",
+                "mean_context",
+                "drift",
+            ]
+    """
+
     os.makedirs(save_dir, exist_ok=True)
 
     encoder.eval()
     decoder.eval()
 
-    if max_samples is None:
-        num_samples = len(dataset)
-    else:
-        num_samples = min(len(dataset), max_samples)
+    if baseline_names is None:
+        baseline_names = [
+            "naive_last",
+            "previous_patch",
+            "mean_context",
+            "drift",
+        ]
 
-    print(f"Visualizing {num_samples} rolling windows...")
+    # -------------------------------------------------
+    # Decide which rolling window indices to visualize
+    # -------------------------------------------------
+    if sample_indices is not None:
+        indices_to_plot = []
+
+        for idx in sample_indices:
+            if 0 <= idx < len(dataset):
+                indices_to_plot.append(idx)
+            else:
+                print(
+                    f"Warning: sample_idx={idx} is out of range. "
+                    f"Valid range is [0, {len(dataset) - 1}]. "
+                    f"This index will be skipped."
+                )
+
+    else:
+        if max_samples is None:
+            num_samples = len(dataset)
+        else:
+            num_samples = min(len(dataset), max_samples)
+
+        indices_to_plot = list(range(num_samples))
+
+    print(f"Visualizing {len(indices_to_plot)} rolling windows...")
 
     saved_paths = []
 
-    for sample_idx in range(num_samples):
+    # -------------------------------------------------
+    # Plot each selected rolling window
+    # -------------------------------------------------
+    for sample_idx in indices_to_plot:
         context_patches, target_patch = dataset[sample_idx]
 
         context_patches_input = context_patches.unsqueeze(0).to(device)
 
+        # ---------------------------------------------
+        # TS-JEPA forecast
+        # ---------------------------------------------
         with torch.no_grad():
             encoded_patches = encoder(context_patches_input)
 
@@ -103,50 +275,126 @@ def visualize_all_rolling_windows(
 
             pred_patch = decoder(context_embedding)
 
-        context_np = context_patches.flatten().cpu().numpy()
-        target_np = target_patch.cpu().numpy()
+        # ---------------------------------------------
+        # Convert tensors to numpy
+        # ---------------------------------------------
+        context_np = context_patches.flatten().detach().cpu().numpy()
+        target_np = target_patch.detach().cpu().numpy().reshape(-1)
         pred_np = pred_patch.flatten().detach().cpu().numpy()
 
+        horizon = len(target_np)
+
+        # In case decoder output is longer or shorter than target
+        pred_np = pred_np[:horizon]
+
+        # ---------------------------------------------
+        # X-axis
+        # ---------------------------------------------
         context_x = np.arange(len(context_np))
+
         target_x = np.arange(
             len(context_np),
-            len(context_np) + len(target_np)
+            len(context_np) + horizon,
         )
 
-        plt.figure(figsize=(12, 5))
+        # ---------------------------------------------
+        # Plot
+        # ---------------------------------------------
+        plt.figure(figsize=(14, 6))
 
-        plt.plot(context_x, context_np, label="Context", linewidth=2)
-        plt.plot(target_x, target_np, marker="o", label="Ground Truth Future")
-        plt.plot(target_x, pred_np, marker="o", label="Predicted Future")
+        # Historical context
+        plt.plot(
+            context_x,
+            context_np,
+            label="Context",
+            linewidth=2,
+        )
 
+        # Ground truth future
+        plt.plot(
+            target_x,
+            target_np,
+            marker="o",
+            linewidth=2,
+            label="Ground Truth Future",
+        )
+
+        # TS-JEPA prediction
+        plt.plot(
+            target_x,
+            pred_np,
+            marker="o",
+            linewidth=2,
+            label="TS-JEPA Prediction",
+        )
+
+        # Baseline predictions
+        for baseline_name in baseline_names:
+            baseline_pred = make_baseline_prediction(
+                context_patches=context_patches,
+                horizon=horizon,
+                baseline_name=baseline_name,
+            )
+
+            plt.plot(
+                target_x,
+                baseline_pred,
+                marker="x",
+                linestyle="--",
+                linewidth=1.5,
+                label=f"Baseline: {baseline_name}",
+            )
+
+        # Forecast origin
         plt.axvline(
             x=len(context_np) - 1,
             linestyle="--",
+            linewidth=1.5,
             label="Forecast Origin",
         )
 
         plt.legend()
         plt.xlabel("Time index inside rolling window")
         plt.ylabel("Normalized price / return")
-        plt.title(f"Rolling Forecast Window #{sample_idx}")
+        plt.title(
+            f"Rolling Forecast Window #{sample_idx} "
+            f"with Baselines"
+        )
 
         save_path = os.path.join(
             save_dir,
-            f"{config['eval_type']}_rolling_window_{sample_idx:04d}.png"
+            f"{config['eval_type']}_rolling_window_{sample_idx:04d}_with_baselines.png",
         )
 
-        plt.savefig(save_path, dpi=150)
+        plt.savefig(
+            save_path,
+            dpi=150,
+            bbox_inches="tight",
+        )
+
         plt.close()
 
         saved_paths.append(save_path)
 
-    print(f"Saved {num_samples} rolling window figures to: {save_dir}")
+    print(f"Saved {len(saved_paths)} rolling window figures to: {save_dir}")
 
-    # 自动生成 GIF
+    # -------------------------------------------------
+    # Generate GIF
+    # -------------------------------------------------
     if make_gif and len(saved_paths) > 0:
         gif_path = os.path.join(save_dir, gif_name)
-        frames = [imageio.imread(p) for p in saved_paths]
-        imageio.mimsave(gif_path, frames, duration=gif_duration)
+
+        frames = [
+            imageio.imread(path)
+            for path in saved_paths
+        ]
+
+        imageio.mimsave(
+            gif_path,
+            frames,
+            duration=gif_duration,
+        )
+
         print(f"GIF saved to: {gif_path}")
 
 def visualize_one_rolling_window(
@@ -1223,11 +1471,15 @@ if __name__ == "__main__":
         device=device,
         eval_type=config["eval_type"],
         config=config,
-        save_dir="./results/rolling_windows",
-        max_samples=100,         # 或者 None 表示全部
-        make_gif=True,
-        gif_name="rolling_windows.gif",
-        gif_duration=0.4,
+        save_dir="./results/rolling_windows_with_baselines",
+        sample_indices=[60],
+        make_gif=False,
+        baseline_names=[
+            "naive_last",
+            "previous_patch",
+            "mean_context",
+            "drift",
+        ],
     )
     visualize_all_rolling_predictions_as_series(
         all_preds=all_preds,
