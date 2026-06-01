@@ -1,12 +1,12 @@
 config = {
     # Data Path
-    "data" : "nike",
+    "data" : "NVDA",
     "path_train" : "./data/FordB/train_data.ts",
     "path_test" : "./data/FordB/test_data.ts",
     "path_save" : "./logs/output_model/",
 
     "regression": False,
-
+    "target_feature_index": 0,
     "wandb_project_name": "",
     "log_wandb" : False,
 
@@ -52,7 +52,7 @@ config = {
     "pretrain_decoder_nhead" : 2,
     "pretrain_decoder_num_layers": 1,
 
-    "checkpoint_to_use": 500,
+    "checkpoint_to_use": 2000,
     "lr_pretrain": 1e-05,
     "batch_size_pretrain": 256,
     "mask_ratio" : 0.7,

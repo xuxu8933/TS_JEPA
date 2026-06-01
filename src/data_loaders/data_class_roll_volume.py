@@ -1,0 +1,328 @@
+import pandas as pd
+import torch
+import random
+from torch.utils.data import Dataset
+
+
+def cumulative_return_normalize_with_base(series, base, eps=1e-8):
+    """
+    Works for both:
+        series: [T]
+        series: [T, C]
+
+    For multi-feature data, base is the first observable row [C].
+    """
+    base = torch.where(torch.abs(base) < eps, base + eps, base)
+    return series / base - 1.0
+
+
+def _as_list(x):
+    if isinstance(x, str):
+        return [x]
+    return list(x)
+
+
+def chronological_split(
+    df,
+    feature_cols=("Close", "Volume"),
+    timestamp_col="Date",
+    validation_fraction=0.05,
+    test_fraction=0.30,
+):
+    """
+    Chronological split:
+        train: earliest period
+        val:   middle period
+        test:  latest future period
+    """
+    df = df.copy()
+    df.sort_values(by=[timestamp_col], inplace=True)
+
+    feature_cols = _as_list(feature_cols)
+    missing = [c for c in feature_cols if c not in df.columns]
+    if missing:
+        raise ValueError(f"Missing columns in CSV: {missing}. Available columns: {list(df.columns)}")
+
+    values = torch.tensor(df[feature_cols].values, dtype=torch.float32)
+
+    val_len = int(len(values) * validation_fraction)
+    test_len = int(len(values) * test_fraction)
+    train_len = len(values) - val_len - test_len
+
+    train_df, val_df, test_df = torch.split(
+        values,
+        [train_len, val_len, test_len]
+    )
+
+    return train_df, val_df, test_df
+
+
+def load_price_series(
+    path_data,
+    feature_cols=("Close", "Volume"),
+    timestamp_col="Date",
+    validation_fraction=0.05,
+    test_fraction=0.30,
+    log_volume=True,
+):
+    """
+    Load CSV and return chronological train / val / test tensors.
+
+    feature_cols can be:
+        ("Close", "Volume")
+        ("Open", "High", "Low", "Close", "Volume")
+    """
+    df = pd.read_csv(
+        path_data,
+        parse_dates=[timestamp_col],
+        low_memory=False,
+        sep=",",
+    )
+
+    # Downcast float columns
+    fcols = df.select_dtypes("float").columns
+    df[fcols] = df[fcols].apply(pd.to_numeric, downcast="float")
+
+    # Downcast integer columns
+    icols = df.select_dtypes("integer").columns
+    df[icols] = df[icols].apply(pd.to_numeric, downcast="integer")
+
+    feature_cols = _as_list(feature_cols)
+
+    # Volume is usually very large and heavy-tailed, so log1p is safer.
+    if log_volume and "Volume" in feature_cols:
+        df["Volume"] = torch.log1p(
+            torch.tensor(df["Volume"].values, dtype=torch.float32)
+        ).numpy()
+
+    train_df, val_df, test_df = chronological_split(
+        df=df,
+        feature_cols=feature_cols,
+        timestamp_col=timestamp_col,
+        validation_fraction=validation_fraction,
+        test_fraction=test_fraction,
+    )
+
+    return train_df, val_df, test_df
+
+
+class CSVDataLoader(Dataset):
+    """
+    Loader for TS-JEPA pretraining.
+
+    Output shape per sample:
+        patches_tensor: [num_patches, patch_size * feature_dim]
+
+    Example:
+        feature_cols=("Close", "Volume"), patch_size=5
+        patches_tensor.shape = [num_patches, 10]
+    """
+
+    def __init__(
+        self,
+        path_data,
+        batch_size=32,
+        series_split_size=120,
+        patch_size=5,
+        mask_ratio=0.15,
+        stride=60,
+        normalize=True,
+        feature_cols=("Close", "Volume"),
+        timestamp_col="Date",
+        validation_fraction=0.05,
+        test_fraction=0.30,
+        log_volume=True,
+    ):
+        self.batch_size = batch_size
+        self.series_split_size = series_split_size
+        self.patch_size = patch_size
+        self.mask_ratio = mask_ratio
+        self.normalize = normalize
+        self.feature_cols = _as_list(feature_cols)
+        self.feature_dim = len(self.feature_cols)
+
+        self.stride = stride if stride is not None else patch_size
+
+        self.train_df, self.val_df, self.test_df = load_price_series(
+            path_data=path_data,
+            feature_cols=self.feature_cols,
+            timestamp_col=timestamp_col,
+            validation_fraction=validation_fraction,
+            test_fraction=test_fraction,
+            log_volume=log_volume,
+        )
+
+        # Pretraining only uses train_df.
+        self.time_series = self.train_df
+
+        self.split_series = self._make_sliding_windows(
+            series=self.time_series,
+            window_size=self.series_split_size,
+            stride=self.stride,
+        )
+
+    def _make_sliding_windows(self, series, window_size, stride):
+        windows = [
+            series[i:i + window_size]
+            for i in range(0, len(series) - window_size + 1, stride)
+        ]
+
+        if len(windows) == 0:
+            raise ValueError(
+                f"No window can be created. "
+                f"len(series)={len(series)}, "
+                f"window_size={window_size}, stride={stride}"
+            )
+
+        return windows
+
+    def __len__(self):
+        return len(self.split_series)
+
+    def __getitem__(self, idx):
+        selected_series = self.split_series[idx]  # [T, C]
+
+        if self.normalize:
+            base = selected_series[0]             # [C]
+            selected_series = cumulative_return_normalize_with_base(
+                selected_series,
+                base=base,
+            )
+
+        num_patches = len(selected_series) // self.patch_size
+
+        patches = [
+            selected_series[i * self.patch_size:(i + 1) * self.patch_size]
+            for i in range(num_patches)
+        ]
+
+        patches_tensor = torch.stack(patches)     # [num_patches, patch_size, C]
+        patches_tensor = patches_tensor.reshape(num_patches, -1)  # [num_patches, patch_size*C]
+
+        num_masked_patches = int(num_patches * self.mask_ratio)
+        num_masked_patches = max(1, num_masked_patches)
+
+        mask_indices = random.sample(range(num_patches), num_masked_patches)
+        non_mask_indices = [i for i in range(num_patches) if i not in mask_indices]
+
+        mask_indices = torch.tensor(mask_indices, dtype=torch.long)
+        non_mask_indices = torch.tensor(non_mask_indices, dtype=torch.long)
+
+        return patches_tensor, mask_indices, non_mask_indices
+
+
+class EvaluationDataLoader(Dataset):
+    """
+    Loader for downstream forecasting / evaluation.
+
+    Context uses all feature_cols, flattened by patch:
+        context_patches: [context_size, patch_size * feature_dim]
+
+    Target can be one column, e.g. target_col="Close":
+        target_patch: [patch_size]
+    """
+
+    def __init__(
+        self,
+        path_data,
+        patch_size=5,
+        context_size=10,
+        stride=1,
+        split="test",
+        normalize=True,
+        feature_cols=("Close", "Volume"),
+        target_col="Close",
+        timestamp_col="Date",
+        validation_fraction=0.05,
+        test_fraction=0.30,
+        log_volume=True,
+    ):
+        self.patch_size = patch_size
+        self.context_size = context_size
+        self.stride = stride
+        self.split = split
+        self.normalize = normalize
+        self.feature_cols = _as_list(feature_cols)
+        self.feature_dim = len(self.feature_cols)
+        self.target_col = target_col
+
+        if target_col not in self.feature_cols:
+            raise ValueError(f"target_col={target_col} must be in feature_cols={self.feature_cols}")
+        self.target_idx = self.feature_cols.index(target_col)
+
+        self.train_df, self.val_df, self.test_df = load_price_series(
+            path_data=path_data,
+            feature_cols=self.feature_cols,
+            timestamp_col=timestamp_col,
+            validation_fraction=validation_fraction,
+            test_fraction=test_fraction,
+            log_volume=log_volume,
+        )
+
+        if split == "train":
+            self.series = self.train_df
+        elif split == "val":
+            self.series = self.val_df
+        elif split == "test":
+            self.series = self.test_df
+        elif split == "all":
+            self.series = torch.cat([self.train_df, self.val_df, self.test_df], dim=0)
+        else:
+            raise ValueError(f"Unknown split: {split}. Use 'train', 'val', 'test', or 'all'.")
+
+        self.samples = self._make_rolling_samples(self.series)
+
+        print(
+            f"[EvaluationDataLoader] split={split}, "
+            f"series_len={len(self.series)}, "
+            f"num_samples={len(self.samples)}, "
+            f"context_size={context_size}, "
+            f"patch_size={patch_size}, "
+            f"feature_dim={self.feature_dim}, "
+            f"target_col={target_col}, "
+            f"stride={stride}"
+        )
+
+    def _make_rolling_samples(self, series):
+        context_len = self.context_size * self.patch_size
+        target_len = self.patch_size
+        total_len = context_len + target_len
+
+        samples = []
+        for start in range(0, len(series) - total_len + 1, self.stride):
+            full_window = series[start:start + total_len]
+            context_flat = full_window[:context_len]   # [context_len, C]
+            target_flat = full_window[context_len:]    # [patch_size, C]
+            samples.append((context_flat, target_flat))
+
+        if len(samples) == 0:
+            raise ValueError(
+                f"No evaluation sample can be created. "
+                f"len(series)={len(series)}, "
+                f"context_size={self.context_size}, "
+                f"patch_size={self.patch_size}, "
+                f"stride={self.stride}"
+            )
+
+        return samples
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        context_flat, target_flat = self.samples[idx]
+
+        if self.normalize:
+            base = context_flat[0]  # [C], only from first context point
+            context_flat = cumulative_return_normalize_with_base(context_flat, base=base)
+            target_flat = cumulative_return_normalize_with_base(target_flat, base=base)
+
+        context_patches = context_flat.reshape(
+            self.context_size,
+            self.patch_size * self.feature_dim,
+        )
+
+        # Forecast only target_col, usually Close.
+        target_patch = target_flat[:, self.target_idx].reshape(self.patch_size)
+
+        return context_patches, target_patch

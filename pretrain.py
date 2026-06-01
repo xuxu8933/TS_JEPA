@@ -132,6 +132,7 @@ if __name__ == "__main__":
     warmup = config["warmup_ratio"] * config["num_epochs"]
 
     # Initialize the EMA Scheduler (parameter m in the paper)
+    num_batches = len(loader)
     ema_scheduler = (
         config["ema_momentum"]
         + i
@@ -140,7 +141,6 @@ if __name__ == "__main__":
         for i in range(int(config["num_epochs"] * config["ipe_scale"]) + 1)
     )
 
-    num_batches = len(loader)
 
     total_loss, total_var_encoder, total_var_decoder = 0.0, 0.0, 0.0
 
@@ -149,54 +149,54 @@ if __name__ == "__main__":
 
     # Training loop
     for epoch in range(config["num_epochs"]):
-        total_loss = 0.0
-
-        scheduler.step()
-        m = next(ema_scheduler)
         encoder.train()
         predictor.train()
 
-        for patches, masks, non_masks in loader:
-            optimizer.zero_grad()
+        total_loss = 0.0
+        m = next(ema_scheduler)
 
+        for patches, masks, non_masks in loader:
             patches = patches.to(device)
             masks = masks.to(device)
             non_masks = non_masks.to(device)
 
-            # Predict targets
+            optimizer.zero_grad()
+            
+
             with torch.no_grad():
                 target_ema = encoder_ema(patches)
-                target_ema = F.layer_norm(
-                    target_ema, (target_ema.size(-1),)
-                )  # normalize over feature-dim  [B, N, D]
+                target_ema = F.layer_norm(target_ema, (target_ema.size(-1),))
                 target_ema = apply_mask(target_ema, masks)
 
-            # Encode and Predict the masked tokens
             tokens = encoder(patches, mask=non_masks)
-
             pred = predictor(tokens, mask=masks, non_masks=non_masks)
 
-            # Compute the loss
             loss = loss_pred(pred, target_ema)
 
-            # Backward and optimizer step
             loss.backward()
+
+            if clip_grad is not None and clip_grad > 0:
+                torch.nn.utils.clip_grad_norm_(
+                    list(encoder.parameters()) + list(predictor.parameters()),
+                    max_norm=clip_grad
+                )
+
             optimizer.step()
 
-            # Update the EMA
             with torch.no_grad():
-                for param_q, param_k in zip(
-                    encoder.parameters(), encoder_ema.parameters()
-                ):
+                for param_q, param_k in zip(encoder.parameters(), encoder_ema.parameters()):
                     param_k.data.mul_(m).add_((1.0 - m) * param_q.detach().data)
 
-            total_loss += loss
+            total_loss += loss.item()
 
-        total_loss = total_loss / num_batches
+        scheduler.step()
+
+        total_loss /= len(loader)
 
         if epoch % checkpoint_print == 0:
             print(
-                f"Epoch {epoch}, lr: {optimizer.param_groups[0]['lr']:.3g} - JEPA Loss: {total_loss:.4f},"
+                f"Epoch {epoch}, lr: {optimizer.param_groups[0]['lr']:.3g} "
+                f"- JEPA Loss: {total_loss:.4f}"
             )
 
         # Save model's checkpoint

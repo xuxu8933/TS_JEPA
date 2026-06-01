@@ -1,10 +1,11 @@
 config = {
-    "data": "nike",
+    "data": "NVDA",
 
     "pretrain_until_index": 999,
     "series_split_size": 60,
     "patch_size": 5,    
     "normalize_on_train_only": True,
+    "feature_cols": ["Close", "Volume"],
 
 
     "wandb_project_name": "",
@@ -19,13 +20,15 @@ config = {
     # Loader
     "mask_ratio" : 0.7,
     "ratio_patches" : 10,
-    "clip_grad": 10,
+    "clip_grad": 1,
     "warmup_ratio": 0.15,
     "ipe_scale": 1.25,
+    "lr_pretrain": 1e-05,
+    "pooling": "Mean",
 
     #optim
     "lr": 1e-5,
-    "end_lr": 1e-4,
+    "end_lr": 1e-6,
 
     "num_epochs": 2001,
     "ema_momentum" : 0.998,
