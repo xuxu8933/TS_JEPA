@@ -5,8 +5,13 @@ config = {
     "series_split_size": 60,
     "patch_size": 5,    
     "normalize_on_train_only": True,
-    "feature_cols": ["Close", "Volume"],
-
+    "feature_cols": [
+        "Close",
+        "Volume",
+        "MA10",
+        "MA50",
+    ],
+    "target_feature_index": 0,
 
     "wandb_project_name": "",
     "log_wandb" : False,

@@ -9,7 +9,12 @@ config = {
     "target_feature_index": 0,
     "wandb_project_name": "",
     "log_wandb" : False,
-
+    "feature_cols": [
+        "Close",
+        "Volume",
+        "MA10",
+        "MA50",
+    ],
     # Printing and Logging settings
     "checkpoint_print": 20,
 
@@ -18,7 +23,7 @@ config = {
     "ratio_supervision": 1.0,
 
     # Optim
-    "num_epochs": 301,
+    "num_epochs": 501,
     "batch_size" : 32,
     "lr": 1e-03,
 

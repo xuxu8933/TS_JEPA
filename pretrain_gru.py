@@ -42,7 +42,7 @@ class GRUPretrainModel(nn.Module):
 def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
-    path_data = "data/nike/nike.csv"
+    path_data = "data/NVDA/NVDA.csv"
     batch_size = 32
     num_epochs = 100
     lr = 1e-3

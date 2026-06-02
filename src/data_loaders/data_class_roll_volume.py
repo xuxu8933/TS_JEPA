@@ -78,6 +78,13 @@ def load_price_series(
         low_memory=False,
         sep=",",
     )
+    # Add moving average features
+    # df["MA5"] = df["Close"].rolling(window=5, min_periods=5).mean()
+    df["MA10"] = df["Close"].rolling(window=10, min_periods=10).mean()
+    df["MA50"] = df["Close"].rolling(window=50, min_periods=50).mean()
+
+    # Drop rows where MA is NaN
+    df = df.dropna().reset_index(drop=True)
 
     # Downcast float columns
     fcols = df.select_dtypes("float").columns

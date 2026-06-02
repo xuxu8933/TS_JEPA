@@ -316,26 +316,60 @@ def visualize_all_rolling_predictions_as_series(
     all_targets,
     config,
     save_dir="./results",
+    gru_preds=None,
 ):
     os.makedirs(save_dir, exist_ok=True)
 
-    pred_series = all_preds.reshape(-1)
+    tsjepa_series = all_preds.reshape(-1)
     target_series = all_targets.reshape(-1)
 
     plt.figure(figsize=(14, 5))
-    plt.plot(target_series, label="Ground Truth")
-    plt.plot(pred_series, label="Prediction")
+
+    plt.plot(
+        target_series,
+        label="Ground Truth",
+        linewidth=2,
+    )
+
+    plt.plot(
+        tsjepa_series,
+        label="TS-JEPA Prediction",
+        linewidth=2,
+    )
+
+    if gru_preds is not None:
+        gru_series = gru_preds.reshape(-1)
+
+        plt.plot(
+            gru_series,
+            label="GRU Prediction",
+            linewidth=2,
+            linestyle="--",
+        )
+
     plt.legend()
     plt.xlabel("Time index in test rolling prediction")
     plt.ylabel("Normalized price / return")
-    plt.title("All Rolling Forecasts: Prediction vs Ground Truth")
+
+    if gru_preds is not None:
+        plt.title("All Rolling Forecasts: TS-JEPA vs GRU vs Ground Truth")
+    else:
+        plt.title("All Rolling Forecasts: Prediction vs Ground Truth")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    save_path = os.path.join(
-        save_dir,
-        config["eval_type"] + f"_all_rolling_predictions_{timestamp}.png"
-    )
+    if gru_preds is not None:
+        file_name = (
+            config["eval_type"]
+            + f"_all_rolling_predictions_tsjepa_vs_gru_{timestamp}.png"
+        )
+    else:
+        file_name = (
+            config["eval_type"]
+            + f"_all_rolling_predictions_{timestamp}.png"
+        )
+
+    save_path = os.path.join(save_dir, file_name)
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
     plt.show()
@@ -1853,14 +1887,19 @@ if __name__ == "__main__":
     # =========================
     # Visualization 2:
     # Last point of each predicted patch
+    # TS-JEPA vs GRU
     # =========================
 
-    pred_last = all_preds[:, -1]
+    tsjepa_last = all_preds[:, -1]
+    gru_last = gru_preds[:, -1]
     true_last = all_targets[:, -1]
 
     plt.figure(figsize=(12, 5))
-    plt.plot(true_last, label="Ground Truth")
-    plt.plot(pred_last, label="Prediction")
+
+    plt.plot(true_last, label="Ground Truth", linewidth=2)
+    plt.plot(tsjepa_last, label="TS-JEPA Prediction", linewidth=2)
+    plt.plot(gru_last, label="GRU Prediction", linewidth=2, linestyle="--")
+
     plt.legend()
     plt.xlabel("Rolling evaluation step")
     plt.ylabel("Normalized price / return")
@@ -1869,13 +1908,13 @@ if __name__ == "__main__":
     last_point_png_path = (
         "./results/"
         + config["eval_type"]
-        + f"_rolling_last_point_test_{timestamp}.png"
+        + f"_rolling_last_point_tsjepa_vs_gru_test_{timestamp}.png"
     )
 
     plt.savefig(last_point_png_path, dpi=300, bbox_inches="tight")
     plt.show()
 
-    print(f"Rolling last-point figure saved to {last_point_png_path}")
+    print(f"Rolling last-point TS-JEPA vs GRU figure saved to {last_point_png_path}")
 
 
     # =========================
@@ -1922,6 +1961,7 @@ if __name__ == "__main__":
         all_preds=all_preds,
         all_targets=all_targets,
         config=config,
+        gru_preds=gru_preds,
     )
 
     # # =========================
