@@ -34,7 +34,7 @@ config = {
     "lr": 1e-03,
     "decoder_type": "residual_mlp",
     "decoder_hidden_dim": 128,
-    "decoder_num_layers": 1,
+    "decoder_num_layers": 2,
     "decoder_dropout": 0.1,
     "fine_tune_encoder": True,
     "encoder_finetune_lr": 1e-5,
