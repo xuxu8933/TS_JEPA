@@ -85,7 +85,18 @@ def load_rows(results_dir, stock_order, models):
     return pd.DataFrame(rows)
 
 
-def plot_metric(ax, df, stock_order, models, metric, ylabel, title, ylim=None):
+def plot_metric(
+    ax,
+    df,
+    stock_order,
+    models,
+    metric,
+    ylabel,
+    title,
+    ylim=None,
+    hide_zero_models=None,
+    reference_line=None,
+):
     pivot = (
         df.pivot_table(index="stock", columns="model", values=metric, aggfunc="first")
         .reindex(stock_order)
@@ -98,17 +109,28 @@ def plot_metric(ax, df, stock_order, models, metric, ylabel, title, ylim=None):
     for i, model in enumerate(models):
         if model not in pivot.columns:
             continue
+        values = pivot[model].copy()
+        if hide_zero_models and model in hide_zero_models:
+            values = values.mask(values == 0.0)
         offsets = [
             pos - group_width / 2 + width / 2 + i * width
             for pos in x
         ]
-        ax.bar(offsets, pivot[model].values, width=width, label=model)
+        ax.bar(offsets, values.values, width=width, label=model)
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(pivot.index, rotation=35, ha="right")
     ax.set_ylabel(ylabel)
     ax.set_title(title)
     ax.grid(axis="y", alpha=0.25)
+    if reference_line is not None:
+        ax.axhline(
+            reference_line,
+            color="black",
+            linestyle="--",
+            linewidth=1.0,
+            alpha=0.7,
+        )
     if ylim is not None:
         ax.set_ylim(*ylim)
 
@@ -139,15 +161,21 @@ def save_combined_plot(df, stock_order, models, output_path):
         "MAE",
         "Mean Absolute Error (lower is better)",
     )
+    trend_models = [
+        model
+        for model in models
+        if model not in {"naive_last", "mean_context"}
+    ]
     plot_metric(
         axes[2],
         df,
         stock_order,
-        models,
+        trend_models,
         "trend_accuracy",
         "Trend Accuracy",
         "Trend Accuracy (higher is better)",
         ylim=(0.0, 1.0),
+        reference_line=0.5,
     )
 
     handles, labels = axes[0].get_legend_handles_labels()
