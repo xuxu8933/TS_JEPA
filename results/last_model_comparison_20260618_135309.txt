@@ -1,0 +1,12 @@
+Data source: SP500
+Evaluation type: last
+Generated at: 20260618_135309
+
+Model Comparison
+model,mse,mae,trend_accuracy
+GRU,0.000310,0.012131,0.5123
+naive_last,0.000330,0.012788,0.0000
+drift,0.000357,0.013047,0.5410
+TS-JEPA,0.000362,0.013546,0.4959
+mean_context,0.002575,0.042777,0.0000
+previous_patch,0.007603,0.057908,0.4672

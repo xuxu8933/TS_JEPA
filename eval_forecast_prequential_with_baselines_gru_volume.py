@@ -3,8 +3,8 @@
     ---
     Impermanent-style downstream evaluation:
         - pretrain encoder checkpoint is loaded
-        - encoder is frozen
-        - decoder is trained only on train split
+        - encoder is frozen or fine-tuned depending on config
+        - decoder is trained on train split
         - validation is done on val split
         - final rolling evaluation is done on test split
 """
@@ -73,6 +73,10 @@ class GRUForecastModel(nn.Module):
         return pred
 
 warnings.filterwarnings("ignore")
+
+
+def data_title(config):
+    return str(config.get("data", "unknown")).upper()
 
 
 # =========================================================
@@ -351,9 +355,15 @@ def visualize_all_rolling_predictions_as_series(
     plt.ylabel("Normalized price / return")
 
     if gru_preds is not None:
-        plt.title("All Rolling Forecasts: TS-JEPA vs GRU vs Ground Truth")
+        plt.title(
+            f"{data_title(config)} - All Rolling Forecasts: "
+            "TS-JEPA vs GRU vs Ground Truth"
+        )
     else:
-        plt.title("All Rolling Forecasts: Prediction vs Ground Truth")
+        plt.title(
+            f"{data_title(config)} - All Rolling Forecasts: "
+            "Prediction vs Ground Truth"
+        )
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -678,7 +688,7 @@ def visualize_all_rolling_windows(
         plt.xlabel("Time index inside rolling window")
         plt.ylabel("Normalized price / return")
         plt.title(
-            f"Rolling Forecast Window #{sample_idx} "
+            f"{data_title(config)} - Rolling Forecast Window #{sample_idx} "
             f"with Baselines"
         )
 
@@ -766,7 +776,7 @@ def visualize_one_rolling_window(
     plt.legend()
     plt.xlabel("Time index inside rolling window")
     plt.ylabel("Normalized price / return")
-    plt.title(f"Rolling Forecast Window #{sample_idx}")
+    plt.title(f"{data_title(config)} - Rolling Forecast Window #{sample_idx}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     save_path = (
@@ -1084,12 +1094,16 @@ def save_model_comparison(
     config,
     save_dir="./results",
 ):
-    """Save and print a comparison table for TS-JEPA and baselines."""
+    """Save and print comparison tables for TS-JEPA and baselines."""
     os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     comparison_csv_path = os.path.join(
         save_dir,
         config["eval_type"] + f"_model_comparison_{timestamp}.csv",
+    )
+    comparison_txt_path = os.path.join(
+        save_dir,
+        config["eval_type"] + f"_model_comparison_{timestamp}.txt",
     )
 
     # Lower MSE is better; sort accordingly.
@@ -1104,7 +1118,26 @@ def save_model_comparison(
         writer.writeheader()
         writer.writerows(model_rows)
 
-    print("========== Model Comparison ==========")
+    lines = [
+        f"Data source: {data_title(config)}",
+        f"Evaluation type: {config['eval_type']}",
+        f"Generated at: {timestamp}",
+        "",
+        "Model Comparison",
+        "model,mse,mae,trend_accuracy",
+    ]
+    for row in model_rows:
+        lines.append(
+            f"{row['model']},"
+            f"{row['mse']:.6f},"
+            f"{row['mae']:.6f},"
+            f"{row['trend_accuracy']:.4f}"
+        )
+
+    with open(comparison_txt_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+
+    print(f"========== Model Comparison ({data_title(config)}) ==========")
     for row in model_rows:
         print(
             f"{row['model']}: "
@@ -1113,8 +1146,9 @@ def save_model_comparison(
             f"TrendAcc={row['trend_accuracy']:.4f}"
         )
     print(f"Model comparison saved to: {comparison_csv_path}")
+    print(f"Text comparison saved to: {comparison_txt_path}")
 
-    return comparison_csv_path
+    return comparison_csv_path, comparison_txt_path
 
 
 def visualize_model_comparison(model_rows, config, save_dir="./results"):
@@ -1138,7 +1172,7 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
     plt.bar(names, mses)
     plt.xticks(rotation=30, ha="right")
     plt.ylabel("MSE")
-    plt.title("Prequential Rolling Evaluation: MSE Comparison")
+    plt.title(f"{data_title(config)} - Prequential Rolling Evaluation: MSE Comparison")
     plt.tight_layout()
     mse_png_path = os.path.join(
         save_dir,
@@ -1151,7 +1185,7 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
     plt.bar(names, maes)
     plt.xticks(rotation=30, ha="right")
     plt.ylabel("MAE")
-    plt.title("Prequential Rolling Evaluation: MAE Comparison")
+    plt.title(f"{data_title(config)} - Prequential Rolling Evaluation: MAE Comparison")
     plt.tight_layout()
     mae_png_path = os.path.join(
         save_dir,
@@ -1165,7 +1199,10 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
     plt.xticks(rotation=30, ha="right")
     plt.ylabel("Trend Accuracy")
     plt.ylim(0.0, 1.0)
-    plt.title("Prequential Rolling Evaluation: Trend Accuracy Comparison")
+    plt.title(
+        f"{data_title(config)} - Prequential Rolling Evaluation: "
+        "Trend Accuracy Comparison"
+    )
     plt.tight_layout()
     trend_png_path = os.path.join(
         save_dir,
@@ -1950,7 +1987,7 @@ if __name__ == "__main__":
         all_targets=all_targets,
     )
 
-    print("========== Final Test ==========")
+    print(f"========== Final Test ({data_title(config)}) ==========")
     print("TS-JEPA Test MSE is: {:.6f}".format(test_mse))
     print("TS-JEPA Test MAE is: {:.6f}".format(test_mae))
     print("TS-JEPA Trend Accuracy is: {:.4f}".format(trend_accuracy))
@@ -1970,7 +2007,7 @@ if __name__ == "__main__":
         all_targets=gru_targets,
     )
 
-    print("========== GRU Final Test ==========")
+    print(f"========== GRU Final Test ({data_title(config)}) ==========")
     print("GRU Test MSE is: {:.6f}".format(gru_test_mse))
     print("GRU Test MAE is: {:.6f}".format(gru_test_mae))
     print("GRU Trend Accuracy is: {:.4f}".format(gru_trend_accuracy))
@@ -2011,7 +2048,7 @@ if __name__ == "__main__":
         },
     ] + baseline_summary_rows
 
-    comparison_csv_path = save_model_comparison(
+    comparison_paths = save_model_comparison(
         model_rows=model_comparison_rows,
         config=config,
         save_dir="./results",
@@ -2037,7 +2074,7 @@ if __name__ == "__main__":
     plt.legend()
     plt.xlabel("Rolling evaluation step")
     plt.ylabel("Error")
-    plt.title("Rolling Forecast Error over Time")
+    plt.title(f"{data_title(config)} - Rolling Forecast Error over Time")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     metric_png_path = (
@@ -2071,7 +2108,10 @@ if __name__ == "__main__":
     plt.legend()
     plt.xlabel("Rolling evaluation step")
     plt.ylabel("Normalized price / return")
-    plt.title("Rolling Forecast: Last Point of Each Predicted Patch")
+    plt.title(
+        f"{data_title(config)} - Rolling Forecast: "
+        "Last Point of Each Predicted Patch"
+    )
 
     last_point_png_path = (
         "./results/"
