@@ -1,0 +1,12 @@
+Data source: WMT
+Evaluation type: last
+Generated at: 20260618_205324
+
+Model Comparison
+model,mse,mae,trend_accuracy
+GRU,0.001056,0.022220,0.4426
+naive_last,0.001058,0.022631,0.0082
+drift,0.001129,0.023007,0.4672
+TS-JEPA,0.001157,0.024099,0.5205
+mean_context,0.003408,0.046683,0.0082
+previous_patch,0.046363,0.112037,0.4918

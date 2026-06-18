@@ -21,7 +21,7 @@ SENTIMENT_COLS = [
 
 def get_alpaca_key_id():
     return (
-        os.getenv("APCA_API_KEY_ID")
+        os.getenv("APCA_API_KEY_ID","PKVZUBDKIRV2XKZ4RFYYHDVYNZ")
         or os.getenv("APCA_API_KEY")
         or os.getenv("ALPACA_API_KEY_ID")
         or os.getenv("ALPACA_API_KEY")
@@ -30,7 +30,7 @@ def get_alpaca_key_id():
 
 def get_alpaca_secret_key():
     return (
-        os.getenv("APCA_API_SECRET_KEY")
+        os.getenv("APCA_API_SECRET_KEY","FuAgHuCta1Jr17FyHDBaiHfdbFDdDa1bbZ7bYmWKUQdy")
         or os.getenv("APCA_API_SECRET")
         or os.getenv("ALPACA_API_SECRET_KEY")
         or os.getenv("ALPACA_API_SECRET")

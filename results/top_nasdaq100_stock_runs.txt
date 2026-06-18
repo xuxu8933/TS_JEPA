@@ -1,9 +1,16 @@
 Top NASDAQ-100 stock workflow
-stocks=TSLA,GOOG,WMT
+stocks=NVDA,AAPL,MSFT,AMZN,GOOGL,AVGO,META,TSLA,GOOG,WMT
 start_date=2015-01-01
 end_date=2026-06-18
 eval_num_epochs=501
 
+NVDA: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data NVDA --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+AAPL: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data AAPL --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+MSFT: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data MSFT --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+AMZN: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data AMZN --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+GOOGL: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data GOOGL --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+AVGO: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data AVGO --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+META: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data META --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
 TSLA: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data TSLA --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
 GOOG: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data GOOG --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
 WMT: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data WMT --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000

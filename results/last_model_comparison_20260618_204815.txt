@@ -1,0 +1,12 @@
+Data source: AVGO
+Evaluation type: last
+Generated at: 20260618_204815
+
+Model Comparison
+model,mse,mae,trend_accuracy
+naive_last,0.003969,0.043561,0.0000
+drift,0.004182,0.043771,0.5164
+GRU,0.004288,0.047574,0.5615
+TS-JEPA,0.004913,0.050917,0.5492
+mean_context,0.027887,0.137868,0.0000
+previous_patch,0.072889,0.177324,0.4836

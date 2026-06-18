@@ -29,6 +29,15 @@ DEFAULT_MODELS = [
     "previous_patch",
 ]
 
+MODEL_COLORS = {
+    "TS-JEPA": "tab:blue",
+    "GRU": "tab:orange",
+    "naive_last": "tab:green",
+    "drift": "tab:red",
+    "mean_context": "tab:purple",
+    "previous_patch": "tab:brown",
+}
+
 
 def parse_data_source(txt_path):
     with txt_path.open() as f:
@@ -96,6 +105,7 @@ def plot_metric(
     ylim=None,
     hide_zero_models=None,
     reference_line=None,
+    model_colors=None,
 ):
     pivot = (
         df.pivot_table(index="stock", columns="model", values=metric, aggfunc="first")
@@ -116,7 +126,8 @@ def plot_metric(
             pos - group_width / 2 + width / 2 + i * width
             for pos in x
         ]
-        ax.bar(offsets, values.values, width=width, label=model)
+        color = model_colors.get(model) if model_colors else None
+        ax.bar(offsets, values.values, width=width, label=model, color=color)
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(pivot.index, rotation=35, ha="right")
@@ -151,6 +162,7 @@ def save_combined_plot(df, stock_order, models, output_path):
         "mse",
         "MSE",
         "Mean Squared Error (lower is better)",
+        model_colors=MODEL_COLORS,
     )
     plot_metric(
         axes[1],
@@ -160,6 +172,7 @@ def save_combined_plot(df, stock_order, models, output_path):
         "mae",
         "MAE",
         "Mean Absolute Error (lower is better)",
+        model_colors=MODEL_COLORS,
     )
     trend_models = [
         model
@@ -176,6 +189,7 @@ def save_combined_plot(df, stock_order, models, output_path):
         "Trend Accuracy (higher is better)",
         ylim=(0.0, 1.0),
         reference_line=0.5,
+        model_colors=MODEL_COLORS,
     )
 
     handles, labels = axes[0].get_legend_handles_labels()
