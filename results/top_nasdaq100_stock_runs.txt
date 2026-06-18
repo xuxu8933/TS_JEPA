@@ -1,0 +1,9 @@
+Top NASDAQ-100 stock workflow
+stocks=TSLA,GOOG,WMT
+start_date=2015-01-01
+end_date=2026-06-18
+eval_num_epochs=501
+
+TSLA: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data TSLA --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+GOOG: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data GOOG --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000
+WMT: /home/xujiang/miniconda3/envs/ts-jepa/bin/python -u pretrain_wm.py --data WMT --run-eval --num_epochs 2001 --eval-num-epochs 501 --eval-checkpoint-to-use 2000

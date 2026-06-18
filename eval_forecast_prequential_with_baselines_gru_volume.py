@@ -381,7 +381,7 @@ def visualize_all_rolling_predictions_as_series(
     save_path = os.path.join(save_dir, file_name)
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
     print(f"All rolling prediction figure saved to {save_path}")
 
@@ -786,7 +786,7 @@ def visualize_one_rolling_window(
     )
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
     print(f"Rolling window figure saved to {save_path}")
 
@@ -1179,7 +1179,7 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
         config["eval_type"] + f"_model_comparison_mse_{timestamp}.png",
     )
     plt.savefig(mse_png_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
     plt.figure(figsize=(10, 5))
     plt.bar(names, maes)
@@ -1192,7 +1192,7 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
         config["eval_type"] + f"_model_comparison_mae_{timestamp}.png",
     )
     plt.savefig(mae_png_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
     plt.figure(figsize=(10, 5))
     plt.bar(trend_names, trend_accs)
@@ -1209,7 +1209,7 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
         config["eval_type"] + f"_model_comparison_trend_accuracy_{timestamp}.png",
     )
     plt.savefig(trend_png_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
     print(f"MSE comparison figure saved to: {mse_png_path}")
     print(f"MAE comparison figure saved to: {mae_png_path}")
@@ -2084,7 +2084,7 @@ if __name__ == "__main__":
     )
 
     plt.savefig(metric_png_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
     print(f"Rolling metric figure saved to {metric_png_path}")
 
@@ -2120,7 +2120,7 @@ if __name__ == "__main__":
     )
 
     plt.savefig(last_point_png_path, dpi=300, bbox_inches="tight")
-    plt.show()
+    plt.close()
 
     print(f"Rolling last-point TS-JEPA vs GRU figure saved to {last_point_png_path}")
 

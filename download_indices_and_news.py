@@ -6,6 +6,7 @@ import pandas as pd
 import yfinance as yf
 
 from news_read import (
+    SENTIMENT_COLS,
     aggregate_daily_sentiment,
     append_existing_news,
     collect_alpaca_news,
@@ -30,6 +31,19 @@ INDEX_CONFIGS = {
     },
 }
 
+TOP_NASDAQ100_STOCKS = [
+    "NVDA",
+    "AAPL",
+    "MSFT",
+    "AMZN",
+    "GOOGL",
+    "AVGO",
+    "META",
+    "TSLA",
+    "GOOG",
+    "WMT",
+]
+
 
 def _flatten_yfinance_columns(df):
     if hasattr(df.columns, "nlevels") and df.columns.nlevels > 1:
@@ -37,10 +51,10 @@ def _flatten_yfinance_columns(df):
     return df
 
 
-def download_index_prices(index_name, cfg, start_date, end_date):
-    save_dir = Path("data") / index_name
+def download_symbol_prices(data_name, price_symbol, start_date, end_date):
+    save_dir = Path("data") / data_name
     save_dir.mkdir(parents=True, exist_ok=True)
-    price_path = save_dir / f"{index_name}.csv"
+    price_path = save_dir / f"{data_name}.csv"
 
     # yfinance treats end as exclusive, so include the requested end date.
     yf_end_date = (
@@ -48,7 +62,7 @@ def download_index_prices(index_name, cfg, start_date, end_date):
     ).date().isoformat()
 
     df = yf.download(
-        cfg["price_symbol"],
+        price_symbol,
         start=start_date,
         end=yf_end_date,
         auto_adjust=False,
@@ -57,7 +71,7 @@ def download_index_prices(index_name, cfg, start_date, end_date):
 
     if df.empty:
         raise RuntimeError(
-            f"No price data returned for {cfg['price_symbol']} "
+            f"No price data returned for {price_symbol} "
             f"from {start_date} to {end_date}."
         )
 
@@ -69,7 +83,7 @@ def download_index_prices(index_name, cfg, start_date, end_date):
     df.to_csv(price_path, index=False, lineterminator="\n")
 
     print(
-        f"Saved {index_name} prices from {df['Date'].min()} "
+        f"Saved {data_name} prices from {df['Date'].min()} "
         f"to {df['Date'].max()} at {price_path} ({len(df)} rows)",
         flush=True,
     )
@@ -77,12 +91,30 @@ def download_index_prices(index_name, cfg, start_date, end_date):
     return price_path
 
 
-def collect_index_news(index_name, cfg, args):
+def download_index_prices(index_name, cfg, start_date, end_date):
+    return download_symbol_prices(
+        data_name=index_name,
+        price_symbol=cfg["price_symbol"],
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+
+def ensure_zero_sentiment_columns(price_path):
+    price_df = pd.read_csv(price_path)
+    for col in SENTIMENT_COLS:
+        if col not in price_df.columns:
+            price_df[col] = 0.0
+    price_df.to_csv(price_path, index=False, lineterminator="\n")
+    print(f"Ensured zero sentiment columns in {price_path}", flush=True)
+
+
+def collect_symbol_news(data_name, news_symbol, gdelt_query, args):
     if args.news_source == "alpaca":
         return collect_alpaca_news(
             api_key_id=args.alpaca_key_id,
             secret_key=args.alpaca_secret_key,
-            ticker=cfg["news_symbol"],
+            ticker=news_symbol,
             start_date=args.start_date,
             end_date=args.end_date,
             chunk_days=args.news_chunk_days,
@@ -96,11 +128,11 @@ def collect_index_news(index_name, cfg, args):
 
     if args.news_source == "gdelt":
         return collect_gdelt_news(
-            ticker=cfg["news_symbol"],
+            ticker=news_symbol,
             start_date=args.start_date,
             end_date=args.end_date,
             chunk_days=args.news_chunk_days,
-            query=cfg["gdelt_query"],
+            query=gdelt_query,
             max_records=args.gdelt_max_records,
             timeout=args.request_timeout,
             request_retries=args.request_retries,
@@ -111,16 +143,25 @@ def collect_index_news(index_name, cfg, args):
     raise ValueError(f"Unsupported news source: {args.news_source}")
 
 
-def save_index_news_and_sentiment(index_name, price_path, news_df, args):
-    save_dir = Path("data") / index_name
-    news_path = save_dir / f"{index_name}_news_with_sentiment.csv"
-    daily_path = save_dir / f"{index_name}_daily_sentiment.csv"
+def collect_index_news(index_name, cfg, args):
+    return collect_symbol_news(
+        data_name=index_name,
+        news_symbol=cfg["news_symbol"],
+        gdelt_query=cfg["gdelt_query"],
+        args=args,
+    )
+
+
+def save_symbol_news_and_sentiment(data_name, price_path, news_df, args):
+    save_dir = Path("data") / data_name
+    news_path = save_dir / f"{data_name}_news_with_sentiment.csv"
+    daily_path = save_dir / f"{data_name}_daily_sentiment.csv"
 
     if args.max_news_articles is not None:
         news_df = news_df.sort_values("datetime").tail(args.max_news_articles)
         print(
             f"Keeping the most recent {len(news_df)} articles for "
-            f"{index_name} because --max-news-articles was set.",
+            f"{data_name} because --max-news-articles was set.",
             flush=True,
         )
 
@@ -139,11 +180,15 @@ def save_index_news_and_sentiment(index_name, price_path, news_df, args):
     daily_sentiment.to_csv(daily_path, index=False, lineterminator="\n")
     nonzero_rows = merge_sentiment_into_price(price_path, daily_sentiment)
 
-    print(f"Saved {index_name} scored news: {news_path}", flush=True)
-    print(f"Saved {index_name} daily sentiment: {daily_path}", flush=True)
+    print(f"Saved {data_name} scored news: {news_path}", flush=True)
+    print(f"Saved {data_name} daily sentiment: {daily_path}", flush=True)
     print(f"Merged sentiment into {price_path}; non-zero rows={nonzero_rows}", flush=True)
 
     return news_path, daily_path
+
+
+def save_index_news_and_sentiment(index_name, price_path, news_df, args):
+    return save_symbol_news_and_sentiment(index_name, price_path, news_df, args)
 
 
 def parse_args():
@@ -158,6 +203,22 @@ def parse_args():
         nargs="+",
         choices=["NASDAQ100", "SP500"],
         default=["NASDAQ100", "SP500"],
+    )
+    parser.add_argument(
+        "--skip-indices",
+        action="store_true",
+        help="Do not process NASDAQ100/SP500 index datasets.",
+    )
+    parser.add_argument(
+        "--stocks",
+        nargs="+",
+        default=[],
+        help="Individual stock tickers to download into data/TICKER/TICKER.csv.",
+    )
+    parser.add_argument(
+        "--top-nasdaq100-stocks",
+        action="store_true",
+        help="Download the current top 10 NASDAQ-100/QQQ holdings used by this project.",
     )
     parser.add_argument("--start-date", default="2015-01-01")
     parser.add_argument("--end-date", default=date.today().isoformat())
@@ -204,8 +265,12 @@ def parse_args():
 
 def main():
     args = parse_args()
+    stock_symbols = [symbol.upper() for symbol in args.stocks]
+    if args.top_nasdaq100_stocks:
+        stock_symbols.extend(TOP_NASDAQ100_STOCKS)
+    stock_symbols = list(dict.fromkeys(stock_symbols))
 
-    for index_name in args.indices:
+    for index_name in ([] if args.skip_indices else args.indices):
         cfg = INDEX_CONFIGS[index_name]
         print("=" * 80, flush=True)
         print(
@@ -231,11 +296,48 @@ def main():
             )
 
         if args.skip_news:
+            ensure_zero_sentiment_columns(price_path)
             continue
 
         news_df = collect_index_news(index_name, cfg, args)
         print(f"Collected {len(news_df)} deduplicated news rows for {index_name}", flush=True)
         save_index_news_and_sentiment(index_name, price_path, news_df, args)
+
+    for symbol in stock_symbols:
+        print("=" * 80, flush=True)
+        print(
+            f"Preparing stock {symbol}: prices={symbol}, news={symbol}, "
+            f"date_range={args.start_date}..{args.end_date}",
+            flush=True,
+        )
+
+        price_path = Path("data") / symbol / f"{symbol}.csv"
+        if args.skip_prices:
+            if not price_path.exists():
+                raise FileNotFoundError(
+                    f"Cannot use --skip-prices because {price_path} does not exist."
+                )
+            print(f"Using existing price file: {price_path}", flush=True)
+        else:
+            price_path = download_symbol_prices(
+                data_name=symbol,
+                price_symbol=symbol,
+                start_date=args.start_date,
+                end_date=args.end_date,
+            )
+
+        if args.skip_news:
+            ensure_zero_sentiment_columns(price_path)
+            continue
+
+        news_df = collect_symbol_news(
+            data_name=symbol,
+            news_symbol=symbol,
+            gdelt_query=f"({symbol}) sourcelang:english",
+            args=args,
+        )
+        print(f"Collected {len(news_df)} deduplicated news rows for {symbol}", flush=True)
+        save_symbol_news_and_sentiment(symbol, price_path, news_df, args)
 
 
 if __name__ == "__main__":
