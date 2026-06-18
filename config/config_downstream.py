@@ -14,7 +14,13 @@ config = {
         "Volume",
         "MA10",
         "MA50",
+        "sentiment_mean",
     ],
+    "sentiment_path": "./NVDA_daily_sentiment.csv",
+    "train_end_date": "2024-12-31",
+    "test_start_date": "2025-01-01",
+    "validation_fraction": 0.05,
+    "test_fraction": 0.15,
     # Printing and Logging settings
     "checkpoint_print": 20,
 
@@ -26,6 +32,16 @@ config = {
     "num_epochs": 501,
     "batch_size" : 32,
     "lr": 1e-03,
+    "decoder_type": "residual_mlp",
+    "decoder_hidden_dim": 128,
+    "decoder_num_layers": 1,
+    "decoder_dropout": 0.1,
+    "fine_tune_encoder": True,
+    "encoder_finetune_lr": 1e-5,
+    "trend_weight": 0.001,
+    "trend_loss_temperature": 0.01,
+    "trend_loss_threshold": 1e-5,
+    "trend_selection_weight": 0.0005,
 
     # CNN Model
     "cnn_out_channels": [32, 64, 128],

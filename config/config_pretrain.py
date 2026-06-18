@@ -10,7 +10,13 @@ config = {
         "Volume",
         "MA10",
         "MA50",
+        "sentiment_mean",
     ],
+    "sentiment_path": "./NVDA_daily_sentiment.csv",
+    "train_end_date": "2024-12-31",
+    "test_start_date": "2025-01-01",
+    "validation_fraction": 0.05,
+    "test_fraction": 0.15,
     "target_feature_index": 0,
 
     "wandb_project_name": "",

@@ -12,7 +12,6 @@
 from config.config_downstream import config
 
 import torch
-import logging
 import warnings
 import numpy as np
 import random
@@ -26,7 +25,7 @@ from main.utils import mse, mae
 
 from src.data_loaders.data_loader_roll_volume import get_evaluation_loaders
 from src.models.encoder import Encoder
-from src.models.decoder import LinearDecoder
+from src.models.decoder import LinearDecoder, MLPDecoder, ResidualMLPDecoder
 
 import torch.nn as nn
 
@@ -799,6 +798,38 @@ def get_context_embedding(encoded_patches, eval_type):
         raise ValueError(f"Unknown eval_type: {eval_type}")
 
 
+def build_decoder(config, patch_size):
+    decoder_type = config.get("decoder_type", "linear")
+
+    if decoder_type == "linear":
+        return LinearDecoder(
+            emb_dim=config["pretrain_encoder_embed_dim"],
+            patch_size=patch_size,
+        )
+
+    if decoder_type == "mlp":
+        return MLPDecoder(
+            emb_dim=config["pretrain_encoder_embed_dim"],
+            patch_size=patch_size,
+            hidden_dim=int(config.get("decoder_hidden_dim", 256)),
+            num_layers=int(config.get("decoder_num_layers", 2)),
+            dropout=float(config.get("decoder_dropout", 0.1)),
+        )
+
+    if decoder_type == "residual_mlp":
+        return ResidualMLPDecoder(
+            emb_dim=config["pretrain_encoder_embed_dim"],
+            patch_size=patch_size,
+            hidden_dim=int(config.get("decoder_hidden_dim", 128)),
+            dropout=float(config.get("decoder_dropout", 0.1)),
+        )
+
+    raise ValueError(
+        f"Unknown decoder_type={decoder_type!r}. "
+        "Use 'linear', 'mlp', or 'residual_mlp'."
+    )
+
+
 
 def _maybe_get_dataset_index(dataset, sample_idx, eval_stride, horizon_step):
     """
@@ -1087,7 +1118,7 @@ def save_model_comparison(
 
 
 def visualize_model_comparison(model_rows, config, save_dir="./results"):
-    """Bar plots for MSE and MAE of TS-JEPA vs baselines."""
+    """Bar plots for MSE, MAE, and trend accuracy of TS-JEPA vs baselines."""
     os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
@@ -1095,6 +1126,13 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
     names = [row["model"] for row in model_rows]
     mses = [row["mse"] for row in model_rows]
     maes = [row["mae"] for row in model_rows]
+    trend_rows = sorted(
+        model_rows,
+        key=lambda row: row["trend_accuracy"],
+        reverse=True,
+    )
+    trend_names = [row["model"] for row in trend_rows]
+    trend_accs = [row["trend_accuracy"] for row in trend_rows]
 
     plt.figure(figsize=(10, 5))
     plt.bar(names, mses)
@@ -1122,10 +1160,25 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
     plt.savefig(mae_png_path, dpi=300, bbox_inches="tight")
     plt.show()
 
+    plt.figure(figsize=(10, 5))
+    plt.bar(trend_names, trend_accs)
+    plt.xticks(rotation=30, ha="right")
+    plt.ylabel("Trend Accuracy")
+    plt.ylim(0.0, 1.0)
+    plt.title("Prequential Rolling Evaluation: Trend Accuracy Comparison")
+    plt.tight_layout()
+    trend_png_path = os.path.join(
+        save_dir,
+        config["eval_type"] + f"_model_comparison_trend_accuracy_{timestamp}.png",
+    )
+    plt.savefig(trend_png_path, dpi=300, bbox_inches="tight")
+    plt.show()
+
     print(f"MSE comparison figure saved to: {mse_png_path}")
     print(f"MAE comparison figure saved to: {mae_png_path}")
+    print(f"Trend accuracy comparison figure saved to: {trend_png_path}")
 
-    return mse_png_path, mae_png_path
+    return mse_png_path, mae_png_path, trend_png_path
 
 def prequential_rolling_evaluate(
     encoder,
@@ -1388,6 +1441,35 @@ def compute_trend_accuracy(all_preds, all_targets):
     return float(trend_accuracy)
 
 
+def directional_auxiliary_loss(
+    predicted_patch,
+    target_patch,
+    temperature=0.01,
+    threshold=0.0,
+):
+    """
+    Differentiable direction loss for within-patch trend.
+
+    It encourages predicted consecutive differences to have the same sign as
+    the true consecutive differences. Near-zero true moves can be ignored with
+    threshold to avoid training hard on noise.
+    """
+    if predicted_patch.shape[1] < 2:
+        return predicted_patch.new_tensor(0.0)
+
+    pred_diff = predicted_patch[:, 1:] - predicted_patch[:, :-1]
+    true_diff = target_patch[:, 1:] - target_patch[:, :-1]
+
+    valid_mask = true_diff.abs() > threshold
+    if not valid_mask.any():
+        return predicted_patch.new_tensor(0.0)
+
+    true_sign = torch.sign(true_diff[valid_mask])
+    pred_scaled = pred_diff[valid_mask] / max(float(temperature), 1e-8)
+
+    return torch.nn.functional.softplus(-true_sign * pred_scaled).mean()
+
+
 if __name__ == "__main__":
     set_seed(42)
 
@@ -1413,6 +1495,11 @@ if __name__ == "__main__":
     # These should match your pretraining patch setting.
     patch_size = int(config.get("patch_size", 5))
     feature_cols = config.get("feature_cols", ["Close", "Volume"])
+    sentiment_path = config.get("sentiment_path", None)
+    train_end_date = config.get("train_end_date", None)
+    test_start_date = config.get("test_start_date", None)
+    validation_fraction = config.get("validation_fraction", 0.05)
+    test_fraction = config.get("test_fraction", 0.30)
     feature_dim = len(feature_cols)
     target_feature_index = int(config.get("target_feature_index", 0))  # Close index in feature_cols
 
@@ -1422,8 +1509,19 @@ if __name__ == "__main__":
     config["target_feature_index"] = target_feature_index
 
     print("feature_cols =", feature_cols)
+    print("sentiment_path =", sentiment_path)
+    print("train_end_date =", train_end_date)
+    print("test_start_date =", test_start_date)
+    print("validation_fraction =", validation_fraction)
+    print("test_fraction =", test_fraction)
     print("feature_dim =", feature_dim)
     print("target_feature_index =", target_feature_index)
+    print("trend_weight =", config.get("trend_weight", 0.0))
+    print("trend_loss_temperature =", config.get("trend_loss_temperature", 0.01))
+    print("trend_loss_threshold =", config.get("trend_loss_threshold", 0.0))
+    print("trend_selection_weight =", config.get("trend_selection_weight", 0.0))
+    print("fine_tune_encoder =", config.get("fine_tune_encoder", False))
+    print("encoder_finetune_lr =", config.get("encoder_finetune_lr", 1e-5))
 
     # Number of context patches for downstream forecasting.
     # For example:
@@ -1449,6 +1547,11 @@ if __name__ == "__main__":
         stride=eval_stride,
         normalize=True,
         feature_cols=feature_cols,
+        sentiment_path=sentiment_path,
+        validation_fraction=validation_fraction,
+        test_fraction=test_fraction,
+        train_end_date=train_end_date,
+        test_start_date=test_start_date,
     )
 
     val_loader = get_evaluation_loaders(
@@ -1462,6 +1565,11 @@ if __name__ == "__main__":
         stride=eval_stride,
         normalize=True,
         feature_cols=feature_cols,
+        sentiment_path=sentiment_path,
+        validation_fraction=validation_fraction,
+        test_fraction=test_fraction,
+        train_end_date=train_end_date,
+        test_start_date=test_start_date,
     )
 
     test_loader = get_evaluation_loaders(
@@ -1475,6 +1583,11 @@ if __name__ == "__main__":
         stride=eval_stride,
         normalize=True,
         feature_cols=feature_cols,
+        sentiment_path=sentiment_path,
+        validation_fraction=validation_fraction,
+        test_fraction=test_fraction,
+        train_end_date=train_end_date,
+        test_start_date=test_start_date,
     )
 
     sample_context, sample_target = train_loader.dataset[0]
@@ -1503,10 +1616,14 @@ if __name__ == "__main__":
         jepa=True,
     )
 
-    decoder = LinearDecoder(
-        emb_dim=config["pretrain_encoder_embed_dim"],
-        patch_size=patch_size,
-    )
+    decoder = build_decoder(config, patch_size)
+
+    print("decoder_type =", config.get("decoder_type", "linear"))
+    if config.get("decoder_type", "linear") in ("mlp", "residual_mlp"):
+        print("decoder_hidden_dim =", config.get("decoder_hidden_dim", 256))
+        print("decoder_dropout =", config.get("decoder_dropout", 0.1))
+    if config.get("decoder_type", "linear") == "mlp":
+        print("decoder_num_layers =", config.get("decoder_num_layers", 2))
 
     encoder.to(device)
     decoder.to(device)
@@ -1553,17 +1670,30 @@ if __name__ == "__main__":
 
     print("Pretrained encoder loaded")
 
-    # Freeze encoder
+    fine_tune_encoder = bool(config.get("fine_tune_encoder", False))
+    encoder_finetune_lr = float(config.get("encoder_finetune_lr", 1e-5))
+
     for p in encoder.parameters():
-        p.requires_grad = False
+        p.requires_grad = fine_tune_encoder
 
-    encoder.eval()
-
-    # Train only decoder
-    optimizer = torch.optim.AdamW(
-        decoder.parameters(),
-        lr=config["lr"],
-    )
+    if fine_tune_encoder:
+        optimizer = torch.optim.AdamW(
+            [
+                {"params": encoder.parameters(), "lr": encoder_finetune_lr},
+                {"params": decoder.parameters(), "lr": config["lr"]},
+            ],
+        )
+        print(
+            "Fine-tuning encoder during downstream training "
+            f"(encoder lr={encoder_finetune_lr}, decoder lr={config['lr']})"
+        )
+    else:
+        encoder.eval()
+        optimizer = torch.optim.AdamW(
+            decoder.parameters(),
+            lr=config["lr"],
+        )
+        print("Encoder frozen during downstream training")
 
     # =========================
     # Train decoder
@@ -1572,17 +1702,30 @@ if __name__ == "__main__":
     print("Start downstream decoder training")
 
     loss_history = []
+    mse_loss_history = []
+    trend_loss_history = []
     val_mse_history = []
     val_mae_history = []
+    val_trend_history = []
 
-    best_val_mse = float("inf")
+    best_val_score = float("inf")
+    best_encoder_state = None
     best_decoder_state = None
+    trend_weight = float(config.get("trend_weight", 0.0))
+    trend_loss_temperature = float(config.get("trend_loss_temperature", 0.01))
+    trend_loss_threshold = float(config.get("trend_loss_threshold", 0.0))
+    trend_selection_weight = float(config.get("trend_selection_weight", 0.0))
 
     for epoch in range(config["num_epochs"]):
-        encoder.eval()
+        if fine_tune_encoder:
+            encoder.train()
+        else:
+            encoder.eval()
         decoder.train()
 
         total_loss = 0.0
+        total_mse_loss = 0.0
+        total_trend_loss = 0.0
 
         for context_patches, target_patch in train_loader:
             optimizer.zero_grad()
@@ -1596,8 +1739,11 @@ if __name__ == "__main__":
                 target_feature_index=target_feature_index,
             )
 
-            with torch.no_grad():
+            if fine_tune_encoder:
                 encoded_patches = encoder(context_patches)
+            else:
+                with torch.no_grad():
+                    encoded_patches = encoder(context_patches)
 
             context_embedding = get_context_embedding(
                 encoded_patches,
@@ -1612,15 +1758,12 @@ if __name__ == "__main__":
                 reduction="mean",
             )
 
-            pred_diff = predicted_next_patch[:, 1:] - predicted_next_patch[:, :-1]
-            true_diff = target_patch[:, 1:] - target_patch[:, :-1]
-
-            trend_loss = torch.relu(
-                -pred_diff * true_diff
-            ).mean()
-
-            # You can change this weight later.
-            trend_weight = config.get("trend_weight", 0.0)
+            trend_loss = directional_auxiliary_loss(
+                predicted_patch=predicted_next_patch,
+                target_patch=target_patch,
+                temperature=trend_loss_temperature,
+                threshold=trend_loss_threshold,
+            )
 
             loss = mse_loss + trend_weight * trend_loss
 
@@ -1628,27 +1771,43 @@ if __name__ == "__main__":
             optimizer.step()
 
             total_loss += loss.item()
+            total_mse_loss += mse_loss.item()
+            total_trend_loss += trend_loss.item()
 
         avg_train_loss = total_loss / len(train_loader)
+        avg_train_mse_loss = total_mse_loss / len(train_loader)
+        avg_train_trend_loss = total_trend_loss / len(train_loader)
         loss_history.append(avg_train_loss)
+        mse_loss_history.append(avg_train_mse_loss)
+        trend_loss_history.append(avg_train_trend_loss)
 
         # =========================
         # Validation
         # =========================
 
-        val_mse, val_mae, _, _ = evaluate_model(
+        val_mse, val_mae, val_preds, val_targets = evaluate_model(
             encoder=encoder,
             decoder=decoder,
             loader=val_loader,
             device=device,
             eval_type=config["eval_type"],
         )
+        val_trend_acc = compute_trend_accuracy(
+            all_preds=val_preds,
+            all_targets=val_targets,
+        )
+        val_score = val_mse + trend_selection_weight * (1.0 - val_trend_acc)
 
         val_mse_history.append(val_mse)
         val_mae_history.append(val_mae)
+        val_trend_history.append(val_trend_acc)
 
-        if val_mse < best_val_mse:
-            best_val_mse = val_mse
+        if val_score < best_val_score:
+            best_val_score = val_score
+            best_encoder_state = {
+                k: v.detach().cpu().clone()
+                for k, v in encoder.state_dict().items()
+            }
             best_decoder_state = {
                 k: v.detach().cpu().clone()
                 for k, v in decoder.state_dict().items()
@@ -1658,11 +1817,17 @@ if __name__ == "__main__":
             print(
                 f"Epoch {epoch}: "
                 f"train_loss={avg_train_loss:.6f}, "
+                f"mse_loss={avg_train_mse_loss:.6f}, "
+                f"trend_loss={avg_train_trend_loss:.6f}, "
                 f"val_mse={val_mse:.6f}, "
-                f"val_mae={val_mae:.6f}"
+                f"val_mae={val_mae:.6f}, "
+                f"val_trend_acc={val_trend_acc:.4f}"
             )
 
     # Restore best decoder
+    if best_encoder_state is not None:
+        encoder.load_state_dict(best_encoder_state)
+        encoder.to(device)
     if best_decoder_state is not None:
         decoder.load_state_dict(best_decoder_state)
         decoder.to(device)
@@ -1674,13 +1839,16 @@ if __name__ == "__main__":
     save_path = "./results/loss.txt"
 
     with open(save_path, "w") as f:
-        f.write("epoch,train_loss,val_mse,val_mae\n")
+        f.write("epoch,train_loss,mse_loss,trend_loss,val_mse,val_mae,val_trend_acc\n")
         for epoch in range(len(loss_history)):
             f.write(
                 f"{epoch},"
                 f"{loss_history[epoch]},"
+                f"{mse_loss_history[epoch]},"
+                f"{trend_loss_history[epoch]},"
                 f"{val_mse_history[epoch]},"
-                f"{val_mae_history[epoch]}\n"
+                f"{val_mae_history[epoch]},"
+                f"{val_trend_history[epoch]}\n"
             )
 
     print(f"Loss saved to {save_path}")

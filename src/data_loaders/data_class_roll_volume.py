@@ -1,10 +1,21 @@
+import os
 import pandas as pd
 import torch
 import random
 from torch.utils.data import Dataset
 
 
-def cumulative_return_normalize_with_base(series, base, eps=1e-8):
+DEFAULT_SENTIMENT_COLS = (
+    "sentiment_mean",
+    "sentiment_sum",
+    "sentiment_max",
+    "sentiment_min",
+    "sentiment_std",
+    "news_count",
+)
+
+
+def cumulative_return_normalize_with_base(series, base, eps=1e-8, passthrough_indices=None):
     """
     Works for both:
         series: [T]
@@ -13,7 +24,13 @@ def cumulative_return_normalize_with_base(series, base, eps=1e-8):
     For multi-feature data, base is the first observable row [C].
     """
     base = torch.where(torch.abs(base) < eps, base + eps, base)
-    return series / base - 1.0
+    normalized = series / base - 1.0
+
+    if passthrough_indices:
+        normalized = normalized.clone()
+        normalized[..., passthrough_indices] = series[..., passthrough_indices]
+
+    return normalized
 
 
 def _as_list(x):
@@ -28,6 +45,8 @@ def chronological_split(
     timestamp_col="Date",
     validation_fraction=0.05,
     test_fraction=0.30,
+    train_end_date=None,
+    test_start_date=None,
 ):
     """
     Chronological split:
@@ -43,6 +62,62 @@ def chronological_split(
     if missing:
         raise ValueError(f"Missing columns in CSV: {missing}. Available columns: {list(df.columns)}")
 
+    if train_end_date is not None or test_start_date is not None:
+        train_end_ts = pd.Timestamp(train_end_date) if train_end_date is not None else None
+        test_start_ts = pd.Timestamp(test_start_date) if test_start_date is not None else None
+
+        if train_end_ts is None:
+            train_val_df = df[df[timestamp_col] < test_start_ts].copy()
+        else:
+            train_val_df = df[df[timestamp_col] <= train_end_ts].copy()
+
+        if test_start_ts is None:
+            test_df = df[df[timestamp_col] > train_end_ts].copy()
+        else:
+            test_df = df[df[timestamp_col] >= test_start_ts].copy()
+
+        if train_val_df.empty:
+            raise ValueError(
+                f"No train/validation rows found for train_end_date={train_end_date!r} "
+                f"and test_start_date={test_start_date!r}."
+            )
+        if test_df.empty:
+            raise ValueError(
+                f"No test rows found for train_end_date={train_end_date!r} "
+                f"and test_start_date={test_start_date!r}."
+            )
+
+        train_val_values = torch.tensor(
+            train_val_df[feature_cols].values,
+            dtype=torch.float32,
+        )
+        test_values = torch.tensor(
+            test_df[feature_cols].values,
+            dtype=torch.float32,
+        )
+
+        val_len = int(len(train_val_values) * validation_fraction)
+        train_len = len(train_val_values) - val_len
+        if train_len <= 0:
+            raise ValueError(
+                f"Date split left no train rows. train_val_len={len(train_val_values)}, "
+                f"validation_fraction={validation_fraction}"
+            )
+
+        if val_len > 0:
+            train_df, val_df = torch.split(train_val_values, [train_len, val_len])
+        else:
+            train_df = train_val_values
+            val_df = train_val_values[:0]
+
+        print(
+            "[chronological_split] date split: "
+            f"train_val<= {train_end_date}, test>= {test_start_date}, "
+            f"train_len={len(train_df)}, val_len={len(val_df)}, test_len={len(test_values)}"
+        )
+
+        return train_df, val_df, test_values
+
     values = torch.tensor(df[feature_cols].values, dtype=torch.float32)
 
     val_len = int(len(values) * validation_fraction)
@@ -57,6 +132,93 @@ def chronological_split(
     return train_df, val_df, test_df
 
 
+def _infer_sentiment_path(path_data):
+    data_dir = os.path.dirname(path_data)
+    ticker = os.path.splitext(os.path.basename(path_data))[0]
+
+    candidates = [
+        os.path.join(data_dir, f"{ticker}_daily_sentiment.csv"),
+        os.path.join(os.getcwd(), f"{ticker}_daily_sentiment.csv"),
+    ]
+
+    for candidate in candidates:
+        if os.path.exists(candidate):
+            return candidate
+
+    return None
+
+
+def _merge_daily_sentiment(
+    df,
+    path_data,
+    timestamp_col,
+    feature_cols,
+    sentiment_path=None,
+    sentiment_cols=DEFAULT_SENTIMENT_COLS,
+):
+    feature_cols = _as_list(feature_cols)
+    sentiment_cols = _as_list(sentiment_cols)
+    requested_sentiment_cols = [c for c in feature_cols if c in sentiment_cols]
+    existing_sentiment_cols = [c for c in requested_sentiment_cols if c in df.columns]
+    missing_requested_sentiment_cols = [
+        c for c in requested_sentiment_cols
+        if c not in df.columns
+    ]
+
+    if existing_sentiment_cols:
+        df = df.copy()
+        for col in existing_sentiment_cols:
+            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+
+    if not missing_requested_sentiment_cols:
+        return df
+
+    sentiment_path = sentiment_path or _infer_sentiment_path(path_data)
+
+    if sentiment_path is None or not os.path.exists(sentiment_path):
+        raise FileNotFoundError(
+            "Sentiment features were requested, but no daily sentiment CSV was found. "
+            f"Looked for a ticker-level file next to {path_data!r} and in the project root. "
+            "Pass sentiment_path explicitly or remove sentiment columns from feature_cols."
+        )
+
+    sentiment_df = pd.read_csv(sentiment_path, parse_dates=["date"], low_memory=False)
+    missing = [
+        c for c in missing_requested_sentiment_cols
+        if c not in sentiment_df.columns
+    ]
+    if missing:
+        raise ValueError(
+            f"Missing sentiment columns in {sentiment_path}: {missing}. "
+            f"Available columns: {list(sentiment_df.columns)}"
+        )
+
+    keep_cols = ["date"] + [c for c in sentiment_cols if c in sentiment_df.columns]
+    sentiment_df = sentiment_df[keep_cols].copy()
+    sentiment_df["date"] = sentiment_df["date"].dt.normalize()
+
+    df = df.copy()
+    df["_sentiment_date"] = df[timestamp_col].dt.normalize()
+    df = df.merge(
+        sentiment_df,
+        how="left",
+        left_on="_sentiment_date",
+        right_on="date",
+    )
+    df.drop(columns=["_sentiment_date", "date"], inplace=True)
+
+    for col in sentiment_cols:
+        if col in df.columns:
+            df[col] = df[col].fillna(0.0)
+
+    print(
+        f"[load_price_series] merged sentiment from {sentiment_path}; "
+        f"requested={missing_requested_sentiment_cols}"
+    )
+
+    return df
+
+
 def load_price_series(
     path_data,
     feature_cols=("Close", "Volume"),
@@ -64,6 +226,10 @@ def load_price_series(
     validation_fraction=0.05,
     test_fraction=0.30,
     log_volume=True,
+    sentiment_path=None,
+    sentiment_cols=DEFAULT_SENTIMENT_COLS,
+    train_end_date=None,
+    test_start_date=None,
 ):
     """
     Load CSV and return chronological train / val / test tensors.
@@ -78,6 +244,17 @@ def load_price_series(
         low_memory=False,
         sep=",",
     )
+    feature_cols = _as_list(feature_cols)
+
+    df = _merge_daily_sentiment(
+        df=df,
+        path_data=path_data,
+        timestamp_col=timestamp_col,
+        feature_cols=feature_cols,
+        sentiment_path=sentiment_path,
+        sentiment_cols=sentiment_cols,
+    )
+
     # Add moving average features
     # df["MA5"] = df["Close"].rolling(window=5, min_periods=5).mean()
     df["MA10"] = df["Close"].rolling(window=10, min_periods=10).mean()
@@ -94,8 +271,6 @@ def load_price_series(
     icols = df.select_dtypes("integer").columns
     df[icols] = df[icols].apply(pd.to_numeric, downcast="integer")
 
-    feature_cols = _as_list(feature_cols)
-
     # Volume is usually very large and heavy-tailed, so log1p is safer.
     if log_volume and "Volume" in feature_cols:
         df["Volume"] = torch.log1p(
@@ -108,6 +283,8 @@ def load_price_series(
         timestamp_col=timestamp_col,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
+        train_end_date=train_end_date,
+        test_start_date=test_start_date,
     )
 
     return train_df, val_df, test_df
@@ -139,6 +316,10 @@ class CSVDataLoader(Dataset):
         validation_fraction=0.05,
         test_fraction=0.30,
         log_volume=True,
+        sentiment_path=None,
+        sentiment_cols=DEFAULT_SENTIMENT_COLS,
+        train_end_date=None,
+        test_start_date=None,
     ):
         self.batch_size = batch_size
         self.series_split_size = series_split_size
@@ -147,6 +328,11 @@ class CSVDataLoader(Dataset):
         self.normalize = normalize
         self.feature_cols = _as_list(feature_cols)
         self.feature_dim = len(self.feature_cols)
+        self.passthrough_indices = [
+            idx
+            for idx, col in enumerate(self.feature_cols)
+            if col in set(sentiment_cols)
+        ]
 
         self.stride = stride if stride is not None else patch_size
 
@@ -157,6 +343,10 @@ class CSVDataLoader(Dataset):
             validation_fraction=validation_fraction,
             test_fraction=test_fraction,
             log_volume=log_volume,
+            sentiment_path=sentiment_path,
+            sentiment_cols=sentiment_cols,
+            train_end_date=train_end_date,
+            test_start_date=test_start_date,
         )
 
         # Pretraining only uses train_df.
@@ -194,6 +384,7 @@ class CSVDataLoader(Dataset):
             selected_series = cumulative_return_normalize_with_base(
                 selected_series,
                 base=base,
+                passthrough_indices=self.passthrough_indices,
             )
 
         num_patches = len(selected_series) // self.patch_size
@@ -243,6 +434,10 @@ class EvaluationDataLoader(Dataset):
         validation_fraction=0.05,
         test_fraction=0.30,
         log_volume=True,
+        sentiment_path=None,
+        sentiment_cols=DEFAULT_SENTIMENT_COLS,
+        train_end_date=None,
+        test_start_date=None,
     ):
         self.patch_size = patch_size
         self.context_size = context_size
@@ -251,6 +446,11 @@ class EvaluationDataLoader(Dataset):
         self.normalize = normalize
         self.feature_cols = _as_list(feature_cols)
         self.feature_dim = len(self.feature_cols)
+        self.passthrough_indices = [
+            idx
+            for idx, col in enumerate(self.feature_cols)
+            if col in set(sentiment_cols)
+        ]
         self.target_col = target_col
 
         if target_col not in self.feature_cols:
@@ -264,6 +464,10 @@ class EvaluationDataLoader(Dataset):
             validation_fraction=validation_fraction,
             test_fraction=test_fraction,
             log_volume=log_volume,
+            sentiment_path=sentiment_path,
+            sentiment_cols=sentiment_cols,
+            train_end_date=train_end_date,
+            test_start_date=test_start_date,
         )
 
         if split == "train":
@@ -321,8 +525,16 @@ class EvaluationDataLoader(Dataset):
 
         if self.normalize:
             base = context_flat[0]  # [C], only from first context point
-            context_flat = cumulative_return_normalize_with_base(context_flat, base=base)
-            target_flat = cumulative_return_normalize_with_base(target_flat, base=base)
+            context_flat = cumulative_return_normalize_with_base(
+                context_flat,
+                base=base,
+                passthrough_indices=self.passthrough_indices,
+            )
+            target_flat = cumulative_return_normalize_with_base(
+                target_flat,
+                base=base,
+                passthrough_indices=self.passthrough_indices,
+            )
 
         context_patches = context_flat.reshape(
             self.context_size,

@@ -104,6 +104,7 @@ def prepare_args(config):
     config["data"] = args.data
     config["lr"] = args.lr
     config["batch_size"] = args.batch_size
+    config["num_epochs"] = args.num_epochs
     config["lr_pretrain"] = args.lr_pretrain
     config["seed"] = seed
     config["ratio_patches"] = args.ratio_patches
@@ -164,9 +165,34 @@ def prepare_args_pretrain(config):
     parser.add_argument("--mask_ratio", type=float, default=config["mask_ratio"])
     parser.add_argument("--batch_size", type=int, default=config["batch_size"])
     parser.add_argument("--lr", type=float, default=config["lr"])
+    parser.add_argument("--num_epochs", type=int, default=config["num_epochs"])
     parser.add_argument("--ema_momentum", type=float, default=config["ema_momentum"])
     parser.add_argument("--ratio_patches", type=int, default=config["ratio_patches"])
     parser.add_argument("--notes", type=str, default="")
+    parser.add_argument(
+        "--skip-pretrain",
+        dest="skip_pretrain",
+        action="store_true",
+        help="Skip TS-JEPA pretraining and run only the optional downstream stage.",
+    )
+    parser.add_argument(
+        "--run-eval",
+        dest="run_eval",
+        action="store_true",
+        help="After pretraining, run downstream TS-JEPA evaluation with GRU baseline training.",
+    )
+    parser.add_argument(
+        "--eval-checkpoint-to-use",
+        type=int,
+        default=None,
+        help="Checkpoint epoch for downstream evaluation. Defaults to the last saved pretrain checkpoint.",
+    )
+    parser.add_argument(
+        "--eval-num-epochs",
+        type=int,
+        default=None,
+        help="Override downstream decoder/GRU training epochs when --run-eval is used.",
+    )
 
     # data / pretraining protocol
     parser.add_argument(
@@ -225,10 +251,15 @@ def prepare_args_pretrain(config):
 
     config["mask_ratio"] = args.mask_ratio
     config["lr"] = args.lr
+    config["num_epochs"] = args.num_epochs
     config["batch_size"] = args.batch_size
     config["ema_momentum"] = args.ema_momentum
     config["ratio_patches"] = args.ratio_patches
     config["data"] = args.data
+    config["skip_pretrain"] = args.skip_pretrain
+    config["run_eval"] = args.run_eval
+    config["eval_checkpoint_to_use"] = args.eval_checkpoint_to_use
+    config["eval_num_epochs"] = args.eval_num_epochs
 
     # data / pretraining protocol
     config["pretrain_until_index"] = args.pretrain_until_index
