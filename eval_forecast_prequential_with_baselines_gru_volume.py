@@ -1694,7 +1694,10 @@ if __name__ == "__main__":
         + str(config["checkpoint_to_use"])
     )
 
-    checkpoint_path = config["path_save"] + path_name + ".pt"
+    if config.get("pretrain_checkpoint_path"):
+        checkpoint_path = config["pretrain_checkpoint_path"]
+    else:
+        checkpoint_path = config["path_save"] + path_name + ".pt"
 
     print("Load checkpoint:", checkpoint_path)
 

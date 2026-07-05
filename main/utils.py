@@ -38,6 +38,14 @@ def prepare_args(config):
         "--checkpoint_to_use", type=int, default=config["checkpoint_to_use"]
     )
     parser.add_argument(
+        "--pretrain_checkpoint_path",
+        "--pretrain-checkpoint-path",
+        dest="pretrain_checkpoint_path",
+        type=str,
+        default=config.get("pretrain_checkpoint_path", None),
+        help="Explicit pretrained encoder checkpoint path. Overrides the default naming scheme.",
+    )
+    parser.add_argument(
         "--ratio_supervision", type=float, default=config["ratio_supervision"]
     )
 
@@ -109,6 +117,7 @@ def prepare_args(config):
     config["seed"] = seed
     config["ratio_patches"] = args.ratio_patches
     config["checkpoint_to_use"] = args.checkpoint_to_use
+    config["pretrain_checkpoint_path"] = args.pretrain_checkpoint_path
 
     config["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
 

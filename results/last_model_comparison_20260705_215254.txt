@@ -1,0 +1,12 @@
+Data source: NVDA
+Evaluation type: last
+Generated at: 20260705_215254
+
+Model Comparison
+model,mse,mae,trend_accuracy
+naive_last,0.001983,0.035054,0.0000
+drift,0.002045,0.035209,0.5123
+GRU,0.002189,0.037659,0.4918
+TS-JEPA,0.002528,0.040157,0.5492
+mean_context,0.018821,0.100107,0.0000
+previous_patch,0.033127,0.120572,0.5082
