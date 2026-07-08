@@ -156,6 +156,12 @@ def parse_args(config):
         default=config.get("ipe_scale", 1.25),
     )
     parser.add_argument("--notes", type=str, default="")
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=config.get("seed", None),
+        help="Random seed for reproducible smoke tests. Defaults to a random seed.",
+    )
 
     parser.add_argument(
         "--series_split_size",
@@ -397,7 +403,7 @@ def parse_args(config):
     cfg["test_start_date"] = _none_if_requested(args.test_start_date)
     cfg["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
 
-    seed = random.randint(0, 100)
+    seed = args.seed if args.seed is not None else random.randint(0, 100)
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)
