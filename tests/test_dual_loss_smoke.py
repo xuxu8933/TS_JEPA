@@ -69,78 +69,6 @@ def _sin_cos_rows(n=260):
     return _dated_rows(closes, volumes)
 
 
-def _seven_segment_digit(digit):
-    segments_by_digit = {
-        0: "abcfed",
-        1: "bc",
-        2: "abged",
-        3: "abgcd",
-        4: "fgbc",
-        5: "afgcd",
-        6: "afgecd",
-        7: "abc",
-        8: "abcdefg",
-        9: "abfgcd",
-    }
-    segments = set(segments_by_digit[digit])
-    grid = [[0.0 for _ in range(28)] for _ in range(28)]
-
-    def h(row, c0=6, c1=22):
-        for rr in range(row - 1, row + 2):
-            for cc in range(c0, c1):
-                grid[rr][cc] = 1.0
-
-    def v(col, r0, r1):
-        for rr in range(r0, r1):
-            for cc in range(col - 1, col + 2):
-                grid[rr][cc] = 1.0
-
-    if "a" in segments:
-        h(5)
-    if "b" in segments:
-        v(22, 6, 14)
-    if "c" in segments:
-        v(22, 15, 24)
-    if "d" in segments:
-        h(24)
-    if "e" in segments:
-        v(6, 15, 24)
-    if "f" in segments:
-        v(6, 6, 14)
-    if "g" in segments:
-        h(14)
-
-    values = []
-    for r, row in enumerate(grid):
-        for c, value in enumerate(row):
-            halo = 0.20 if value == 0.0 and (r + c + digit) % 29 == 0 else 0.0
-            values.append(max(value, halo))
-    return values
-
-
-def _mnist_artifact_rows(n=260):
-    digit_signatures = []
-    for digit in range(10):
-        pixels = _seven_segment_digit(digit)
-        weighted_sum = sum((idx % 31 + 1) * value for idx, value in enumerate(pixels))
-        digit_signatures.append(weighted_sum / 31.0)
-
-    max_signature = max(digit_signatures)
-    digit_signatures = [value / max_signature for value in digit_signatures]
-
-    closes = []
-    volumes = []
-    for i in range(n):
-        digit = (i // 4) % 10
-        next_digit = ((i // 4) + 1) % 10
-        phase = i % 4
-        pixel = digit_signatures[digit]
-        neighbor = digit_signatures[next_digit]
-        closes.append(12.0 + 2.6 * pixel + 0.7 * neighbor + 0.12 * phase)
-        volumes.append(800.0 + 150.0 * neighbor + 12.0 * phase)
-    return _dated_rows(closes, volumes)
-
-
 def _load_forecast_loaders(data_path):
     from src.data_loaders.data_loader_roll_volume import get_evaluation_loaders
 
@@ -380,6 +308,121 @@ def _pretrain_smoke_case(workdir, data_name, rows, python_executable=None):
     return checkpoint_path, output
 
 
+def _pretrain_mnist_row_case(workdir, mnist_root, python_executable=None):
+    python_executable = python_executable or sys.executable
+    output = _run_command(
+        [
+            python_executable,
+            str(PRETRAIN_SCRIPT),
+            "--data",
+            "SMOKE_MNIST_ROWS",
+            "--input-mode",
+            "mnist_rows",
+            "--mnist-root",
+            str(mnist_root),
+            "--mnist-train-samples",
+            "4000",
+            "--batch-size",
+            "64",
+            "--num-epochs",
+            "30",
+            "--checkpoint-save",
+            "99",
+            "--checkpoint-print",
+            "5",
+            "--lr",
+            "0.002",
+            "--end-lr",
+            "0.001",
+            "--ema-momentum",
+            EMA,
+            "--mask-ratio",
+            MASK_RATIO,
+            "--ratio-patches",
+            RATIO_PATCHES,
+            "--encoder-embed-dim",
+            "64",
+            "--encoder-nhead",
+            "4",
+            "--encoder-num-layers",
+            "2",
+            "--encoder-kernel-size",
+            "3",
+            "--predictor-embed",
+            "64",
+            "--predictor-nhead",
+            "4",
+            "--predictor-num-layers",
+            "2",
+            "--lambda-jepa",
+            "0.01",
+            "--lambda-mae",
+            "1.0",
+            "--decoder-type",
+            "mlp",
+            "--decoder-hidden-dim",
+            "128",
+            "--decoder-num-layers",
+            "2",
+            "--decoder-dropout",
+            "0",
+            "--seed",
+            "7",
+        ],
+        cwd=workdir,
+        timeout=180,
+    )
+
+    match = re.search(r"Saved checkpoint:\s*(.+\.pt)", output)
+    if match is None:
+        raise RuntimeError(f"Could not find checkpoint path in output:\n{output}")
+    checkpoint_path = Path(match.group(1))
+    if not checkpoint_path.is_absolute():
+        checkpoint_path = workdir / checkpoint_path
+    return checkpoint_path, output
+
+
+def _eval_mnist_row_case(
+    workdir,
+    checkpoint_path,
+    mnist_root,
+    prediction_output=None,
+    python_executable=None,
+):
+    python_executable = python_executable or sys.executable
+    command = [
+        python_executable,
+        str(EVAL_SCRIPT),
+        "--data",
+        "SMOKE_MNIST_ROWS",
+        "--eval-mode",
+        "mnist_rows",
+        "--pretrain-checkpoint-path",
+        str(checkpoint_path),
+        "--mnist-root",
+        str(mnist_root),
+        "--mnist-test-samples",
+        "128",
+        "--batch-size",
+        "64",
+        "--require-better-than-naive",
+    ]
+    if prediction_output is not None:
+        command.extend(["--prediction-output", str(prediction_output)])
+    output = _run_command(command, cwd=workdir, timeout=120)
+    match = re.search(
+        r"model_mse=([0-9.]+), naive_previous_row_mse=([0-9.]+)",
+        output,
+    )
+    if match is None:
+        raise RuntimeError(f"Could not find MNIST metrics in output:\n{output}")
+    return {
+        "model_mse": float(match.group(1)),
+        "naive_mse": float(match.group(2)),
+        "output": output,
+    }
+
+
 class DualLossSmokeTest(unittest.TestCase):
     def _run(self, cmd, cwd):
         try:
@@ -390,7 +433,7 @@ class DualLossSmokeTest(unittest.TestCase):
     def _pretrain(self, workdir, data_name, rows):
         return _pretrain_smoke_case(workdir, data_name, rows)
 
-    def _assert_checkpoint_payload(self, checkpoint_path, data_name):
+    def _assert_checkpoint_payload(self, checkpoint_path, data_name, epoch=0):
         import torch
 
         checkpoint = torch.load(
@@ -399,7 +442,7 @@ class DualLossSmokeTest(unittest.TestCase):
             weights_only=False,
         )
         self.assertEqual(checkpoint["strategy"], "dual_jepa_mae")
-        self.assertEqual(checkpoint["epoch"], 0)
+        self.assertEqual(checkpoint["epoch"], epoch)
         self.assertEqual(checkpoint["config"]["data"], data_name)
         self.assertIn("encoder", checkpoint)
         self.assertIn("predictor", checkpoint)
@@ -477,8 +520,39 @@ class DualLossSmokeTest(unittest.TestCase):
     def test_sin_cos_artifact_dual_loss_pretrain_and_eval_path(self):
         self._run_case("SMOKE_SIN_COS", _sin_cos_rows())
 
-    def test_mnist_artifact_dual_loss_pretrain_and_eval_path(self):
-        self._run_case("SMOKE_MNIST_ARTIFACT", _mnist_artifact_rows())
+    def test_real_mnist_row_wise_dual_loss_pretrain_and_eval(self):
+        mnist_root = REPO_ROOT / "data" / "MNIST"
+        if not (mnist_root / "MNIST" / "raw").exists():
+            self.skipTest(
+                "MNIST is not cached; run pretrain_dual_loss.py with --download-mnist once"
+            )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            checkpoint_path, pretrain_output = _pretrain_mnist_row_case(
+                workdir=workdir,
+                mnist_root=mnist_root,
+            )
+            self.assertIn("input_mode = mnist_rows", pretrain_output)
+            self.assertIn("num_patches = 28", pretrain_output)
+            self.assertIn("patch_dim = 28", pretrain_output)
+            self._assert_checkpoint_payload(
+                checkpoint_path,
+                "SMOKE_MNIST_ROWS",
+                epoch=29,
+            )
+
+            result = _eval_mnist_row_case(
+                workdir=workdir,
+                checkpoint_path=checkpoint_path,
+                mnist_root=mnist_root,
+            )
+            print(
+                "SMOKE_MNIST_ROWS: "
+                f"model_mse={result['model_mse']:.6f}, "
+                f"naive_previous_row_mse={result['naive_mse']:.6f}"
+            )
+            self.assertLess(result["model_mse"], result["naive_mse"])
 
 
 if __name__ == "__main__":

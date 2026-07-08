@@ -11,7 +11,15 @@ import os
 import runpy
 import sys
 
+import numpy as np
+import torch
+
 from config.config_downstream import config as downstream_config
+from pretrain_dual_loss import build_decoder
+from src.data_loaders.data_loader_mnist_rows import get_mnist_row_loader
+from src.models.encoder import Encoder
+from src.models.predictor import Predictor
+from src.models.utils.mask_utils import apply_mask
 
 
 def _float_for_path(value):
@@ -64,6 +72,25 @@ def parse_args():
     )
 
     parser.add_argument("--data", default=downstream_config["data"])
+    parser.add_argument(
+        "--eval-mode",
+        choices=("forecast", "mnist_rows"),
+        default="forecast",
+        help="Run stock forecasting or masked MNIST-row reconstruction.",
+    )
+    parser.add_argument("--mnist-root", default="./data/MNIST")
+    parser.add_argument("--mnist-test-samples", type=int, default=128)
+    parser.add_argument("--download-mnist", action="store_true")
+    parser.add_argument(
+        "--require-better-than-naive",
+        action="store_true",
+        help="Fail MNIST evaluation unless reconstruction beats previous-row copying.",
+    )
+    parser.add_argument(
+        "--prediction-output",
+        default=None,
+        help="Optional .npz path for MNIST inputs, reconstructions, and masks.",
+    )
     parser.add_argument(
         "--checkpoint_to_use",
         "--checkpoint-to-use",
@@ -268,6 +295,117 @@ def build_eval_argv(args, passthrough_args):
     return eval_argv, checkpoint_path
 
 
+def evaluate_mnist_rows(args, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    config = checkpoint["config"]
+    seed = int(config.get("seed", 0))
+    batch_size = args.batch_size or 64
+
+    loader = get_mnist_row_loader(
+        root=args.mnist_root,
+        batch_size=batch_size,
+        mask_ratio=float(config["mask_ratio"]),
+        train=False,
+        sample_count=args.mnist_test_samples,
+        download=args.download_mnist,
+        seed=seed + 10_000,
+        deterministic_masks=True,
+    )
+
+    encoder = Encoder(
+        num_patches=28,
+        dim_in=28,
+        kernel_size=config["encoder_kernel_size"],
+        embed_dim=config["encoder_embed_dim"],
+        embed_bias=config["encoder_embed_bias"],
+        nhead=config["encoder_nhead"],
+        num_layers=config["encoder_num_layers"],
+        jepa=True,
+    )
+    predictor = Predictor(
+        num_patches=28,
+        encoder_embed_dim=config["encoder_embed_dim"],
+        predictor_embed_dim=config["predictor_embed"],
+        nhead=config["predictor_nhead"],
+        num_layers=config["predictor_num_layers"],
+    )
+    decoder = build_decoder(config, patch_dim=28)
+
+    encoder.load_state_dict(checkpoint["encoder"])
+    predictor.load_state_dict(checkpoint["predictor"])
+    decoder.load_state_dict(checkpoint["decoder"])
+    encoder.eval()
+    predictor.eval()
+    decoder.eval()
+
+    model_squared_error = 0.0
+    naive_squared_error = 0.0
+    value_count = 0
+    examples = []
+
+    with torch.no_grad():
+        for image_rows, masks, non_masks in loader:
+            context_tokens = encoder(image_rows, mask=non_masks)
+            predicted_embeddings = predictor(
+                context_tokens,
+                mask=masks,
+                non_masks=non_masks,
+            )
+            reconstructed_rows = decoder(predicted_embeddings)
+            target_rows = apply_mask(image_rows, masks)
+
+            previous_indices = (masks - 1).clamp_min(0)
+            gather_indices = previous_indices.unsqueeze(-1).expand(-1, -1, 28)
+            naive_rows = torch.gather(image_rows, dim=1, index=gather_indices)
+
+            model_squared_error += (reconstructed_rows - target_rows).square().sum().item()
+            naive_squared_error += (naive_rows - target_rows).square().sum().item()
+            value_count += target_rows.numel()
+
+            if len(examples) < 8:
+                for sample_idx in range(min(image_rows.shape[0], 8 - len(examples))):
+                    reconstruction = image_rows[sample_idx].clone()
+                    reconstruction[masks[sample_idx]] = reconstructed_rows[sample_idx]
+                    naive = image_rows[sample_idx].clone()
+                    naive[masks[sample_idx]] = naive_rows[sample_idx]
+                    examples.append(
+                        (
+                            image_rows[sample_idx].numpy(),
+                            reconstruction.numpy(),
+                            naive.numpy(),
+                            masks[sample_idx].numpy(),
+                        )
+                    )
+
+    model_mse = model_squared_error / value_count
+    naive_mse = naive_squared_error / value_count
+    result = {
+        "model_mse": model_mse,
+        "naive_mse": naive_mse,
+        "inputs": np.stack([example[0] for example in examples]),
+        "reconstructions": np.stack([example[1] for example in examples]),
+        "naive_reconstructions": np.stack([example[2] for example in examples]),
+        "masks": np.stack([example[3] for example in examples]),
+    }
+
+    if args.prediction_output:
+        output_path = os.path.abspath(args.prediction_output)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        np.savez(output_path, **result)
+        print("Predictions:", output_path)
+
+    print(
+        f"MNIST rows: model_mse={model_mse:.6f}, "
+        f"naive_previous_row_mse={naive_mse:.6f}"
+    )
+    if args.require_better_than_naive and model_mse >= naive_mse:
+        raise AssertionError(
+            f"MNIST row reconstruction did not beat previous-row copying: "
+            f"{model_mse:.6f} >= {naive_mse:.6f}"
+        )
+    return result
+
+
 def main():
     args, passthrough_args = parse_args()
     eval_argv, checkpoint_path = build_eval_argv(args, passthrough_args)
@@ -281,8 +419,15 @@ def main():
         )
 
     if args.dry_run:
-        print("Delegated argv:")
-        print(" ".join(eval_argv))
+        if args.eval_mode == "mnist_rows":
+            print("Evaluation mode: mnist_rows")
+        else:
+            print("Delegated argv:")
+            print(" ".join(eval_argv))
+        return
+
+    if args.eval_mode == "mnist_rows":
+        evaluate_mnist_rows(args, checkpoint_path)
         return
 
     original_argv = sys.argv[:]

@@ -24,6 +24,7 @@ import torch.optim.lr_scheduler as lr_scheduler
 
 from config.config_pretrain import config as base_config
 from main.utils import init_weights
+from src.data_loaders.data_loader_mnist_rows import get_mnist_row_loader
 from src.data_loaders.data_loader_roll_volume import get_jepa_loaders
 from src.models.decoder import LinearDecoder, MLPDecoder, ResidualMLPDecoder
 from src.models.encoder import Encoder
@@ -84,6 +85,28 @@ def parse_args(config):
     )
 
     parser.add_argument("--data", type=str, default=config["data"])
+    parser.add_argument(
+        "--input-mode",
+        choices=("timeseries", "mnist_rows"),
+        default="timeseries",
+        help="Use stock-style CSV windows or 28 MNIST image rows as tokens.",
+    )
+    parser.add_argument(
+        "--mnist-root",
+        default="./data/MNIST",
+        help="MNIST cache directory used with --input-mode mnist_rows.",
+    )
+    parser.add_argument(
+        "--mnist-train-samples",
+        type=int,
+        default=512,
+        help="Number of MNIST training images used in row mode.",
+    )
+    parser.add_argument(
+        "--download-mnist",
+        action="store_true",
+        help="Download MNIST if it is absent from --mnist-root.",
+    )
     parser.add_argument(
         "--mask_ratio",
         "--mask-ratio",
@@ -538,21 +561,32 @@ def main():
     config = parse_args(base_config)
     print("Device:", device)
 
-    loader = get_jepa_loaders(
-        path=config["path_data"],
-        batch_size=config["batch_size"],
-        ratio_patches=config["ratio_patches"],
-        mask_ratio=config["mask_ratio"],
-        series_split_size=config["series_split_size"],
-        patch_size=config["patch_size"],
-        feature_cols=config["feature_cols"],
-        timestamp_col=config["timestamp_col"],
-        sentiment_path=config["sentiment_path"],
-        validation_fraction=config["validation_fraction"],
-        test_fraction=config["test_fraction"],
-        train_end_date=config["train_end_date"],
-        test_start_date=config["test_start_date"],
-    )
+    if config["input_mode"] == "mnist_rows":
+        loader = get_mnist_row_loader(
+            root=config["mnist_root"],
+            batch_size=config["batch_size"],
+            mask_ratio=config["mask_ratio"],
+            train=True,
+            sample_count=config["mnist_train_samples"],
+            download=config["download_mnist"],
+            seed=config["seed"],
+        )
+    else:
+        loader = get_jepa_loaders(
+            path=config["path_data"],
+            batch_size=config["batch_size"],
+            ratio_patches=config["ratio_patches"],
+            mask_ratio=config["mask_ratio"],
+            series_split_size=config["series_split_size"],
+            patch_size=config["patch_size"],
+            feature_cols=config["feature_cols"],
+            timestamp_col=config["timestamp_col"],
+            sentiment_path=config["sentiment_path"],
+            validation_fraction=config["validation_fraction"],
+            test_fraction=config["test_fraction"],
+            train_end_date=config["train_end_date"],
+            test_start_date=config["test_start_date"],
+        )
 
     sample_patches, _, _ = loader.dataset[0]
     num_patches = sample_patches.shape[0]
@@ -560,11 +594,16 @@ def main():
 
     print("\n=== Dual-loss pretrain config ===")
     print("data =", config["data"])
-    print("path_data =", config["path_data"])
-    print("feature_cols =", config["feature_cols"])
-    print("sentiment_path =", config["sentiment_path"])
-    print("train_end_date =", config["train_end_date"])
-    print("test_start_date =", config["test_start_date"])
+    print("input_mode =", config["input_mode"])
+    if config["input_mode"] == "mnist_rows":
+        print("mnist_root =", config["mnist_root"])
+        print("mnist_train_samples =", config["mnist_train_samples"])
+    else:
+        print("path_data =", config["path_data"])
+        print("feature_cols =", config["feature_cols"])
+        print("sentiment_path =", config["sentiment_path"])
+        print("train_end_date =", config["train_end_date"])
+        print("test_start_date =", config["test_start_date"])
     print("num_patches =", num_patches)
     print("patch_dim =", patch_dim)
     print("lambda_jepa =", config["lambda_jepa"])
