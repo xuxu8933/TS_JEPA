@@ -7,10 +7,19 @@
 
 import torch
 import argparse
+import json
 import math
 
 import random
 import numpy as np
+
+
+def _none_if_requested(value):
+    if value is None:
+        return None
+    if isinstance(value, str) and value.lower() in ("", "none", "null"):
+        return None
+    return value
 
 
 def prepare_args(config):
@@ -24,6 +33,13 @@ def prepare_args(config):
     parser.add_argument("--data", type=str, default=config["data"])
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--name_model", type=str, default="pre_train")
+    parser.add_argument(
+        "--results_dir",
+        "--results-dir",
+        dest="results_dir",
+        default=config.get("results_dir", "./results"),
+        help="Directory for downstream metrics, tables, and figures.",
+    )
 
     parser.add_argument("--lr", type=float, default=config["lr"])
     parser.add_argument("--lr_pretrain", type=float, default=config["lr_pretrain"])
@@ -46,7 +62,86 @@ def prepare_args(config):
         help="Explicit pretrained encoder checkpoint path. Overrides the default naming scheme.",
     )
     parser.add_argument(
+        "--pretrain_encoder_weights",
+        "--pretrain-encoder-weights",
+        dest="pretrain_encoder_weights",
+        choices=("ema", "online"),
+        default=config.get("pretrain_encoder_weights", "ema"),
+        help="Choose EMA target or online context encoder weights from the checkpoint.",
+    )
+    parser.add_argument(
         "--ratio_supervision", type=float, default=config["ratio_supervision"]
+    )
+    parser.add_argument(
+        "--patch_size",
+        "--patch-size",
+        dest="patch_size",
+        type=int,
+        default=config.get("patch_size", 5),
+    )
+    parser.add_argument(
+        "--target_feature_index",
+        "--target-feature-index",
+        dest="target_feature_index",
+        type=int,
+        default=config.get("target_feature_index", 0),
+    )
+    parser.add_argument(
+        "--normalization",
+        choices=("window_return", "train_zscore", "none"),
+        default=config.get("normalization", "window_return"),
+    )
+    parser.add_argument(
+        "--normalization_stats_json",
+        "--normalization-stats-json",
+        dest="normalization_stats_json",
+        default=None,
+        help="Serialized train-only normalization state stored by pretraining.",
+    )
+    parser.add_argument(
+        "--feature_cols",
+        "--feature-cols",
+        dest="feature_cols",
+        nargs="+",
+        default=config.get("feature_cols", ["Close", "Volume"]),
+    )
+    parser.add_argument(
+        "--timestamp_col",
+        "--timestamp-col",
+        dest="timestamp_col",
+        default=config.get("timestamp_col", "Date"),
+    )
+    parser.add_argument(
+        "--sentiment_path",
+        "--sentiment-path",
+        dest="sentiment_path",
+        default=config.get("sentiment_path", None),
+    )
+    parser.add_argument(
+        "--train_end_date",
+        "--train-end-date",
+        dest="train_end_date",
+        default=config.get("train_end_date", None),
+    )
+    parser.add_argument(
+        "--test_start_date",
+        "--test-start-date",
+        dest="test_start_date",
+        default=config.get("test_start_date", None),
+    )
+    parser.add_argument(
+        "--validation_fraction",
+        "--validation-fraction",
+        dest="validation_fraction",
+        type=float,
+        default=config.get("validation_fraction", 0.05),
+    )
+    parser.add_argument(
+        "--test_fraction",
+        "--test-fraction",
+        dest="test_fraction",
+        type=float,
+        default=config.get("test_fraction", 0.30),
     )
 
     # Transformers parameters
@@ -87,6 +182,18 @@ def prepare_args(config):
         default=config["pretrain_encoder_kernel_size"],
     )
     parser.add_argument(
+        "--pretrain_encoder_embed_bias",
+        "--pretrain-encoder-embed-bias",
+        dest="pretrain_encoder_embed_bias",
+        action="store_true",
+        default=config.get("pretrain_encoder_embed_bias", True),
+    )
+    parser.add_argument(
+        "--no-pretrain-encoder-embed-bias",
+        dest="pretrain_encoder_embed_bias",
+        action="store_false",
+    )
+    parser.add_argument(
         "--pretrain_transformer_dense_dim",
         type=int,
         default=config["pretrain_transformer_dense_dim"],
@@ -118,6 +225,8 @@ def prepare_args(config):
     config["ratio_patches"] = args.ratio_patches
     config["checkpoint_to_use"] = args.checkpoint_to_use
     config["pretrain_checkpoint_path"] = args.pretrain_checkpoint_path
+    config["pretrain_encoder_weights"] = args.pretrain_encoder_weights
+    config["results_dir"] = args.results_dir
 
     config["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
 
@@ -125,6 +234,21 @@ def prepare_args(config):
     config["pre_train_mask"] = args.pre_train_mask
     config["ratio_supervision"] = args.ratio_supervision
     config["pooling"] = args.pooling
+    config["patch_size"] = args.patch_size
+    config["target_feature_index"] = args.target_feature_index
+    config["normalization"] = args.normalization
+    config["normalization_stats"] = (
+        json.loads(args.normalization_stats_json)
+        if args.normalization_stats_json is not None
+        else config.get("normalization_stats")
+    )
+    config["feature_cols"] = args.feature_cols
+    config["timestamp_col"] = args.timestamp_col
+    config["sentiment_path"] = _none_if_requested(args.sentiment_path)
+    config["train_end_date"] = _none_if_requested(args.train_end_date)
+    config["test_start_date"] = _none_if_requested(args.test_start_date)
+    config["validation_fraction"] = args.validation_fraction
+    config["test_fraction"] = args.test_fraction
 
     config["pretrain_transformer_dense_dim"] = args.transformer_dense_dim
 
@@ -145,6 +269,7 @@ def prepare_args(config):
     config["pretrain_encoder_nhead"] = args.pretrain_encoder_nhead
     config["pretrain_encoder_num_layers"] = args.pretrain_encoder_num_layers
     config["pretrain_encoder_kernel_size"] = args.pretrain_encoder_kernel_size
+    config["pretrain_encoder_embed_bias"] = args.pretrain_encoder_embed_bias
     config["pretrain_transformer_dense_dim"] = args.pretrain_transformer_dense_dim
 
     config["ema_pretrain"] = args.ema_pretrain
@@ -162,12 +287,6 @@ def prepare_args(config):
 
 
 def prepare_args_pretrain(config):
-
-    seed = random.randint(0, 100)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, default=config["data"])
 
@@ -178,6 +297,7 @@ def prepare_args_pretrain(config):
     parser.add_argument("--ema_momentum", type=float, default=config["ema_momentum"])
     parser.add_argument("--ratio_patches", type=int, default=config["ratio_patches"])
     parser.add_argument("--notes", type=str, default="")
+    parser.add_argument("--seed", type=int, default=config.get("seed", 42))
     parser.add_argument(
         "--skip-pretrain",
         dest="skip_pretrain",
@@ -205,14 +325,6 @@ def prepare_args_pretrain(config):
 
     # data / pretraining protocol
     parser.add_argument(
-        "--pretrain_until_index",
-        type=int,
-        default=config.get("pretrain_until_index", None),
-        help="Only use observations up to this index for pretraining. "
-             "If None, the dataloader will use the default train split.",
-    )
-
-    parser.add_argument(
         "--series_split_size",
         type=int,
         default=config.get("series_split_size", 120),
@@ -227,10 +339,17 @@ def prepare_args_pretrain(config):
     )
 
     parser.add_argument(
-        "--normalize_on_train_only",
-        action="store_true",
-        default=config.get("normalize_on_train_only", True),
-        help="Compute normalization statistics only from the pretraining period.",
+        "--pretrain_stride",
+        "--pretrain-stride",
+        dest="pretrain_stride",
+        type=int,
+        default=config.get("pretrain_stride", config.get("patch_size", 5)),
+        help="Sliding-window stride used for pretraining.",
+    )
+    parser.add_argument(
+        "--normalization",
+        choices=("window_return", "train_zscore", "none"),
+        default=config.get("normalization", "window_return"),
     )
 
     # Encoder
@@ -258,6 +377,11 @@ def prepare_args_pretrain(config):
 
     args = parser.parse_args()
 
+    seed = args.seed
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+
     config["mask_ratio"] = args.mask_ratio
     config["lr"] = args.lr
     config["num_epochs"] = args.num_epochs
@@ -271,10 +395,10 @@ def prepare_args_pretrain(config):
     config["eval_num_epochs"] = args.eval_num_epochs
 
     # data / pretraining protocol
-    config["pretrain_until_index"] = args.pretrain_until_index
     config["series_split_size"] = args.series_split_size
     config["patch_size"] = args.patch_size
-    config["normalize_on_train_only"] = args.normalize_on_train_only
+    config["pretrain_stride"] = args.pretrain_stride
+    config["normalization"] = args.normalization
 
     config["seed"] = seed
 

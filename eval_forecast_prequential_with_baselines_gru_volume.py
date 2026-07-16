@@ -736,7 +736,10 @@ def visualize_one_rolling_window(
     device,
     eval_type,
     config,
+    save_dir="./results",
 ):
+    os.makedirs(save_dir, exist_ok=True)
+
     encoder.eval()
     decoder.eval()
 
@@ -779,10 +782,10 @@ def visualize_one_rolling_window(
     plt.title(f"{data_title(config)} - Rolling Forecast Window #{sample_idx}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_path = (
-        "./results/"
-        + config["eval_type"]
-        + f"_rolling_window_{sample_idx}_{timestamp}.png"
+    save_path = os.path.join(
+        save_dir,
+        config["eval_type"]
+        + f"_rolling_window_{sample_idx}_{timestamp}.png",
     )
 
     plt.savefig(save_path, dpi=300, bbox_inches="tight")
@@ -838,6 +841,25 @@ def build_decoder(config, patch_size):
         f"Unknown decoder_type={decoder_type!r}. "
         "Use 'linear', 'mlp', or 'residual_mlp'."
     )
+
+
+def load_pretrained_encoder_state(encoder, state_dict):
+    """Load learned weights while allowing a different context token count."""
+    encoder_state = dict(state_dict)
+    checkpoint_pos = encoder_state.get("pos_embed")
+    if checkpoint_pos is not None and checkpoint_pos.shape != encoder.pos_embed.shape:
+        print(
+            "Regenerating sinusoidal encoder positions for downstream context: "
+            f"checkpoint={tuple(checkpoint_pos.shape)}, "
+            f"downstream={tuple(encoder.pos_embed.shape)}"
+        )
+        encoder_state.pop("pos_embed")
+        incompatible = encoder.load_state_dict(encoder_state, strict=False)
+        if incompatible.missing_keys != ["pos_embed"] or incompatible.unexpected_keys:
+            raise RuntimeError(f"Unexpected encoder checkpoint mismatch: {incompatible}")
+        return
+
+    encoder.load_state_dict(encoder_state)
 
 
 
@@ -1515,10 +1537,13 @@ if __name__ == "__main__":
     # =========================
 
     config = prepare_args(config)
+    results_dir = config.get("results_dir", "./results")
+    os.makedirs(results_dir, exist_ok=True)
 
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
     print("Device:", device)
+    print("Results directory:", results_dir)
 
     config["path_data"] = (
         "./data/" + config["data"] + "/" + config["data"] + ".csv"
@@ -1532,13 +1557,21 @@ if __name__ == "__main__":
     # These should match your pretraining patch setting.
     patch_size = int(config.get("patch_size", 5))
     feature_cols = config.get("feature_cols", ["Close", "Volume"])
+    timestamp_col = config.get("timestamp_col", "Date")
     sentiment_path = config.get("sentiment_path", None)
     train_end_date = config.get("train_end_date", None)
     test_start_date = config.get("test_start_date", None)
     validation_fraction = config.get("validation_fraction", 0.05)
     test_fraction = config.get("test_fraction", 0.30)
+    normalization = config.get("normalization", "window_return")
+    normalization_stats = config.get("normalization_stats", None)
     feature_dim = len(feature_cols)
     target_feature_index = int(config.get("target_feature_index", 0))  # Close index in feature_cols
+    if not 0 <= target_feature_index < feature_dim:
+        raise ValueError(
+            f"target_feature_index={target_feature_index} is outside feature_cols={feature_cols}"
+        )
+    target_col = feature_cols[target_feature_index]
 
     config["patch_size"] = patch_size
     config["feature_cols"] = feature_cols
@@ -1546,6 +1579,7 @@ if __name__ == "__main__":
     config["target_feature_index"] = target_feature_index
 
     print("feature_cols =", feature_cols)
+    print("timestamp_col =", timestamp_col)
     print("sentiment_path =", sentiment_path)
     print("train_end_date =", train_end_date)
     print("test_start_date =", test_start_date)
@@ -1553,6 +1587,7 @@ if __name__ == "__main__":
     print("test_fraction =", test_fraction)
     print("feature_dim =", feature_dim)
     print("target_feature_index =", target_feature_index)
+    print("normalization =", normalization)
     print("trend_weight =", config.get("trend_weight", 0.0))
     print("trend_loss_temperature =", config.get("trend_loss_temperature", 0.01))
     print("trend_loss_threshold =", config.get("trend_loss_threshold", 0.0))
@@ -1582,8 +1617,11 @@ if __name__ == "__main__":
         patch_size=patch_size,
         context_size=context_size,
         stride=eval_stride,
-        normalize=True,
+        normalization=normalization,
+        normalization_stats=normalization_stats,
         feature_cols=feature_cols,
+        target_col=target_col,
+        timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
@@ -1600,8 +1638,11 @@ if __name__ == "__main__":
         patch_size=patch_size,
         context_size=context_size,
         stride=eval_stride,
-        normalize=True,
+        normalization=normalization,
+        normalization_stats=normalization_stats,
         feature_cols=feature_cols,
+        target_col=target_col,
+        timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
@@ -1618,8 +1659,11 @@ if __name__ == "__main__":
         patch_size=patch_size,
         context_size=context_size,
         stride=eval_stride,
-        normalize=True,
+        normalization=normalization,
+        normalization_stats=normalization_stats,
         feature_cols=feature_cols,
+        target_col=target_col,
+        timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
@@ -1706,9 +1750,19 @@ if __name__ == "__main__":
         map_location=device,
     )
 
-    encoder.load_state_dict(checkpoint["encoder"])
+    encoder_key = (
+        "encoder_ema"
+        if config.get("pretrain_encoder_weights", "ema") == "ema"
+        else "encoder"
+    )
+    if encoder_key not in checkpoint:
+        print(
+            f"Warning: checkpoint has no {encoder_key!r}; falling back to online encoder"
+        )
+        encoder_key = "encoder"
+    load_pretrained_encoder_state(encoder, checkpoint[encoder_key])
 
-    print("Pretrained encoder loaded")
+    print(f"Pretrained encoder loaded from {encoder_key}")
 
     fine_tune_encoder = bool(config.get("fine_tune_encoder", False))
     encoder_finetune_lr = float(config.get("encoder_finetune_lr", 1e-5))
@@ -1876,7 +1930,7 @@ if __name__ == "__main__":
     # Save training history
     # =========================
 
-    save_path = "./results/loss.txt"
+    save_path = os.path.join(results_dir, "loss.txt")
 
     with open(save_path, "w") as f:
         f.write("epoch,train_loss,mse_loss,trend_loss,val_mse,val_mae,val_trend_acc\n")
@@ -1981,7 +2035,7 @@ if __name__ == "__main__":
             device=device,
             eval_type=config["eval_type"],
             config=config,
-            save_dir="./results",
+            save_dir=results_dir,
         )
     )
 
@@ -2001,7 +2055,7 @@ if __name__ == "__main__":
             dataset=test_loader.dataset,
             device=device,
             config=config,
-            save_dir="./results",
+            save_dir=results_dir,
         )
     )
 
@@ -2032,7 +2086,7 @@ if __name__ == "__main__":
                     "drift",
                 ],
             ),
-            save_dir="./results",
+            save_dir=results_dir,
         )
     )
 
@@ -2054,13 +2108,13 @@ if __name__ == "__main__":
     comparison_paths = save_model_comparison(
         model_rows=model_comparison_rows,
         config=config,
-        save_dir="./results",
+        save_dir=results_dir,
     )
 
     visualize_model_comparison(
         model_rows=model_comparison_rows,
         config=config,
-        save_dir="./results",
+        save_dir=results_dir,
     )
 
     # =========================
@@ -2080,10 +2134,9 @@ if __name__ == "__main__":
     plt.title(f"{data_title(config)} - Rolling Forecast Error over Time")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    metric_png_path = (
-        "./results/"
-        + config["eval_type"]
-        + f"_rolling_metrics_test_{timestamp}.png"
+    metric_png_path = os.path.join(
+        results_dir,
+        config["eval_type"] + f"_rolling_metrics_test_{timestamp}.png",
     )
 
     plt.savefig(metric_png_path, dpi=300, bbox_inches="tight")
@@ -2116,10 +2169,10 @@ if __name__ == "__main__":
         "Last Point of Each Predicted Patch"
     )
 
-    last_point_png_path = (
-        "./results/"
-        + config["eval_type"]
-        + f"_rolling_last_point_tsjepa_vs_gru_test_{timestamp}.png"
+    last_point_png_path = os.path.join(
+        results_dir,
+        config["eval_type"]
+        + f"_rolling_last_point_tsjepa_vs_gru_test_{timestamp}.png",
     )
 
     plt.savefig(last_point_png_path, dpi=300, bbox_inches="tight")
@@ -2158,7 +2211,7 @@ if __name__ == "__main__":
         device=device,
         eval_type=config["eval_type"],
         config=config,
-        save_dir="./results/rolling_windows_with_baselines",
+        save_dir=os.path.join(results_dir, "rolling_windows_with_baselines"),
         sample_indices=[60],
         make_gif=False,
         baseline_names=[
@@ -2173,6 +2226,7 @@ if __name__ == "__main__":
         all_targets=all_targets,
         config=config,
         gru_preds=gru_preds,
+        save_dir=results_dir,
     )
 
     # # =========================

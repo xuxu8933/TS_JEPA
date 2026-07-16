@@ -1,0 +1,479 @@
+import copy
+import re
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+import torch
+
+from config.config_pretrain import config as base_config
+from eval_forecast_prequential_with_baselines_gru_volume import (
+    load_pretrained_encoder_state,
+)
+from pretrain_dual_loss import (
+    ema_momentum_at_step,
+    initialize_models,
+    make_strategy_masks,
+    parse_args,
+    restore_training_state,
+    save_checkpoint,
+)
+from plot_top_stock_metrics import latest_comparison_files, load_rows
+from run_top_nasdaq100_stocks import (
+    build_combined_plot_command,
+    build_stock_commands,
+)
+from src.models.decoder import ResidualMLPDecoder
+from src.models.encoder import Encoder
+from src.models.tokenizer import TS_Tokenizer
+from src.data_loaders.data_class_roll_volume import CSVDataLoader
+from tests.test_dual_loss_smoke import REPO_ROOT, _run_command, _sin_cos_rows, _write_rows
+
+
+class UnifiedDualLossTest(unittest.TestCase):
+    def test_stock_runner_uses_unified_entrypoints_for_both_strategies(self):
+        args = SimpleNamespace(
+            mask_strategy="local_long",
+            mae_window_patches=1,
+            jepa_gap_patches=4,
+            jepa_target_patches=4,
+            future_target_patches=4,
+            causal_num_blocks=2,
+            causal_block_patches=2,
+            causal_block_gap_patches=1,
+            pretrain_stride=5,
+            normalization="window_return",
+            seed=42,
+            seeds=None,
+            encoder_weights="ema",
+            skip_pretrain=False,
+            pretrain_num_epochs=3,
+            lambda_jepa=1.0,
+            lambda_mae=0.5,
+            jepa_loss="mse",
+            mae_loss="mse",
+            checkpoint_to_use=2,
+            use_best_checkpoint=False,
+            eval_num_epochs=4,
+            results_dir="./custom-results",
+        )
+
+        pretrain_command, eval_command = build_stock_commands(args, "NVDA")
+
+        self.assertIn("pretrain_dual_loss.py", pretrain_command)
+        self.assertIn("eval_dual_loss.py", eval_command)
+        self.assertIn("local_long", pretrain_command)
+        self.assertIn("local_long", eval_command)
+        self.assertIn("--results-dir", eval_command)
+        self.assertIn("custom-results/NVDA/seed_42", eval_command)
+        self.assertIn("--pretrain-checkpoint-path", eval_command)
+        self.assertIn("--seed", pretrain_command)
+
+        combined_command = build_combined_plot_command(args, ["NVDA", "MSFT"])
+        self.assertIn("plot_top_stock_metrics.py", combined_command)
+        self.assertEqual(combined_command[-2:], ["NVDA", "MSFT"])
+        self.assertEqual(
+            combined_command[combined_command.index("--output-prefix") + 1],
+            "top_2_nasdaq100",
+        )
+        self.assertEqual(
+            combined_command[combined_command.index("--figure-title") + 1],
+            "top_2_nasdaq100",
+        )
+        self.assertEqual(
+            combined_command[combined_command.index("--results-dir") + 1],
+            "./custom-results",
+        )
+
+    def test_combined_plot_discovers_nested_stock_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp) / "results"
+            stock_dir = results_dir / "NVDA"
+            stock_dir.mkdir(parents=True)
+            txt_path = stock_dir / "last_model_comparison_20260101_000000.txt"
+            txt_path.write_text("Data source: NVDA\n")
+            txt_path.with_suffix(".csv").write_text(
+                "model,mse,mae,trend_accuracy\nTS-JEPA,0.1,0.2,0.6\n"
+            )
+
+            latest = latest_comparison_files(results_dir)
+
+        self.assertEqual(latest["NVDA"], [txt_path])
+
+    def test_combined_plot_aggregates_multiple_seed_runs(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp) / "results"
+            for seed, mse in ((7, 0.1), (17, 0.3)):
+                stock_dir = results_dir / "NVDA" / f"seed_{seed}"
+                stock_dir.mkdir(parents=True)
+                txt_path = stock_dir / "last_model_comparison_20260101_000000.txt"
+                txt_path.write_text("Data source: NVDA\n")
+                txt_path.with_suffix(".csv").write_text(
+                    "model,mse,mae,trend_accuracy\n"
+                    f"TS-JEPA,{mse},0.2,0.6\n"
+                )
+
+            rows = load_rows(results_dir, ["NVDA"], ["TS-JEPA"])
+            seed_7_rows = load_rows(
+                results_dir,
+                ["NVDA"],
+                ["TS-JEPA"],
+                seeds=[7],
+            )
+
+        self.assertEqual(int(rows.iloc[0]["num_runs"]), 2)
+        self.assertAlmostEqual(float(rows.iloc[0]["mse"]), 0.2)
+        self.assertGreater(float(rows.iloc[0]["mse_std"]), 0.0)
+        self.assertEqual(int(seed_7_rows.iloc[0]["num_runs"]), 1)
+        self.assertAlmostEqual(float(seed_7_rows.iloc[0]["mse"]), 0.1)
+
+    def test_unified_parser_builds_strategy_specific_paths(self):
+        default_config = parse_args(copy.deepcopy(base_config), argv=[])
+        random_config = parse_args(copy.deepcopy(base_config), argv=["--seed", "7"])
+        local_config = parse_args(
+            copy.deepcopy(base_config),
+            argv=["--mask-strategy", "local_long", "--seed", "7"],
+        )
+
+        self.assertEqual(default_config["seed"], 42)
+        self.assertEqual(random_config["mask_strategy"], "random")
+        self.assertIn("_dual_jepa_mae_", random_config["path_save"])
+        self.assertEqual(local_config["mask_strategy"], "local_long")
+        self.assertIn("_local_mae_long_jepa_", local_config["path_save"])
+        self.assertEqual(random_config["seed"], 7)
+        self.assertEqual(random_config["pretrain_stride"], random_config["patch_size"])
+        other_seed_config = parse_args(
+            copy.deepcopy(base_config),
+            argv=["--seed", "17"],
+        )
+        self.assertNotEqual(
+            random_config["config_fingerprint"],
+            other_seed_config["config_fingerprint"],
+        )
+
+    def test_local_long_masks_are_causal_disjoint_and_ordered(self):
+        config = {
+            "mae_window_patches": 2,
+            "jepa_gap_patches": 5,
+            "jepa_target_patches": 3,
+            "anchor_strategy": "fixed",
+            "fixed_anchor": 2,
+        }
+        masks = make_strategy_masks(
+            config=config,
+            batch_size=3,
+            num_patches=12,
+            device=torch.device("cpu"),
+        )
+
+        self.assertEqual(masks["anchor"], 2)
+        self.assertEqual(masks["mae"][0].tolist(), [2, 3])
+        self.assertEqual(masks["jepa"][0].tolist(), [7, 8, 9])
+        self.assertEqual(masks["predict"][0].tolist(), [2, 3, 7, 8, 9])
+        self.assertEqual(masks["context"][0].tolist(), [0, 1, 4, 5, 6])
+        self.assertTrue(torch.equal(masks["context"][0], masks["context"][2]))
+
+    def test_future_and_multiblock_masks_use_only_past_context(self):
+        future_config = {
+            "mask_strategy": "future_block",
+            "future_target_patches": 3,
+            "anchor_strategy": "fixed",
+            "fixed_anchor": 4,
+        }
+        future = make_strategy_masks(
+            future_config,
+            batch_size=2,
+            num_patches=12,
+            device=torch.device("cpu"),
+        )
+        self.assertEqual(future["context"][0].tolist(), [0, 1, 2, 3])
+        self.assertEqual(future["jepa"][0].tolist(), [4, 5, 6])
+        self.assertLess(future["context"].max(), future["jepa"].min())
+
+        multiblock_config = {
+            "mask_strategy": "causal_multiblock",
+            "causal_num_blocks": 2,
+            "causal_block_patches": 2,
+            "causal_block_gap_patches": 1,
+            "anchor_strategy": "fixed",
+            "fixed_anchor": 3,
+        }
+        multiblock = make_strategy_masks(
+            multiblock_config,
+            batch_size=2,
+            num_patches=12,
+            device=torch.device("cpu"),
+        )
+        self.assertEqual(multiblock["context"][0].tolist(), [0, 1, 2])
+        self.assertEqual(multiblock["jepa"][0].tolist(), [3, 4, 6, 7])
+        self.assertLess(multiblock["context"].max(), multiblock["jepa"].min())
+
+    def test_train_zscore_and_pretrain_stride_use_train_split_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_path = Path(tmp) / "data" / "NORMALIZE" / "NORMALIZE.csv"
+            _write_rows(data_path, _sin_cos_rows(180))
+            dataset = CSVDataLoader(
+                path_data=str(data_path),
+                series_split_size=20,
+                patch_size=5,
+                stride=5,
+                normalization="train_zscore",
+                feature_cols=("Close", "Volume"),
+                sentiment_path=None,
+                validation_fraction=0.25,
+                test_fraction=0.1,
+            )
+            val_dataset = CSVDataLoader(
+                path_data=str(data_path),
+                series_split_size=20,
+                patch_size=5,
+                stride=5,
+                normalization="train_zscore",
+                normalization_stats=dataset.normalization_stats,
+                split="val",
+                mask_seed=10_000,
+                feature_cols=("Close", "Volume"),
+                sentiment_path=None,
+                validation_fraction=0.25,
+                test_fraction=0.1,
+            )
+
+            expected_windows = (len(dataset.train_df) - 20) // 5 + 1
+            self.assertEqual(dataset.stride, 5)
+            self.assertEqual(len(dataset), expected_windows)
+            self.assertTrue(
+                torch.allclose(
+                    torch.tensor(dataset.normalization_stats["mean"]),
+                    dataset.train_df.mean(dim=0),
+                )
+            )
+            self.assertEqual(
+                val_dataset.normalization_stats,
+                dataset.normalization_stats,
+            )
+
+    def test_ema_schedule_advances_per_optimizer_step(self):
+        values = [ema_momentum_at_step(0.9, step, 10) for step in range(11)]
+        self.assertEqual(values[0], 0.9)
+        self.assertAlmostEqual(values[-1], 1.0)
+        self.assertTrue(all(left <= right for left, right in zip(values, values[1:])))
+
+    def test_complete_checkpoint_restores_training_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            encoder = torch.nn.Linear(3, 3)
+            encoder_ema = copy.deepcopy(encoder)
+            predictor = torch.nn.Linear(3, 3)
+            decoder = torch.nn.Linear(3, 3)
+            optimizer = torch.optim.AdamW(
+                list(encoder.parameters())
+                + list(predictor.parameters())
+                + list(decoder.parameters()),
+                lr=0.01,
+            )
+            scheduler = torch.optim.lr_scheduler.LinearLR(
+                optimizer,
+                start_factor=1.0,
+                end_factor=0.5,
+                total_iters=4,
+            )
+            checkpoint_path = save_checkpoint(
+                encoder,
+                predictor,
+                decoder,
+                str(Path(tmp) / "resume"),
+                epoch=2,
+                config={"mask_strategy": "random", "config_fingerprint": "abc"},
+                encoder_ema=encoder_ema,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                global_step=7,
+                best_validation_loss=0.25,
+            )
+            original_weight = encoder.weight.detach().clone()
+            with torch.no_grad():
+                encoder.weight.zero_()
+
+            restored = restore_training_state(
+                checkpoint_path,
+                encoder,
+                predictor,
+                decoder,
+                encoder_ema,
+                optimizer,
+                scheduler,
+                device=torch.device("cpu"),
+                expected_fingerprint="abc",
+            )
+
+            self.assertTrue(torch.equal(encoder.weight, original_weight))
+            self.assertEqual(restored["start_epoch"], 3)
+            self.assertEqual(restored["global_step"], 7)
+            self.assertEqual(restored["best_validation_loss"], 0.25)
+
+    def test_residual_decoder_keeps_zero_initialized_residual_branch(self):
+        encoder = torch.nn.Sequential(torch.nn.Linear(4, 8))
+        predictor = torch.nn.Sequential(torch.nn.Linear(8, 8))
+        decoder = ResidualMLPDecoder(emb_dim=8, patch_size=4, hidden_dim=8)
+
+        initialize_models(encoder, predictor, decoder)
+
+        self.assertEqual(torch.count_nonzero(decoder.residual_head[-1].weight), 0)
+        self.assertEqual(torch.count_nonzero(decoder.residual_head[-1].bias), 0)
+
+    def test_tokenizer_honors_disabled_embedding_bias(self):
+        tokenizer = TS_Tokenizer(
+            dim_in=8,
+            kernel_size=2,
+            embed_dim=8,
+            embed_bias=False,
+        )
+        self.assertIsNone(tokenizer.proj.bias)
+        self.assertIsNone(tokenizer.fc.bias)
+
+    def test_downstream_encoder_can_use_a_different_context_length(self):
+        kwargs = {
+            "dim_in": 8,
+            "kernel_size": 2,
+            "embed_dim": 8,
+            "embed_bias": True,
+            "nhead": 2,
+            "num_layers": 1,
+            "jepa": True,
+        }
+        pretrained = Encoder(num_patches=8, **kwargs)
+        downstream = Encoder(num_patches=5, **kwargs)
+        pretrained_state = pretrained.state_dict()
+
+        load_pretrained_encoder_state(downstream, pretrained_state)
+
+        self.assertEqual(tuple(downstream.pos_embed.shape), (1, 5, 8))
+        self.assertTrue(
+            torch.equal(
+                downstream.tokenizer.fc.weight,
+                pretrained.tokenizer.fc.weight,
+            )
+        )
+
+    def test_local_strategy_trains_and_saves_unified_checkpoint(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            workdir = Path(tmp)
+            data_name = "SMOKE_LOCAL_LONG"
+            data_path = workdir / "data" / data_name / f"{data_name}.csv"
+            _write_rows(data_path, _sin_cos_rows())
+
+            output = _run_command(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "pretrain_dual_loss.py"),
+                    "--data",
+                    data_name,
+                    "--mask-strategy",
+                    "local_long",
+                    "--feature-cols",
+                    "Close",
+                    "Volume",
+                    "--sentiment-path",
+                    "none",
+                    "--train-end-date",
+                    "none",
+                    "--test-start-date",
+                    "none",
+                    "--validation-fraction",
+                    "0.25",
+                    "--test-fraction",
+                    "0.1",
+                    "--series-split-size",
+                    "40",
+                    "--patch-size",
+                    "4",
+                    "--batch-size",
+                    "2",
+                    "--num-epochs",
+                    "1",
+                    "--max-batches-per-epoch",
+                    "1",
+                    "--checkpoint-save",
+                    "99",
+                    "--checkpoint-print",
+                    "1",
+                    "--lr",
+                    "0.001",
+                    "--end-lr",
+                    "0.001",
+                    "--ema-momentum",
+                    "0.9",
+                    "--mask-ratio",
+                    "0.4",
+                    "--encoder-embed-dim",
+                    "16",
+                    "--encoder-nhead",
+                    "2",
+                    "--encoder-num-layers",
+                    "1",
+                    "--encoder-kernel-size",
+                    "3",
+                    "--predictor-embed",
+                    "8",
+                    "--predictor-nhead",
+                    "2",
+                    "--predictor-num-layers",
+                    "1",
+                    "--mae-window-patches",
+                    "1",
+                    "--jepa-gap-patches",
+                    "4",
+                    "--jepa-target-patches",
+                    "3",
+                    "--anchor-strategy",
+                    "fixed",
+                    "--fixed-anchor",
+                    "1",
+                    "--seed",
+                    "7",
+                ],
+                cwd=workdir,
+            )
+
+            match = re.search(r"Saved checkpoint:\s*(.+\.pt)", output)
+            self.assertIsNotNone(match, output)
+            checkpoint_path = workdir / match.group(1)
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location="cpu",
+                weights_only=False,
+            )
+            self.assertEqual(checkpoint["strategy"], "local_mae_long_jepa")
+            self.assertEqual(checkpoint["config"]["mask_strategy"], "local_long")
+            self.assertIn("encoder_ema", checkpoint)
+            self.assertIn("optimizer", checkpoint)
+            self.assertIn("scheduler", checkpoint)
+            self.assertIn("global_step", checkpoint)
+            self.assertIn("ema_schedule_steps", checkpoint)
+            self.assertIn("rng_state", checkpoint)
+            self.assertIn("avg_anchor: 1.00", output)
+            self.assertIn("Validation epoch 0", output)
+            self.assertIn("validation_history", checkpoint["config"])
+
+            eval_output = _run_command(
+                [
+                    sys.executable,
+                    str(REPO_ROOT / "eval_dual_loss.py"),
+                    "--data",
+                    data_name,
+                    "--mask-strategy",
+                    "local_long",
+                    "--pretrain-checkpoint-path",
+                    str(checkpoint_path),
+                    "--dry-run",
+                ],
+                cwd=workdir,
+            )
+            self.assertIn("Local-MAE + long-JEPA checkpoint:", eval_output)
+            self.assertIn("--patch_size 4", eval_output)
+            self.assertIn("--feature_cols Close Volume", eval_output)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -4,6 +4,10 @@ config = {
     "path_train" : "./data/FordB/train_data.ts",
     "path_test" : "./data/FordB/test_data.ts",
     "path_save" : "./logs/output_model/",
+    "results_dir" : "./results",
+    "normalization": "window_return",
+    "normalization_stats": None,
+    "pretrain_encoder_weights": "ema",
 
     "regression": False,
     "target_feature_index": 0,

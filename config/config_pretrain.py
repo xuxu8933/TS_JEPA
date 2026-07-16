@@ -1,10 +1,10 @@
 config = {
     "data": "NVDA",
 
-    "pretrain_until_index": 999,
     "series_split_size": 60,
-    "patch_size": 5,    
-    "normalize_on_train_only": True,
+    "patch_size": 5,
+    "pretrain_stride": None,  # resolved to patch_size by the active CLI
+    "normalization": "window_return",
     "feature_cols": [
         "Close",
         "Volume",
@@ -18,6 +18,8 @@ config = {
     "validation_fraction": 0.05,
     "test_fraction": 0.15,
     "target_feature_index": 0,
+    "seed": 42,
+    "deterministic": True,
 
     "wandb_project_name": "",
     "log_wandb" : False,
@@ -27,6 +29,8 @@ config = {
     # Printing and Logging settings
     "checkpoint_save" : 500,
     "checkpoint_print": 30,
+    "validation_interval": 10,
+    "validation_max_batches": None,
 
     # Loader
     "mask_ratio" : 0.7,
@@ -54,5 +58,11 @@ config = {
     # Predictor
     "predictor_embed" : 128,
     "predictor_nhead" : 2,
-    "predictor_num_layers": 1
+    "predictor_num_layers": 1,
+
+    # Causal masking
+    "future_target_patches": 4,
+    "causal_num_blocks": 2,
+    "causal_block_patches": 2,
+    "causal_block_gap_patches": 1,
     }

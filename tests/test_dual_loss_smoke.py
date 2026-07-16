@@ -297,10 +297,10 @@ def _pretrain_smoke_case(workdir, data_name, rows, python_executable=None):
         cwd=workdir,
     )
 
-    match = re.search(r"Saved checkpoint:\s*(.+\.pt)", output)
-    if match is None:
+    matches = re.findall(r"Saved checkpoint:\s*(.+\.pt)", output)
+    if not matches:
         raise RuntimeError(f"Could not find checkpoint path in output:\n{output}")
-    checkpoint_path = Path(match.group(1))
+    checkpoint_path = Path(matches[-1])
     if not checkpoint_path.is_absolute():
         checkpoint_path = workdir / checkpoint_path
     if not checkpoint_path.exists():
@@ -373,10 +373,10 @@ def _pretrain_mnist_row_case(workdir, mnist_root, python_executable=None):
         timeout=180,
     )
 
-    match = re.search(r"Saved checkpoint:\s*(.+\.pt)", output)
-    if match is None:
+    matches = re.findall(r"Saved checkpoint:\s*(.+\.pt)", output)
+    if not matches:
         raise RuntimeError(f"Could not find checkpoint path in output:\n{output}")
-    checkpoint_path = Path(match.group(1))
+    checkpoint_path = Path(matches[-1])
     if not checkpoint_path.is_absolute():
         checkpoint_path = workdir / checkpoint_path
     return checkpoint_path, output

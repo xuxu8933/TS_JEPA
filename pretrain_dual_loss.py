@@ -1,21 +1,28 @@
 """
-Pretrain TS-JEPA with a dual JEPA + MAE reconstruction objective.
+Pretrain TS-JEPA with unified JEPA + MAE reconstruction objectives.
 
 The predictor produces target embeddings for masked patches:
     z_hat_T = P(E_context(x_C))
 
-The reconstruction decoder maps those predicted target embeddings back to
-masked patch vectors:
+The reconstruction decoder maps predicted embeddings back to patch vectors:
     x_hat_T = D(z_hat_T)
+
+Four masking strategies are supported:
+    random:     JEPA and MAE use the same randomly masked patches.
+    local_long: MAE reconstructs a local window while JEPA predicts a farther
+                latent window from causal context.
+    future_block: use past context to predict one contiguous future block.
+    causal_multiblock: use past context to predict multiple future blocks.
 """
 
 import argparse
 import copy
+import hashlib
+import json
 import os
 import random
 import runpy
 import sys
-import warnings
 
 import numpy as np
 import torch
@@ -32,9 +39,6 @@ from src.models.predictor import Predictor
 from src.models.utils.mask_utils import apply_mask
 
 
-warnings.filterwarnings("ignore")
-
-
 def _none_if_requested(value):
     if value is None:
         return None
@@ -45,6 +49,64 @@ def _none_if_requested(value):
 
 def _float_for_path(value):
     return str(value).replace("/", "_")
+
+
+EXPERIMENT_ID_KEYS = (
+    "input_mode",
+    "mnist_train_samples",
+    "mnist_val_samples",
+    "mask_strategy",
+    "seed",
+    "deterministic",
+    "series_split_size",
+    "patch_size",
+    "pretrain_stride",
+    "normalization",
+    "feature_cols",
+    "timestamp_col",
+    "sentiment_path",
+    "train_end_date",
+    "test_start_date",
+    "validation_fraction",
+    "test_fraction",
+    "batch_size",
+    "mask_ratio",
+    "end_lr",
+    "clip_grad",
+    "ipe_scale",
+    "lambda_jepa",
+    "lambda_mae",
+    "jepa_loss",
+    "mae_loss",
+    "encoder_embed_dim",
+    "encoder_nhead",
+    "encoder_num_layers",
+    "encoder_kernel_size",
+    "encoder_embed_bias",
+    "predictor_embed",
+    "predictor_nhead",
+    "predictor_num_layers",
+    "decoder_type",
+    "decoder_hidden_dim",
+    "decoder_num_layers",
+    "decoder_dropout",
+    "mae_window_patches",
+    "jepa_gap_patches",
+    "jepa_target_patches",
+    "anchor_strategy",
+    "fixed_anchor",
+    "future_target_patches",
+    "causal_num_blocks",
+    "causal_block_patches",
+    "causal_block_gap_patches",
+)
+
+
+def experiment_fingerprint(config):
+    """Stable identifier preventing incompatible runs from sharing a filename."""
+    identity = {key: config.get(key) for key in EXPERIMENT_ID_KEYS}
+    encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
 
 
 def build_pretrain_path(config):
@@ -76,10 +138,10 @@ def build_pretrain_path(config):
     return path_save + config.get("path_suffix", "")
 
 
-def parse_args(config):
+def parse_args(config, default_mask_strategy="random", argv=None):
     parser = argparse.ArgumentParser(
         description=(
-            "Dual-loss TS-JEPA pretraining: "
+            "Unified dual-loss TS-JEPA pretraining: "
             "lambda_jepa * JEPA + lambda_mae * MAE."
         )
     )
@@ -103,9 +165,24 @@ def parse_args(config):
         help="Number of MNIST training images used in row mode.",
     )
     parser.add_argument(
+        "--mnist-val-samples",
+        type=int,
+        default=128,
+        help="Disjoint MNIST training images reserved for deterministic validation.",
+    )
+    parser.add_argument(
         "--download-mnist",
         action="store_true",
         help="Download MNIST if it is absent from --mnist-root.",
+    )
+    parser.add_argument(
+        "--mask-strategy",
+        choices=("random", "local_long", "future_block", "causal_multiblock"),
+        default=default_mask_strategy,
+        help=(
+            "Choose random targets, local-MAE plus long-JEPA, one future "
+            "block, or multiple causal future blocks."
+        ),
     )
     parser.add_argument(
         "--mask_ratio",
@@ -149,6 +226,10 @@ def parse_args(config):
         dest="ratio_patches",
         type=int,
         default=config["ratio_patches"],
+        help=(
+            "Legacy checkpoint-naming field retained for compatibility; "
+            "--mask-ratio controls the number of random masked patches."
+        ),
     )
     parser.add_argument(
         "--checkpoint_save",
@@ -182,8 +263,21 @@ def parse_args(config):
     parser.add_argument(
         "--seed",
         type=int,
-        default=config.get("seed", None),
-        help="Random seed for reproducible smoke tests. Defaults to a random seed.",
+        default=config.get("seed", 42),
+        help="Random seed. Defaults to the reproducible config value (42).",
+    )
+    parser.add_argument(
+        "--deterministic",
+        dest="deterministic",
+        action="store_true",
+        default=config.get("deterministic", True),
+        help="Request deterministic PyTorch kernels (default).",
+    )
+    parser.add_argument(
+        "--no-deterministic",
+        dest="deterministic",
+        action="store_false",
+        help="Allow nondeterministic kernels for maximum throughput.",
     )
 
     parser.add_argument(
@@ -199,6 +293,26 @@ def parse_args(config):
         dest="patch_size",
         type=int,
         default=config.get("patch_size", 5),
+    )
+    parser.add_argument(
+        "--pretrain_stride",
+        "--pretrain-stride",
+        dest="pretrain_stride",
+        type=int,
+        default=config.get("pretrain_stride", None),
+        help="Sliding-window stride. Defaults to --patch-size.",
+    )
+    parser.add_argument(
+        "--normalization",
+        choices=("window_return", "train_zscore", "none"),
+        default=config.get("normalization", "window_return"),
+    )
+    parser.add_argument(
+        "--target_feature_index",
+        "--target-feature-index",
+        dest="target_feature_index",
+        type=int,
+        default=config.get("target_feature_index", 0),
     )
     parser.add_argument(
         "--feature_cols",
@@ -285,6 +399,12 @@ def parse_args(config):
         action="store_true",
         default=config.get("encoder_embed_bias", True),
     )
+    parser.add_argument(
+        "--no-encoder-embed-bias",
+        dest="encoder_embed_bias",
+        action="store_false",
+        help="Disable bias in the encoder tokenizer embedding layer.",
+    )
 
     parser.add_argument(
         "--predictor_embed",
@@ -366,6 +486,80 @@ def parse_args(config):
     )
 
     parser.add_argument(
+        "--mae_window_patches",
+        "--mae-window-patches",
+        dest="mae_window_patches",
+        type=int,
+        default=config.get("mae_window_patches", 1),
+        help="Number of local patches reconstructed by MAE in local_long mode.",
+    )
+    parser.add_argument(
+        "--jepa_gap_patches",
+        "--jepa-gap-patches",
+        dest="jepa_gap_patches",
+        type=int,
+        default=config.get("jepa_gap_patches", 4),
+        help="Offset from the local MAE anchor to the JEPA target window.",
+    )
+    parser.add_argument(
+        "--jepa_target_patches",
+        "--jepa-target-patches",
+        dest="jepa_target_patches",
+        type=int,
+        default=config.get("jepa_target_patches", 4),
+        help="Number of farther latent patches predicted in local_long mode.",
+    )
+    parser.add_argument(
+        "--anchor_strategy",
+        "--anchor-strategy",
+        dest="anchor_strategy",
+        choices=("random", "fixed"),
+        default=config.get("anchor_strategy", "random"),
+    )
+    parser.add_argument(
+        "--fixed_anchor",
+        "--fixed-anchor",
+        dest="fixed_anchor",
+        type=int,
+        default=config.get("fixed_anchor", 0),
+    )
+    parser.add_argument(
+        "--future-target-patches",
+        type=int,
+        default=config.get("future_target_patches", 4),
+    )
+    parser.add_argument(
+        "--causal-num-blocks",
+        type=int,
+        default=config.get("causal_num_blocks", 2),
+    )
+    parser.add_argument(
+        "--causal-block-patches",
+        type=int,
+        default=config.get("causal_block_patches", 2),
+    )
+    parser.add_argument(
+        "--causal-block-gap-patches",
+        type=int,
+        default=config.get("causal_block_gap_patches", 1),
+    )
+    parser.add_argument(
+        "--validation-interval",
+        type=int,
+        default=config.get("validation_interval", 10),
+    )
+    parser.add_argument(
+        "--validation-max-batches",
+        type=int,
+        default=config.get("validation_max_batches", None),
+    )
+    parser.add_argument(
+        "--resume-from",
+        default=None,
+        help="Resume complete training state from a unified checkpoint.",
+    )
+
+    parser.add_argument(
         "--max_batches_per_epoch",
         "--max-batches-per-epoch",
         dest="max_batches_per_epoch",
@@ -391,7 +585,7 @@ def parse_args(config):
         "--compatible-save-name",
         dest="compatible_save_name",
         action="store_true",
-        help="Do not suffix the checkpoint path, so the current downstream evaluator can find it.",
+        help="Save without a strategy suffix for compatibility with legacy tooling.",
     )
     parser.add_argument(
         "--run_eval",
@@ -413,8 +607,24 @@ def parse_args(config):
         type=int,
         default=None,
     )
+    parser.add_argument(
+        "--eval-use-best",
+        action="store_true",
+        help="Run downstream evaluation from the best validation checkpoint.",
+    )
+    parser.add_argument(
+        "--eval-encoder-weights",
+        choices=("ema", "online"),
+        default="ema",
+        help="Encoder weights used by automatic downstream evaluation.",
+    )
+    parser.add_argument(
+        "--eval-results-dir",
+        default=None,
+        help="Optional output directory for automatic downstream evaluation.",
+    )
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     cfg = copy.deepcopy(config)
 
     for key, value in vars(args).items():
@@ -426,35 +636,353 @@ def parse_args(config):
     cfg["test_start_date"] = _none_if_requested(args.test_start_date)
     cfg["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
 
-    seed = args.seed if args.seed is not None else random.randint(0, 100)
+    cfg["pretrain_stride"] = (
+        args.patch_size if args.pretrain_stride is None else args.pretrain_stride
+    )
+
+    seed = int(args.seed)
     np.random.seed(seed)
     random.seed(seed)
     torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.benchmark = not args.deterministic
+    torch.backends.cudnn.deterministic = args.deterministic
+    torch.use_deterministic_algorithms(args.deterministic, warn_only=True)
     cfg["seed"] = seed
 
+    positive_args = (
+        ("batch-size", args.batch_size),
+        ("num-epochs", args.num_epochs),
+        ("checkpoint-save", args.checkpoint_save),
+        ("checkpoint-print", args.checkpoint_print),
+        ("ratio-patches", args.ratio_patches),
+        ("series-split-size", args.series_split_size),
+        ("patch-size", args.patch_size),
+        ("pretrain-stride", cfg["pretrain_stride"]),
+        ("validation-interval", args.validation_interval),
+        ("future-target-patches", args.future_target_patches),
+        ("causal-num-blocks", args.causal_num_blocks),
+        ("causal-block-patches", args.causal_block_patches),
+        ("mnist-val-samples", args.mnist_val_samples),
+    )
+    for name, value in positive_args:
+        if int(value) <= 0:
+            raise ValueError(f"--{name} must be positive, got {value}")
     if args.max_batches_per_epoch is not None and args.max_batches_per_epoch <= 0:
         raise ValueError("--max-batches-per-epoch must be positive when set")
+    if args.validation_max_batches is not None and args.validation_max_batches <= 0:
+        raise ValueError("--validation-max-batches must be positive when set")
+    if args.causal_block_gap_patches < 0:
+        raise ValueError("--causal-block-gap-patches must be non-negative")
+    if not 0.0 < float(args.mask_ratio) < 1.0:
+        raise ValueError("--mask-ratio must be strictly between 0 and 1")
+    if float(args.lr) <= 0:
+        raise ValueError("--lr must be positive")
+    if not 0 < float(args.end_lr) <= float(args.lr):
+        raise ValueError("--end-lr must be positive and no greater than --lr")
+    if not 0.0 <= float(args.ema_momentum) < 1.0:
+        raise ValueError("--ema-momentum must be in [0, 1)")
+    if float(args.ipe_scale) <= 0:
+        raise ValueError("--ipe-scale must be positive")
+    if float(args.lambda_jepa) < 0 or float(args.lambda_mae) < 0:
+        raise ValueError("--lambda-jepa and --lambda-mae must be non-negative")
+    if float(args.lambda_jepa) == 0 and float(args.lambda_mae) == 0:
+        raise ValueError("At least one loss weight must be positive")
 
     if args.compatible_save_name:
         cfg["path_suffix"] = ""
     elif args.path_suffix is not None:
         cfg["path_suffix"] = args.path_suffix
     else:
-        cfg["path_suffix"] = (
-            "_dual_jepa_mae_ljepa_"
-            + _float_for_path(args.lambda_jepa)
-            + "_lmae_"
-            + _float_for_path(args.lambda_mae)
-        )
+        if args.mask_strategy == "local_long":
+            cfg["path_suffix"] = (
+                "_local_mae_long_jepa_ljepa_"
+                + _float_for_path(args.lambda_jepa)
+                + "_lmae_"
+                + _float_for_path(args.lambda_mae)
+                + "_mae_"
+                + str(args.mae_window_patches)
+                + "_gap_"
+                + str(args.jepa_gap_patches)
+                + "_jepa_"
+                + str(args.jepa_target_patches)
+            )
+        elif args.mask_strategy == "future_block":
+            cfg["path_suffix"] = (
+                "_future_block_ljepa_"
+                + _float_for_path(args.lambda_jepa)
+                + "_lmae_"
+                + _float_for_path(args.lambda_mae)
+                + "_target_"
+                + str(args.future_target_patches)
+            )
+        elif args.mask_strategy == "causal_multiblock":
+            cfg["path_suffix"] = (
+                "_causal_multiblock_ljepa_"
+                + _float_for_path(args.lambda_jepa)
+                + "_lmae_"
+                + _float_for_path(args.lambda_mae)
+                + "_blocks_"
+                + str(args.causal_num_blocks)
+                + "_size_"
+                + str(args.causal_block_patches)
+                + "_gap_"
+                + str(args.causal_block_gap_patches)
+            )
+        else:
+            cfg["path_suffix"] = (
+                "_dual_jepa_mae_ljepa_"
+                + _float_for_path(args.lambda_jepa)
+                + "_lmae_"
+                + _float_for_path(args.lambda_mae)
+            )
 
-    if cfg["run_eval"] and cfg["path_suffix"]:
-        raise ValueError(
-            "--run-eval uses the existing downstream checkpoint path. "
-            "Pass --compatible-save-name if you want this script to run it."
-        )
+    if not args.compatible_save_name:
+        cfg["config_fingerprint"] = experiment_fingerprint(cfg)
+        cfg["path_suffix"] += "_cfg_" + cfg["config_fingerprint"]
 
     cfg["path_save"] = build_pretrain_path(cfg)
     return cfg
+
+
+def validate_strategy_config(config, num_patches):
+    """Validate the configured structured mask and return its anchor range."""
+    strategy = config.get("mask_strategy", "local_long")
+
+    if strategy == "future_block":
+        target_len = int(config["future_target_patches"])
+        max_anchor = num_patches - target_len
+        min_anchor = 1
+        if max_anchor < min_anchor:
+            raise ValueError(
+                "future_block requires at least one context patch before its target: "
+                f"num_patches={num_patches}, target_patches={target_len}"
+            )
+        if config["anchor_strategy"] == "fixed" and not (
+            min_anchor <= int(config["fixed_anchor"]) <= max_anchor
+        ):
+            raise ValueError(
+                f"--fixed-anchor must be in [{min_anchor}, {max_anchor}] "
+                "for future_block"
+            )
+        return min_anchor, max_anchor
+
+    if strategy == "causal_multiblock":
+        num_blocks = int(config["causal_num_blocks"])
+        block_len = int(config["causal_block_patches"])
+        gap = int(config["causal_block_gap_patches"])
+        target_span = num_blocks * block_len + (num_blocks - 1) * gap
+        max_anchor = num_patches - target_span
+        min_anchor = 1
+        if max_anchor < min_anchor:
+            raise ValueError(
+                "causal_multiblock target geometry does not fit after a non-empty "
+                f"context: num_patches={num_patches}, target_span={target_span}"
+            )
+        if config["anchor_strategy"] == "fixed" and not (
+            min_anchor <= int(config["fixed_anchor"]) <= max_anchor
+        ):
+            raise ValueError(
+                f"--fixed-anchor must be in [{min_anchor}, {max_anchor}] "
+                "for causal_multiblock"
+            )
+        return min_anchor, max_anchor
+
+    if strategy != "local_long":
+        raise ValueError(f"No structured-mask validation for strategy={strategy!r}")
+
+    mae_len = int(config["mae_window_patches"])
+    gap = int(config["jepa_gap_patches"])
+    jepa_len = int(config["jepa_target_patches"])
+
+    if mae_len <= 0:
+        raise ValueError("--mae-window-patches must be positive")
+    if gap <= 0:
+        raise ValueError("--jepa-gap-patches must be positive")
+    if jepa_len <= 0:
+        raise ValueError("--jepa-target-patches must be positive")
+    if mae_len >= gap:
+        raise ValueError(
+            "--mae-window-patches must be smaller than --jepa-gap-patches "
+            "so at least one visible context patch remains before the long target."
+        )
+
+    max_anchor = num_patches - gap - jepa_len
+    if max_anchor < 0:
+        raise ValueError(
+            "Need at least gap + jepa_target patches. "
+            f"num_patches={num_patches}, gap={gap}, jepa_target={jepa_len}"
+        )
+
+    if config["anchor_strategy"] == "fixed":
+        fixed_anchor = int(config["fixed_anchor"])
+        if fixed_anchor < 0 or fixed_anchor > max_anchor:
+            raise ValueError(
+                f"--fixed-anchor must be in [0, {max_anchor}], got {fixed_anchor}"
+            )
+
+    return 0, max_anchor
+
+
+def make_strategy_masks(
+    config,
+    batch_size,
+    num_patches,
+    device,
+    anchor_override=None,
+):
+    """Build one structured causal mask geometry for a complete batch.
+
+    A common anchor keeps every row's context length equal, which is required by
+    the current dense Transformer and mask representation. A new random anchor
+    is sampled for every batch.
+    """
+    strategy = config.get("mask_strategy", "local_long")
+    min_anchor, max_anchor = validate_strategy_config(config, num_patches)
+
+    if anchor_override is not None:
+        anchor = int(anchor_override)
+    elif config["anchor_strategy"] == "random":
+        anchor = int(
+            torch.randint(min_anchor, max_anchor + 1, size=()).item()
+        )
+    else:
+        anchor = int(config["fixed_anchor"])
+
+    if anchor < min_anchor or anchor > max_anchor:
+        raise ValueError(
+            f"anchor must be in [{min_anchor}, {max_anchor}], got {anchor}"
+        )
+
+    if strategy == "future_block":
+        target_len = int(config["future_target_patches"])
+        target_indices = torch.arange(anchor, anchor + target_len, device=device)
+        context_indices = torch.arange(0, anchor, device=device)
+        mae_indices = target_indices
+        jepa_indices = target_indices
+        predict_indices = target_indices
+    elif strategy == "causal_multiblock":
+        num_blocks = int(config["causal_num_blocks"])
+        block_len = int(config["causal_block_patches"])
+        block_gap = int(config["causal_block_gap_patches"])
+        blocks = [
+            torch.arange(
+                anchor + block_idx * (block_len + block_gap),
+                anchor + block_idx * (block_len + block_gap) + block_len,
+                device=device,
+            )
+            for block_idx in range(num_blocks)
+        ]
+        target_indices = torch.cat(blocks, dim=0)
+        context_indices = torch.arange(0, anchor, device=device)
+        mae_indices = target_indices
+        jepa_indices = target_indices
+        predict_indices = target_indices
+    else:
+        mae_len = int(config["mae_window_patches"])
+        gap = int(config["jepa_gap_patches"])
+        jepa_len = int(config["jepa_target_patches"])
+
+        mae_start = anchor
+        jepa_start = anchor + gap
+        mae_indices = torch.arange(mae_start, mae_start + mae_len, device=device)
+        jepa_indices = torch.arange(jepa_start, jepa_start + jepa_len, device=device)
+        predict_indices = torch.cat([mae_indices, jepa_indices], dim=0)
+
+        context_indices = torch.cat(
+            [
+                torch.arange(0, mae_start, device=device),
+                torch.arange(mae_start + mae_len, jepa_start, device=device),
+            ]
+        )
+    if context_indices.numel() == 0:
+        raise ValueError("Strategy created an empty context mask")
+
+    def repeat(indices):
+        return indices.unsqueeze(0).expand(batch_size, -1)
+
+    return {
+        "anchor": anchor,
+        "mae": repeat(mae_indices),
+        "jepa": repeat(jepa_indices),
+        "predict": repeat(predict_indices),
+        "context": repeat(context_indices),
+    }
+
+
+def validate_training_config(config, num_patches, patch_dim, loader_length):
+    """Fail early with actionable errors instead of failing inside a model."""
+    positive_ints = (
+        ("batch-size", config["batch_size"]),
+        ("num-epochs", config["num_epochs"]),
+        ("checkpoint-save", config["checkpoint_save"]),
+        ("checkpoint-print", config["checkpoint_print"]),
+        ("ratio-patches", config["ratio_patches"]),
+        ("encoder-embed-dim", config["encoder_embed_dim"]),
+        ("encoder-nhead", config["encoder_nhead"]),
+        ("encoder-num-layers", config["encoder_num_layers"]),
+        ("encoder-kernel-size", config["encoder_kernel_size"]),
+        ("predictor-embed", config["predictor_embed"]),
+        ("predictor-nhead", config["predictor_nhead"]),
+        ("predictor-num-layers", config["predictor_num_layers"]),
+    )
+    for name, value in positive_ints:
+        if int(value) <= 0:
+            raise ValueError(f"--{name} must be positive, got {value}")
+
+    if loader_length <= 0:
+        raise ValueError("The training loader contains no batches")
+    if config["max_batches_per_epoch"] is not None and int(
+        config["max_batches_per_epoch"]
+    ) <= 0:
+        raise ValueError("--max-batches-per-epoch must be positive when set")
+    if not 0.0 < float(config["mask_ratio"]) < 1.0:
+        raise ValueError("--mask-ratio must be strictly between 0 and 1")
+    if float(config["lr"]) <= 0:
+        raise ValueError("--lr must be positive")
+    if not 0 < float(config["end_lr"]) <= float(config["lr"]):
+        raise ValueError("--end-lr must be positive and no greater than --lr")
+    if not 0.0 <= float(config["ema_momentum"]) < 1.0:
+        raise ValueError("--ema-momentum must be in [0, 1)")
+    if float(config["ipe_scale"]) <= 0:
+        raise ValueError("--ipe-scale must be positive")
+    if float(config["lambda_jepa"]) < 0 or float(config["lambda_mae"]) < 0:
+        raise ValueError("--lambda-jepa and --lambda-mae must be non-negative")
+    if float(config["lambda_jepa"]) == 0 and float(config["lambda_mae"]) == 0:
+        raise ValueError("At least one of --lambda-jepa or --lambda-mae must be positive")
+    if not 0.0 <= float(config["decoder_dropout"]) < 1.0:
+        raise ValueError("--decoder-dropout must be in [0, 1)")
+    if int(config["decoder_hidden_dim"]) <= 0:
+        raise ValueError("--decoder-hidden-dim must be positive")
+    if int(config["decoder_num_layers"]) <= 0:
+        raise ValueError("--decoder-num-layers must be positive")
+    if int(config["encoder_embed_dim"]) % 2 != 0:
+        raise ValueError("--encoder-embed-dim must be even for sinusoidal positions")
+    if int(config["predictor_embed"]) % 2 != 0:
+        raise ValueError("--predictor-embed must be even for sinusoidal positions")
+    if int(config["encoder_embed_dim"]) % int(config["encoder_nhead"]) != 0:
+        raise ValueError("--encoder-embed-dim must be divisible by --encoder-nhead")
+    if int(config["predictor_embed"]) % int(config["predictor_nhead"]) != 0:
+        raise ValueError("--predictor-embed must be divisible by --predictor-nhead")
+    if int(config["encoder_kernel_size"]) > patch_dim:
+        raise ValueError(
+            "--encoder-kernel-size cannot exceed the flattened patch dimension "
+            f"({patch_dim})"
+        )
+    if num_patches < 2:
+        raise ValueError(f"At least two patches are required, got {num_patches}")
+
+    if config["mask_strategy"] != "random":
+        if config["input_mode"] != "timeseries":
+            raise ValueError("Structured causal masks require --input-mode timeseries")
+        validate_strategy_config(config, num_patches)
+
+
+def ema_momentum_at_step(base_momentum, step, total_steps):
+    """Linearly increase EMA momentum from its base value toward one."""
+    progress = min(max(step, 0), total_steps) / max(total_steps, 1)
+    return float(base_momentum) + progress * (1.0 - float(base_momentum))
 
 
 def loss_value(pred, target, kind):
@@ -465,6 +993,133 @@ def loss_value(pred, target, kind):
     if kind == "smooth_l1":
         return F.smooth_l1_loss(pred, target)
     raise ValueError(f"Unknown loss kind: {kind}")
+
+
+@torch.no_grad()
+def evaluate_pretraining(
+    encoder,
+    predictor,
+    decoder,
+    encoder_ema,
+    loader,
+    device,
+    config,
+):
+    """Evaluate deterministic masked objectives and simple collapse diagnostics."""
+    encoder.eval()
+    predictor.eval()
+    decoder.eval()
+    encoder_ema.eval()
+
+    total_jepa = 0.0
+    total_mae = 0.0
+    num_batches = 0
+    embedding_batches = []
+
+    for batch_idx, (patches, dataset_masks, dataset_non_masks) in enumerate(loader):
+        if (
+            config.get("validation_max_batches") is not None
+            and batch_idx >= int(config["validation_max_batches"])
+        ):
+            break
+
+        patches = patches.to(device)
+        if config["mask_strategy"] != "random":
+            min_anchor, max_anchor = validate_strategy_config(
+                config,
+                patches.shape[1],
+            )
+            if config.get("anchor_strategy", "random") == "fixed":
+                anchor = int(config["fixed_anchor"])
+            else:
+                anchor = min_anchor + (batch_idx % (max_anchor - min_anchor + 1))
+            objective_masks = make_strategy_masks(
+                config=config,
+                batch_size=patches.size(0),
+                num_patches=patches.shape[1],
+                device=device,
+                anchor_override=anchor,
+            )
+        else:
+            dataset_masks = dataset_masks.to(device)
+            dataset_non_masks = dataset_non_masks.to(device)
+            objective_masks = {
+                "anchor": None,
+                "mae": dataset_masks,
+                "jepa": dataset_masks,
+                "predict": dataset_masks,
+                "context": dataset_non_masks,
+            }
+
+        full_target_embeddings = encoder_ema(patches)
+        full_target_embeddings = F.layer_norm(
+            full_target_embeddings,
+            (full_target_embeddings.size(-1),),
+        )
+        target_ema = apply_mask(full_target_embeddings, objective_masks["jepa"])
+        target_patches = apply_mask(patches, objective_masks["mae"])
+        context_tokens = encoder(patches, mask=objective_masks["context"])
+        predicted = predictor(
+            context_tokens,
+            mask=objective_masks["predict"],
+            non_masks=objective_masks["context"],
+        )
+
+        if config["mask_strategy"] == "local_long":
+            mae_len = int(config["mae_window_patches"])
+            pred_mae = predicted[:, :mae_len]
+            pred_jepa = predicted[:, mae_len:]
+        else:
+            pred_mae = predicted
+            pred_jepa = predicted
+
+        reconstructed = decoder(pred_mae)
+        total_jepa += loss_value(
+            pred_jepa,
+            target_ema,
+            config["jepa_loss"],
+        ).item()
+        total_mae += loss_value(
+            reconstructed,
+            target_patches,
+            config["mae_loss"],
+        ).item()
+        num_batches += 1
+
+        if sum(batch.shape[0] for batch in embedding_batches) < 4096:
+            embedding_batches.append(
+                full_target_embeddings.reshape(-1, full_target_embeddings.shape[-1])
+                .detach()
+                .cpu()
+            )
+
+    if num_batches == 0:
+        raise RuntimeError("No validation batches were processed")
+
+    val_jepa = total_jepa / num_batches
+    val_mae = total_mae / num_batches
+    val_total = config["lambda_jepa"] * val_jepa + config["lambda_mae"] * val_mae
+
+    embeddings = torch.cat(embedding_batches, dim=0)[:4096]
+    centered = embeddings - embeddings.mean(dim=0, keepdim=True)
+    embedding_std = embeddings.std(dim=0, unbiased=False).mean().item()
+    covariance = centered.T.matmul(centered) / max(centered.shape[0] - 1, 1)
+    off_diagonal = covariance - torch.diag(torch.diag(covariance))
+    covariance_offdiag = off_diagonal.abs().mean().item()
+    eigenvalues = torch.linalg.eigvalsh(covariance).clamp_min(0)
+    probabilities = eigenvalues / eigenvalues.sum().clamp_min(1e-12)
+    effective_rank = torch.exp(
+        -(probabilities * probabilities.clamp_min(1e-12).log()).sum()
+    ).item()
+
+    return {
+        "total_loss": float(val_total),
+        "jepa_loss": float(val_jepa),
+        "mae_loss": float(val_mae),
+        "embedding_std": float(embedding_std),
+        "covariance_offdiag": float(covariance_offdiag),
+        "effective_rank": float(effective_rank),
+    }
 
 
 def build_decoder(config, patch_dim):
@@ -496,39 +1151,164 @@ def build_decoder(config, patch_dim):
     raise ValueError(f"Unknown decoder_type={decoder_type!r}")
 
 
-def save_checkpoint(encoder, predictor, decoder, path_save, epoch, config):
-    path_name = path_save + "_epoch_" + str(epoch) + ".pt"
-    os.makedirs(os.path.dirname(path_name), exist_ok=True)
-    torch.save(
-        {
-            "strategy": "dual_jepa_mae",
-            "encoder": encoder.state_dict(),
-            "predictor": predictor.state_dict(),
-            "decoder": decoder.state_dict(),
-            "epoch": epoch,
-            "config": config,
-        },
-        path_name,
+def initialize_models(encoder, predictor, decoder):
+    for model in (encoder, predictor, decoder):
+        for module in model.modules():
+            init_weights(module)
+
+    # Generic Linear initialization otherwise overwrites the residual decoder's
+    # intended zero residual branch.
+    if isinstance(decoder, ResidualMLPDecoder):
+        torch.nn.init.zeros_(decoder.residual_head[-1].weight)
+        torch.nn.init.zeros_(decoder.residual_head[-1].bias)
+
+
+def save_checkpoint(
+    encoder,
+    predictor,
+    decoder,
+    path_save,
+    epoch,
+    config,
+    encoder_ema=None,
+    optimizer=None,
+    scheduler=None,
+    global_step=0,
+    ema_schedule_steps=None,
+    best_validation_loss=None,
+    checkpoint_path=None,
+):
+    path_name = checkpoint_path or (
+        path_save + "_epoch_" + str(epoch) + ".pt"
     )
+    os.makedirs(os.path.dirname(path_name), exist_ok=True)
+    payload = {
+        "strategy": {
+            "random": "dual_jepa_mae",
+            "local_long": "local_mae_long_jepa",
+            "future_block": "future_block_jepa_mae",
+            "causal_multiblock": "causal_multiblock_jepa_mae",
+        }[config.get("mask_strategy", "random")],
+        "encoder": encoder.state_dict(),
+        "predictor": predictor.state_dict(),
+        "decoder": decoder.state_dict(),
+        "epoch": epoch,
+        "global_step": int(global_step),
+        "ema_schedule_steps": ema_schedule_steps,
+        "best_validation_loss": best_validation_loss,
+        "config": copy.deepcopy(config),
+        "rng_state": {
+            "python": random.getstate(),
+            "numpy": np.random.get_state(),
+            "torch": torch.get_rng_state(),
+            "cuda": torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        },
+    }
+    if encoder_ema is not None:
+        payload["encoder_ema"] = encoder_ema.state_dict()
+    if optimizer is not None:
+        payload["optimizer"] = optimizer.state_dict()
+    if scheduler is not None:
+        payload["scheduler"] = scheduler.state_dict()
+    torch.save(payload, path_name)
     print("Saved checkpoint:", path_name)
     return path_name
+
+
+def restore_training_state(
+    checkpoint_path,
+    encoder,
+    predictor,
+    decoder,
+    encoder_ema,
+    optimizer,
+    scheduler,
+    device,
+    expected_fingerprint=None,
+):
+    """Restore a complete unified checkpoint and return loop state."""
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    required = {
+        "encoder",
+        "encoder_ema",
+        "predictor",
+        "decoder",
+        "optimizer",
+        "scheduler",
+        "epoch",
+        "global_step",
+        "ema_schedule_steps",
+        "rng_state",
+    }
+    missing = sorted(required.difference(checkpoint))
+    if missing:
+        raise ValueError(
+            "Checkpoint cannot resume training because it lacks: "
+            + ", ".join(missing)
+        )
+
+    checkpoint_fingerprint = checkpoint.get("config", {}).get("config_fingerprint")
+    if (
+        expected_fingerprint is not None
+        and checkpoint_fingerprint is not None
+        and checkpoint_fingerprint != expected_fingerprint
+    ):
+        raise ValueError(
+            "Resume checkpoint configuration does not match this run: "
+            f"checkpoint={checkpoint_fingerprint}, current={expected_fingerprint}"
+        )
+
+    encoder.load_state_dict(checkpoint["encoder"])
+    encoder_ema.load_state_dict(checkpoint["encoder_ema"])
+    predictor.load_state_dict(checkpoint["predictor"])
+    decoder.load_state_dict(checkpoint["decoder"])
+    optimizer.load_state_dict(checkpoint["optimizer"])
+    scheduler.load_state_dict(checkpoint["scheduler"])
+
+    rng_state = checkpoint["rng_state"]
+    random.setstate(rng_state["python"])
+    np.random.set_state(rng_state["numpy"])
+    torch.set_rng_state(rng_state["torch"].cpu())
+    if torch.cuda.is_available() and rng_state.get("cuda") is not None:
+        torch.cuda.set_rng_state_all(rng_state["cuda"])
+
+    return {
+        "start_epoch": int(checkpoint["epoch"]) + 1,
+        "global_step": int(checkpoint["global_step"]),
+        "ema_schedule_steps": checkpoint.get("ema_schedule_steps"),
+        "best_validation_loss": checkpoint.get("best_validation_loss"),
+        "best_validation_epoch": checkpoint.get("config", {}).get(
+            "best_validation_epoch"
+        ),
+        "validation_history": checkpoint.get("config", {}).get(
+            "validation_history",
+            [],
+        ),
+    }
 
 
 def last_saved_checkpoint_epoch(config):
     if config.get("last_saved_epoch") is not None:
         return int(config["last_saved_epoch"])
-
-    checkpoint_save = int(config["checkpoint_save"])
-    final_epoch = int(config["num_epochs"]) - 1
-    if final_epoch <= 0:
-        return 0
-    return (final_epoch // checkpoint_save) * checkpoint_save
+    raise FileNotFoundError(
+        "No checkpoint was saved. Remove --no-save-final, lower "
+        "--checkpoint-save, or pass --eval-checkpoint-to-use for an existing file."
+    )
 
 
 def run_downstream_evaluation(config):
-    checkpoint_to_use = config.get("eval_checkpoint_to_use")
-    if checkpoint_to_use is None:
-        checkpoint_to_use = last_saved_checkpoint_epoch(config)
+    if config.get("eval_use_best"):
+        checkpoint_path = config["path_save"] + "_best.pt"
+        checkpoint_to_use = int(config.get("best_validation_epoch", 0))
+    else:
+        checkpoint_to_use = config.get("eval_checkpoint_to_use")
+        if checkpoint_to_use is None:
+            checkpoint_to_use = last_saved_checkpoint_epoch(config)
+        checkpoint_path = (
+            config["path_save"] + "_epoch_" + str(checkpoint_to_use) + ".pt"
+        )
+    if not os.path.exists(checkpoint_path):
+        raise FileNotFoundError(f"Downstream checkpoint not found: {checkpoint_path}")
 
     eval_argv = [
         "eval_forecast_prequential_with_baselines_gru_volume.py",
@@ -536,14 +1316,67 @@ def run_downstream_evaluation(config):
         str(config["data"]),
         "--checkpoint_to_use",
         str(checkpoint_to_use),
+        "--pretrain_checkpoint_path",
+        checkpoint_path,
+        "--pretrain-encoder-weights",
+        str(config.get("eval_encoder_weights", "ema")),
+        "--lr_pretrain",
+        str(config["lr"]),
+        "--ema_pretrain",
+        str(config["ema_momentum"]),
+        "--mask_ratio",
+        str(config["mask_ratio"]),
+        "--ratio_patches",
+        str(config["ratio_patches"]),
+        "--pretrain_encoder_embed_dim",
+        str(config["encoder_embed_dim"]),
+        "--pretrain_encoder_nhead",
+        str(config["encoder_nhead"]),
+        "--pretrain_encoder_num_layers",
+        str(config["encoder_num_layers"]),
+        "--pretrain_encoder_kernel_size",
+        str(config["encoder_kernel_size"]),
+        "--pretrain_decoder_embed_dim",
+        str(config["predictor_embed"]),
+        "--pretrain_decoder_nhead",
+        str(config["predictor_nhead"]),
+        "--pretrain_decoder_num_layers",
+        str(config["predictor_num_layers"]),
+        "--patch_size",
+        str(config["patch_size"]),
+        "--target_feature_index",
+        str(config.get("target_feature_index", 0)),
+        "--normalization",
+        str(config.get("normalization", "window_return")),
+        "--normalization_stats_json",
+        json.dumps(config.get("normalization_stats")),
+        "--feature_cols",
+        *[str(column) for column in config["feature_cols"]],
+        "--timestamp_col",
+        str(config["timestamp_col"]),
+        "--sentiment_path",
+        str(config["sentiment_path"] or "none"),
+        "--train_end_date",
+        str(config["train_end_date"] or "none"),
+        "--test_start_date",
+        str(config["test_start_date"] or "none"),
+        "--validation_fraction",
+        str(config["validation_fraction"]),
+        "--test_fraction",
+        str(config["test_fraction"]),
     ]
+
+    if not config["encoder_embed_bias"]:
+        eval_argv.append("--no-pretrain-encoder-embed-bias")
 
     if config.get("eval_num_epochs") is not None:
         eval_argv.extend(["--num_epochs", str(config["eval_num_epochs"])])
+    if config.get("eval_results_dir") is not None:
+        eval_argv.extend(["--results_dir", str(config["eval_results_dir"])])
 
     print("\n=== Downstream evaluation with GRU baseline ===")
     print("data =", config["data"])
-    print("checkpoint_to_use =", checkpoint_to_use)
+    print("checkpoint_path =", checkpoint_path)
 
     original_argv = sys.argv[:]
     try:
@@ -556,10 +1389,29 @@ def run_downstream_evaluation(config):
         sys.argv = original_argv
 
 
-def main():
+def main(default_mask_strategy="random", argv=None):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-    config = parse_args(base_config)
+    config = parse_args(
+        base_config,
+        default_mask_strategy=default_mask_strategy,
+        argv=argv,
+    )
     print("Device:", device)
+
+    if config["mask_strategy"] != "random" and config["input_mode"] != "timeseries":
+        raise ValueError("Structured causal masks require --input-mode timeseries")
+    if not 0 <= float(config["validation_fraction"]) < 1:
+        raise ValueError("--validation-fraction must be in [0, 1)")
+    if not 0 <= float(config["test_fraction"]) < 1:
+        raise ValueError("--test-fraction must be in [0, 1)")
+    if (
+        config["train_end_date"] is None
+        and config["test_start_date"] is None
+        and float(config["validation_fraction"]) + float(config["test_fraction"]) >= 1
+    ):
+        raise ValueError(
+            "--validation-fraction + --test-fraction must be smaller than 1"
+        )
 
     if config["input_mode"] == "mnist_rows":
         loader = get_mnist_row_loader(
@@ -571,6 +1423,19 @@ def main():
             download=config["download_mnist"],
             seed=config["seed"],
         )
+        val_loader = get_mnist_row_loader(
+            root=config["mnist_root"],
+            batch_size=config["batch_size"],
+            mask_ratio=config["mask_ratio"],
+            train=True,
+            sample_count=config["mnist_val_samples"],
+            download=config["download_mnist"],
+            seed=config["seed"],
+            deterministic_masks=True,
+            sample_offset=config["mnist_train_samples"],
+            shuffle=False,
+        )
+        config["normalization_stats"] = None
     else:
         loader = get_jepa_loaders(
             path=config["path_data"],
@@ -579,6 +1444,8 @@ def main():
             mask_ratio=config["mask_ratio"],
             series_split_size=config["series_split_size"],
             patch_size=config["patch_size"],
+            stride=config["pretrain_stride"],
+            normalization=config["normalization"],
             feature_cols=config["feature_cols"],
             timestamp_col=config["timestamp_col"],
             sentiment_path=config["sentiment_path"],
@@ -587,14 +1454,53 @@ def main():
             train_end_date=config["train_end_date"],
             test_start_date=config["test_start_date"],
         )
+        config["normalization_stats"] = copy.deepcopy(
+            loader.dataset.normalization_stats
+        )
+        val_loader = None
+        if float(config["validation_fraction"]) > 0:
+            try:
+                val_loader = get_jepa_loaders(
+                    path=config["path_data"],
+                    batch_size=config["batch_size"],
+                    ratio_patches=config["ratio_patches"],
+                    mask_ratio=config["mask_ratio"],
+                    series_split_size=config["series_split_size"],
+                    patch_size=config["patch_size"],
+                    stride=config["pretrain_stride"],
+                    normalization=config["normalization"],
+                    normalization_stats=config["normalization_stats"],
+                    split="val",
+                    mask_seed=config["seed"] + 10_000,
+                    feature_cols=config["feature_cols"],
+                    timestamp_col=config["timestamp_col"],
+                    sentiment_path=config["sentiment_path"],
+                    validation_fraction=config["validation_fraction"],
+                    test_fraction=config["test_fraction"],
+                    train_end_date=config["train_end_date"],
+                    test_start_date=config["test_start_date"],
+                )
+            except ValueError as error:
+                print(
+                    "Warning: validation split is too short for one pretraining "
+                    f"window; validation is disabled for this run: {error}"
+                )
 
     sample_patches, _, _ = loader.dataset[0]
     num_patches = sample_patches.shape[0]
     patch_dim = sample_patches.shape[-1]
+    validate_training_config(
+        config=config,
+        num_patches=num_patches,
+        patch_dim=patch_dim,
+        loader_length=len(loader),
+    )
 
-    print("\n=== Dual-loss pretrain config ===")
+    print("\n=== Unified JEPA + MAE pretrain config ===")
     print("data =", config["data"])
     print("input_mode =", config["input_mode"])
+    print("mask_strategy =", config["mask_strategy"])
+    print("seed =", config["seed"])
     if config["input_mode"] == "mnist_rows":
         print("mnist_root =", config["mnist_root"])
         print("mnist_train_samples =", config["mnist_train_samples"])
@@ -604,6 +1510,10 @@ def main():
         print("sentiment_path =", config["sentiment_path"])
         print("train_end_date =", config["train_end_date"])
         print("test_start_date =", config["test_start_date"])
+        print("pretrain_stride =", config["pretrain_stride"])
+        print("normalization =", config["normalization"])
+        print("train_windows =", len(loader.dataset))
+        print("validation_windows =", len(val_loader.dataset) if val_loader else 0)
     print("num_patches =", num_patches)
     print("patch_dim =", patch_dim)
     print("lambda_jepa =", config["lambda_jepa"])
@@ -611,6 +1521,19 @@ def main():
     print("jepa_loss =", config["jepa_loss"])
     print("mae_loss =", config["mae_loss"])
     print("decoder_type =", config["decoder_type"])
+    if config["mask_strategy"] == "local_long":
+        print("mae_window_patches =", config["mae_window_patches"])
+        print("jepa_gap_patches =", config["jepa_gap_patches"])
+        print("jepa_target_patches =", config["jepa_target_patches"])
+        print("anchor_strategy =", config["anchor_strategy"])
+    elif config["mask_strategy"] == "future_block":
+        print("future_target_patches =", config["future_target_patches"])
+        print("anchor_strategy =", config["anchor_strategy"])
+    elif config["mask_strategy"] == "causal_multiblock":
+        print("causal_num_blocks =", config["causal_num_blocks"])
+        print("causal_block_patches =", config["causal_block_patches"])
+        print("causal_block_gap_patches =", config["causal_block_gap_patches"])
+        print("anchor_strategy =", config["anchor_strategy"])
     print("path_save =", config["path_save"])
 
     encoder = Encoder(
@@ -634,9 +1557,7 @@ def main():
 
     decoder = build_decoder(config, patch_dim)
 
-    for model in (encoder, predictor, decoder):
-        for module in model.modules():
-            init_weights(module)
+    initialize_models(encoder, predictor, decoder)
 
     optimizer = torch.optim.AdamW(
         [
@@ -664,17 +1585,47 @@ def main():
     for p in encoder_ema.parameters():
         p.requires_grad = False
 
-    ema_scheduler = (
-        config["ema_momentum"]
-        + i
-        * (1 - config["ema_momentum"])
-        / (config["num_epochs"] * config["ipe_scale"])
-        for i in range(int(config["num_epochs"] * config["ipe_scale"]) + 1)
+    steps_per_epoch = len(loader)
+    if config["max_batches_per_epoch"] is not None:
+        steps_per_epoch = min(steps_per_epoch, config["max_batches_per_epoch"])
+    ema_schedule_steps = max(
+        1,
+        int(config["num_epochs"] * steps_per_epoch * config["ipe_scale"]),
     )
 
     saved_epochs = set()
+    global_step = 0
+    start_epoch = 0
+    best_validation_loss = float("inf")
+    best_validation_epoch = None
+    validation_history = []
 
-    for epoch in range(config["num_epochs"]):
+    if config.get("resume_from"):
+        restored = restore_training_state(
+            checkpoint_path=config["resume_from"],
+            encoder=encoder,
+            predictor=predictor,
+            decoder=decoder,
+            encoder_ema=encoder_ema,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=device,
+            expected_fingerprint=config.get("config_fingerprint"),
+        )
+        start_epoch = restored["start_epoch"]
+        global_step = restored["global_step"]
+        if restored["ema_schedule_steps"] is not None:
+            ema_schedule_steps = int(restored["ema_schedule_steps"])
+        if restored["best_validation_loss"] is not None:
+            best_validation_loss = float(restored["best_validation_loss"])
+        best_validation_epoch = restored["best_validation_epoch"]
+        validation_history = list(restored["validation_history"])
+        print(
+            f"Resumed {config['resume_from']} at epoch={start_epoch}, "
+            f"global_step={global_step}"
+        )
+
+    for epoch in range(start_epoch, config["num_epochs"]):
         encoder.train()
         predictor.train()
         decoder.train()
@@ -682,10 +1633,10 @@ def main():
         total_loss = 0.0
         total_jepa_loss = 0.0
         total_mae_loss = 0.0
+        total_anchor = 0.0
         num_batches = 0
-        m = next(ema_scheduler)
 
-        for batch_idx, (patches, masks, non_masks) in enumerate(loader):
+        for batch_idx, (patches, dataset_masks, dataset_non_masks) in enumerate(loader):
             if (
                 config["max_batches_per_epoch"] is not None
                 and batch_idx >= config["max_batches_per_epoch"]
@@ -693,27 +1644,51 @@ def main():
                 break
 
             patches = patches.to(device)
-            masks = masks.to(device)
-            non_masks = non_masks.to(device)
+            if config["mask_strategy"] != "random":
+                objective_masks = make_strategy_masks(
+                    config=config,
+                    batch_size=patches.size(0),
+                    num_patches=num_patches,
+                    device=device,
+                )
+            else:
+                dataset_masks = dataset_masks.to(device)
+                dataset_non_masks = dataset_non_masks.to(device)
+                objective_masks = {
+                    "anchor": None,
+                    "mae": dataset_masks,
+                    "jepa": dataset_masks,
+                    "predict": dataset_masks,
+                    "context": dataset_non_masks,
+                }
 
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
 
             with torch.no_grad():
                 target_ema = encoder_ema(patches)
                 target_ema = F.layer_norm(target_ema, (target_ema.size(-1),))
-                target_ema = apply_mask(target_ema, masks)
-                target_patches = apply_mask(patches, masks)
+                target_ema = apply_mask(target_ema, objective_masks["jepa"])
+                target_patches = apply_mask(patches, objective_masks["mae"])
 
-            context_tokens = encoder(patches, mask=non_masks)
+            context_tokens = encoder(patches, mask=objective_masks["context"])
             pred_target_embeddings = predictor(
                 context_tokens,
-                mask=masks,
-                non_masks=non_masks,
+                mask=objective_masks["predict"],
+                non_masks=objective_masks["context"],
             )
-            reconstructed_target = decoder(pred_target_embeddings)
+
+            if config["mask_strategy"] == "local_long":
+                mae_len = int(config["mae_window_patches"])
+                pred_mae_embeddings = pred_target_embeddings[:, :mae_len]
+                pred_jepa_embeddings = pred_target_embeddings[:, mae_len:]
+            else:
+                pred_mae_embeddings = pred_target_embeddings
+                pred_jepa_embeddings = pred_target_embeddings
+
+            reconstructed_target = decoder(pred_mae_embeddings)
 
             jepa_loss = loss_value(
-                pred_target_embeddings,
+                pred_jepa_embeddings,
                 target_ema,
                 config["jepa_loss"],
             )
@@ -739,6 +1714,11 @@ def main():
 
             optimizer.step()
 
+            m = ema_momentum_at_step(
+                config["ema_momentum"],
+                global_step,
+                ema_schedule_steps,
+            )
             with torch.no_grad():
                 for param_q, param_k in zip(
                     encoder.parameters(),
@@ -747,12 +1727,20 @@ def main():
                     param_k.data.mul_(m).add_(
                         (1.0 - m) * param_q.detach().data
                     )
+            global_step += 1
 
             total_loss += loss.item()
             total_jepa_loss += jepa_loss.item()
             total_mae_loss += mae_loss.item()
+            if objective_masks["anchor"] is not None:
+                total_anchor += float(objective_masks["anchor"])
             num_batches += 1
 
+        if num_batches == 0:
+            raise RuntimeError(
+                "No training batches were processed; check the loader and "
+                "--max-batches-per-epoch."
+            )
         scheduler.step()
 
         total_loss /= num_batches
@@ -760,12 +1748,62 @@ def main():
         total_mae_loss /= num_batches
 
         if epoch % config["checkpoint_print"] == 0:
-            print(
+            message = (
                 f"Epoch {epoch}, lr: {optimizer.param_groups[0]['lr']:.3g} "
                 f"- Total: {total_loss:.6f} "
                 f"- JEPA: {total_jepa_loss:.6f} "
-                f"- MAE: {total_mae_loss:.6f}"
+                f"- MAE: {total_mae_loss:.6f} "
+                f"- EMA: {m:.6f}"
             )
+            if config["mask_strategy"] != "random":
+                message += f" - avg_anchor: {total_anchor / num_batches:.2f}"
+            print(message)
+
+        should_validate = val_loader is not None and (
+            epoch % int(config["validation_interval"]) == 0
+            or epoch == config["num_epochs"] - 1
+        )
+        if should_validate:
+            validation_metrics = evaluate_pretraining(
+                encoder=encoder,
+                predictor=predictor,
+                decoder=decoder,
+                encoder_ema=encoder_ema,
+                loader=val_loader,
+                device=device,
+                config=config,
+            )
+            print(
+                f"Validation epoch {epoch} - Total: "
+                f"{validation_metrics['total_loss']:.6f} - JEPA: "
+                f"{validation_metrics['jepa_loss']:.6f} - MAE: "
+                f"{validation_metrics['mae_loss']:.6f} - EmbStd: "
+                f"{validation_metrics['embedding_std']:.6f} - EffRank: "
+                f"{validation_metrics['effective_rank']:.2f} - CovOffDiag: "
+                f"{validation_metrics['covariance_offdiag']:.6f}"
+            )
+            validation_history.append({"epoch": epoch, **validation_metrics})
+            config["validation_history"] = copy.deepcopy(validation_history)
+            if validation_metrics["total_loss"] < best_validation_loss:
+                best_validation_loss = validation_metrics["total_loss"]
+                best_validation_epoch = epoch
+                config["best_validation_epoch"] = epoch
+                config["best_validation_metrics"] = validation_metrics
+                save_checkpoint(
+                    encoder,
+                    predictor,
+                    decoder,
+                    config["path_save"],
+                    epoch,
+                    config,
+                    encoder_ema=encoder_ema,
+                    optimizer=optimizer,
+                    scheduler=scheduler,
+                    global_step=global_step,
+                    ema_schedule_steps=ema_schedule_steps,
+                    best_validation_loss=best_validation_loss,
+                    checkpoint_path=config["path_save"] + "_best.pt",
+                )
 
         if epoch % config["checkpoint_save"] == 0 and epoch != 0:
             save_checkpoint(
@@ -775,6 +1813,16 @@ def main():
                 config["path_save"],
                 epoch,
                 config,
+                encoder_ema=encoder_ema,
+                optimizer=optimizer,
+                scheduler=scheduler,
+                global_step=global_step,
+                ema_schedule_steps=ema_schedule_steps,
+                best_validation_loss=(
+                    best_validation_loss
+                    if best_validation_loss != float("inf")
+                    else None
+                ),
             )
             saved_epochs.add(epoch)
 
@@ -787,11 +1835,23 @@ def main():
             config["path_save"],
             final_epoch,
             config,
+            encoder_ema=encoder_ema,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            global_step=global_step,
+            ema_schedule_steps=ema_schedule_steps,
+            best_validation_loss=(
+                best_validation_loss
+                if best_validation_loss != float("inf")
+                else None
+            ),
         )
         saved_epochs.add(final_epoch)
 
     if saved_epochs:
         config["last_saved_epoch"] = max(saved_epochs)
+    if best_validation_epoch is not None:
+        config["best_validation_epoch"] = best_validation_epoch
 
     if config.get("run_eval", False):
         run_downstream_evaluation(config)

@@ -14,6 +14,8 @@ DEFAULT_SENTIMENT_COLS = (
     "news_count",
 )
 
+NORMALIZATION_MODES = ("window_return", "train_zscore", "none")
+
 
 def cumulative_return_normalize_with_base(series, base, eps=1e-8, passthrough_indices=None):
     """
@@ -31,6 +33,49 @@ def cumulative_return_normalize_with_base(series, base, eps=1e-8, passthrough_in
         normalized[..., passthrough_indices] = series[..., passthrough_indices]
 
     return normalized
+
+
+def _resolve_normalization_mode(normalization, normalize=True):
+    if normalization is None:
+        normalization = "window_return" if normalize else "none"
+    if normalization not in NORMALIZATION_MODES:
+        raise ValueError(
+            f"Unknown normalization={normalization!r}; expected one of "
+            f"{NORMALIZATION_MODES}"
+        )
+    return normalization
+
+
+def train_zscore_state(train_series, feature_cols, eps=1e-6):
+    """Fit reusable feature statistics from the chronological train split only."""
+    if len(train_series) == 0:
+        raise ValueError("Cannot fit train_zscore normalization on an empty train split")
+    mean = train_series.mean(dim=0)
+    std = train_series.std(dim=0, unbiased=False).clamp_min(eps)
+    return {
+        "mode": "train_zscore",
+        "feature_cols": list(feature_cols),
+        "mean": mean.tolist(),
+        "std": std.tolist(),
+    }
+
+
+def normalization_tensors(state, feature_cols):
+    if state is None:
+        return None, None
+    if state.get("mode") != "train_zscore":
+        raise ValueError(
+            "train_zscore requires normalization state with mode='train_zscore', "
+            f"got {state.get('mode')!r}"
+        )
+    if list(state.get("feature_cols", [])) != list(feature_cols):
+        raise ValueError(
+            "Normalization feature order does not match loader feature order: "
+            f"state={state.get('feature_cols')}, loader={list(feature_cols)}"
+        )
+    mean = torch.tensor(state["mean"], dtype=torch.float32)
+    std = torch.tensor(state["std"], dtype=torch.float32)
+    return mean, std
 
 
 def _as_list(x):
@@ -309,8 +354,12 @@ class CSVDataLoader(Dataset):
         series_split_size=120,
         patch_size=5,
         mask_ratio=0.15,
-        stride=60,
+        stride=None,
         normalize=True,
+        normalization=None,
+        normalization_stats=None,
+        split="train",
+        mask_seed=None,
         feature_cols=("Close", "Volume"),
         timestamp_col="Date",
         validation_fraction=0.05,
@@ -325,7 +374,10 @@ class CSVDataLoader(Dataset):
         self.series_split_size = series_split_size
         self.patch_size = patch_size
         self.mask_ratio = mask_ratio
-        self.normalize = normalize
+        self.normalization = _resolve_normalization_mode(normalization, normalize)
+        self.normalize = self.normalization != "none"
+        self.split = split
+        self.mask_seed = mask_seed
         self.feature_cols = _as_list(feature_cols)
         self.feature_dim = len(self.feature_cols)
         self.passthrough_indices = [
@@ -349,8 +401,31 @@ class CSVDataLoader(Dataset):
             test_start_date=test_start_date,
         )
 
-        # Pretraining only uses train_df.
-        self.time_series = self.train_df
+        if split == "train":
+            self.time_series = self.train_df
+        elif split == "val":
+            self.time_series = self.val_df
+        elif split == "test":
+            self.time_series = self.test_df
+        else:
+            raise ValueError("Pretraining split must be 'train', 'val', or 'test'")
+
+        if self.normalization == "train_zscore":
+            self.normalization_stats = normalization_stats or train_zscore_state(
+                self.train_df,
+                self.feature_cols,
+            )
+            self.normalization_mean, self.normalization_std = normalization_tensors(
+                self.normalization_stats,
+                self.feature_cols,
+            )
+        else:
+            self.normalization_stats = {
+                "mode": self.normalization,
+                "feature_cols": list(self.feature_cols),
+            }
+            self.normalization_mean = None
+            self.normalization_std = None
 
         self.split_series = self._make_sliding_windows(
             series=self.time_series,
@@ -379,13 +454,17 @@ class CSVDataLoader(Dataset):
     def __getitem__(self, idx):
         selected_series = self.split_series[idx]  # [T, C]
 
-        if self.normalize:
+        if self.normalization == "window_return":
             base = selected_series[0]             # [C]
             selected_series = cumulative_return_normalize_with_base(
                 selected_series,
                 base=base,
                 passthrough_indices=self.passthrough_indices,
             )
+        elif self.normalization == "train_zscore":
+            selected_series = (
+                selected_series - self.normalization_mean
+            ) / self.normalization_std
 
         num_patches = len(selected_series) // self.patch_size
 
@@ -400,7 +479,13 @@ class CSVDataLoader(Dataset):
         num_masked_patches = int(num_patches * self.mask_ratio)
         num_masked_patches = max(1, num_masked_patches)
 
-        mask_indices = random.sample(range(num_patches), num_masked_patches)
+        if self.mask_seed is None:
+            mask_indices = random.sample(range(num_patches), num_masked_patches)
+        else:
+            mask_indices = random.Random(self.mask_seed + idx).sample(
+                range(num_patches),
+                num_masked_patches,
+            )
         non_mask_indices = [i for i in range(num_patches) if i not in mask_indices]
 
         mask_indices = torch.tensor(mask_indices, dtype=torch.long)
@@ -428,6 +513,8 @@ class EvaluationDataLoader(Dataset):
         stride=1,
         split="test",
         normalize=True,
+        normalization=None,
+        normalization_stats=None,
         feature_cols=("Close", "Volume"),
         target_col="Close",
         timestamp_col="Date",
@@ -443,7 +530,8 @@ class EvaluationDataLoader(Dataset):
         self.context_size = context_size
         self.stride = stride
         self.split = split
-        self.normalize = normalize
+        self.normalization = _resolve_normalization_mode(normalization, normalize)
+        self.normalize = self.normalization != "none"
         self.feature_cols = _as_list(feature_cols)
         self.feature_dim = len(self.feature_cols)
         self.passthrough_indices = [
@@ -469,6 +557,23 @@ class EvaluationDataLoader(Dataset):
             train_end_date=train_end_date,
             test_start_date=test_start_date,
         )
+
+        if self.normalization == "train_zscore":
+            self.normalization_stats = normalization_stats or train_zscore_state(
+                self.train_df,
+                self.feature_cols,
+            )
+            self.normalization_mean, self.normalization_std = normalization_tensors(
+                self.normalization_stats,
+                self.feature_cols,
+            )
+        else:
+            self.normalization_stats = {
+                "mode": self.normalization,
+                "feature_cols": list(self.feature_cols),
+            }
+            self.normalization_mean = None
+            self.normalization_std = None
 
         if split == "train":
             self.series = self.train_df
@@ -523,7 +628,7 @@ class EvaluationDataLoader(Dataset):
     def __getitem__(self, idx):
         context_flat, target_flat = self.samples[idx]
 
-        if self.normalize:
+        if self.normalization == "window_return":
             base = context_flat[0]  # [C], only from first context point
             context_flat = cumulative_return_normalize_with_base(
                 context_flat,
@@ -535,6 +640,13 @@ class EvaluationDataLoader(Dataset):
                 base=base,
                 passthrough_indices=self.passthrough_indices,
             )
+        elif self.normalization == "train_zscore":
+            context_flat = (
+                context_flat - self.normalization_mean
+            ) / self.normalization_std
+            target_flat = (
+                target_flat - self.normalization_mean
+            ) / self.normalization_std
 
         context_patches = context_flat.reshape(
             self.context_size,

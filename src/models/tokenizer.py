@@ -32,6 +32,7 @@ class TS_Tokenizer(nn.Module):
             kernel_size=self.kernel_size,
             stride=self.kernel_size,
             padding=0,
+            bias=embed_bias,
         )
 
         # Calculate the output length after the first conv
@@ -41,7 +42,11 @@ class TS_Tokenizer(nn.Module):
         ) // self.kernel_size + 1
 
         # Linear layer to adapt the last flattened output to the embedding dimension
-        self.fc = nn.Linear(embed_dim * conv_output_length, embed_dim)
+        self.fc = nn.Linear(
+            embed_dim * conv_output_length,
+            embed_dim,
+            bias=embed_bias,
+        )
 
     def forward(self, x):
         batch_size, num_patches, length_patch = x.shape

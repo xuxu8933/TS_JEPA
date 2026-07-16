@@ -1,3 +1,0 @@
-case,model_mse,naive_last_mse,plot_path
-MNIST_ROWS,0.0139870000,0.0355860000,/home/xujiang/TS_JEPA/results/dual_loss_smoke/smoke_mnist_rows_reconstruction.png
-SIN_COS,0.0000618227,0.0080191195,/home/xujiang/TS_JEPA/results/dual_loss_smoke/smoke_sin_cos_predictions.png

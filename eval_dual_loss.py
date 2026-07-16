@@ -1,12 +1,13 @@
 """
-Evaluate a dual JEPA + MAE pretrained encoder on the downstream forecast task.
+Evaluate a unified JEPA + MAE pretrained encoder on downstream tasks.
 
-This is a thin wrapper around eval_forecast_prequential_with_baselines_gru_volume.py.
-It only changes checkpoint resolution so the evaluator can load checkpoints saved
-by pretrain_dual_loss.py's default suffixed naming scheme.
+This wrapper resolves strategy-specific checkpoint names and forwards the stored
+pretraining architecture and data protocol to the forecast evaluator.
 """
 
 import argparse
+import glob
+import json
 import os
 import runpy
 import sys
@@ -54,6 +55,41 @@ def default_dual_checkpoint_path(args):
         suffix = ""
     elif args.pretrain_path_suffix is not None:
         suffix = args.pretrain_path_suffix
+    elif args.mask_strategy == "local_long":
+        suffix = (
+            "_local_mae_long_jepa_ljepa_"
+            + _float_for_path(args.lambda_jepa)
+            + "_lmae_"
+            + _float_for_path(args.lambda_mae)
+            + "_mae_"
+            + str(args.mae_window_patches)
+            + "_gap_"
+            + str(args.jepa_gap_patches)
+            + "_jepa_"
+            + str(args.jepa_target_patches)
+        )
+    elif args.mask_strategy == "future_block":
+        suffix = (
+            "_future_block_ljepa_"
+            + _float_for_path(args.lambda_jepa)
+            + "_lmae_"
+            + _float_for_path(args.lambda_mae)
+            + "_target_"
+            + str(args.future_target_patches)
+        )
+    elif args.mask_strategy == "causal_multiblock":
+        suffix = (
+            "_causal_multiblock_ljepa_"
+            + _float_for_path(args.lambda_jepa)
+            + "_lmae_"
+            + _float_for_path(args.lambda_mae)
+            + "_blocks_"
+            + str(args.causal_num_blocks)
+            + "_size_"
+            + str(args.causal_block_patches)
+            + "_gap_"
+            + str(args.causal_block_gap_patches)
+        )
     else:
         suffix = (
             "_dual_jepa_mae_ljepa_"
@@ -63,15 +99,41 @@ def default_dual_checkpoint_path(args):
         )
 
     filename = base_name + suffix + "_epoch_" + str(args.checkpoint_to_use) + ".pt"
-    return os.path.join(args.checkpoint_dir, args.data, filename)
+    legacy_path = os.path.join(args.checkpoint_dir, args.data, filename)
+    if os.path.exists(legacy_path):
+        return legacy_path
+
+    fingerprint_pattern = os.path.join(
+        args.checkpoint_dir,
+        args.data,
+        base_name
+        + suffix
+        + "_cfg_*_epoch_"
+        + str(args.checkpoint_to_use)
+        + ".pt",
+    )
+    matches = sorted(glob.glob(fingerprint_pattern))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise RuntimeError(
+            "Multiple configuration-specific checkpoints match. Pass "
+            "--pretrain-checkpoint-path explicitly:\n" + "\n".join(matches)
+        )
+    return legacy_path
 
 
-def parse_args():
+def parse_args(default_mask_strategy="random", argv=None):
     parser = argparse.ArgumentParser(
         description="Run downstream evaluation for a dual JEPA+MAE checkpoint."
     )
 
     parser.add_argument("--data", default=downstream_config["data"])
+    parser.add_argument(
+        "--mask-strategy",
+        choices=("random", "local_long", "future_block", "causal_multiblock"),
+        default=default_mask_strategy,
+    )
     parser.add_argument(
         "--eval-mode",
         choices=("forecast", "mnist_rows"),
@@ -112,6 +174,12 @@ def parse_args():
         help="Use this exact checkpoint path instead of computing the dual-loss path.",
     )
     parser.add_argument(
+        "--pretrain-encoder-weights",
+        choices=("ema", "online"),
+        default="ema",
+        help="Use EMA target or online encoder weights for downstream evaluation.",
+    )
+    parser.add_argument(
         "--pretrain_path_suffix",
         "--pretrain-path-suffix",
         dest="pretrain_path_suffix",
@@ -140,6 +208,31 @@ def parse_args():
         type=float,
         default=1.0,
     )
+    parser.add_argument(
+        "--mae_window_patches",
+        "--mae-window-patches",
+        dest="mae_window_patches",
+        type=int,
+        default=1,
+    )
+    parser.add_argument(
+        "--jepa_gap_patches",
+        "--jepa-gap-patches",
+        dest="jepa_gap_patches",
+        type=int,
+        default=4,
+    )
+    parser.add_argument(
+        "--jepa_target_patches",
+        "--jepa-target-patches",
+        dest="jepa_target_patches",
+        type=int,
+        default=4,
+    )
+    parser.add_argument("--future-target-patches", type=int, default=4)
+    parser.add_argument("--causal-num-blocks", type=int, default=2)
+    parser.add_argument("--causal-block-patches", type=int, default=2)
+    parser.add_argument("--causal-block-gap-patches", type=int, default=1)
     parser.add_argument(
         "--lr_pretrain",
         "--lr-pretrain",
@@ -234,6 +327,13 @@ def parse_args():
         default=None,
     )
     parser.add_argument(
+        "--results_dir",
+        "--results-dir",
+        dest="results_dir",
+        default=None,
+        help="Directory for forecast-evaluation metrics, tables, and figures.",
+    )
+    parser.add_argument(
         "--dry_run",
         "--dry-run",
         dest="dry_run",
@@ -241,7 +341,7 @@ def parse_args():
         help="Print the checkpoint path and delegated command without running evaluation.",
     )
 
-    args, passthrough_args = parser.parse_known_args()
+    args, passthrough_args = parser.parse_known_args(argv)
     return args, passthrough_args
 
 
@@ -251,6 +351,17 @@ def build_eval_argv(args, passthrough_args):
         if args.pretrain_checkpoint_path
         else default_dual_checkpoint_path(args)
     )
+    pretrain_config = {}
+    if os.path.exists(checkpoint_path):
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location="cpu",
+            weights_only=False,
+        )
+        pretrain_config = checkpoint.get("config", {})
+
+    def checkpoint_value(key, fallback):
+        return pretrain_config.get(key, fallback)
 
     eval_argv = [
         "eval_forecast_prequential_with_baselines_gru_volume.py",
@@ -260,29 +371,67 @@ def build_eval_argv(args, passthrough_args):
         str(args.checkpoint_to_use),
         "--pretrain_checkpoint_path",
         checkpoint_path,
+        "--pretrain-encoder-weights",
+        args.pretrain_encoder_weights,
         "--lr_pretrain",
-        str(args.lr_pretrain),
+        str(checkpoint_value("lr", args.lr_pretrain)),
         "--ema_pretrain",
-        str(args.ema_pretrain),
+        str(checkpoint_value("ema_momentum", args.ema_pretrain)),
         "--mask_ratio",
-        str(args.mask_ratio),
+        str(checkpoint_value("mask_ratio", args.mask_ratio)),
         "--ratio_patches",
-        str(args.ratio_patches),
+        str(checkpoint_value("ratio_patches", args.ratio_patches)),
         "--pretrain_encoder_embed_dim",
-        str(args.pretrain_encoder_embed_dim),
+        str(checkpoint_value("encoder_embed_dim", args.pretrain_encoder_embed_dim)),
         "--pretrain_encoder_nhead",
-        str(args.pretrain_encoder_nhead),
+        str(checkpoint_value("encoder_nhead", args.pretrain_encoder_nhead)),
         "--pretrain_encoder_num_layers",
-        str(args.pretrain_encoder_num_layers),
+        str(checkpoint_value("encoder_num_layers", args.pretrain_encoder_num_layers)),
         "--pretrain_encoder_kernel_size",
-        str(args.pretrain_encoder_kernel_size),
+        str(checkpoint_value("encoder_kernel_size", args.pretrain_encoder_kernel_size)),
         "--pretrain_decoder_embed_dim",
-        str(args.pretrain_decoder_embed_dim),
+        str(checkpoint_value("predictor_embed", args.pretrain_decoder_embed_dim)),
         "--pretrain_decoder_nhead",
-        str(args.pretrain_decoder_nhead),
+        str(checkpoint_value("predictor_nhead", args.pretrain_decoder_nhead)),
         "--pretrain_decoder_num_layers",
-        str(args.pretrain_decoder_num_layers),
+        str(checkpoint_value("predictor_num_layers", args.pretrain_decoder_num_layers)),
     ]
+
+    if pretrain_config:
+        eval_argv.extend(
+            [
+                "--patch_size",
+                str(checkpoint_value("patch_size", 5)),
+                "--target_feature_index",
+                str(checkpoint_value("target_feature_index", 0)),
+                "--normalization",
+                str(checkpoint_value("normalization", "window_return")),
+                "--normalization_stats_json",
+                json.dumps(checkpoint_value("normalization_stats", None)),
+                "--feature_cols",
+                *[
+                    str(column)
+                    for column in checkpoint_value(
+                        "feature_cols",
+                        downstream_config.get("feature_cols", ["Close", "Volume"]),
+                    )
+                ],
+                "--timestamp_col",
+                str(checkpoint_value("timestamp_col", "Date")),
+                "--sentiment_path",
+                str(checkpoint_value("sentiment_path", None) or "none"),
+                "--train_end_date",
+                str(checkpoint_value("train_end_date", None) or "none"),
+                "--test_start_date",
+                str(checkpoint_value("test_start_date", None) or "none"),
+                "--validation_fraction",
+                str(checkpoint_value("validation_fraction", 0.05)),
+                "--test_fraction",
+                str(checkpoint_value("test_fraction", 0.30)),
+            ]
+        )
+        if not bool(checkpoint_value("encoder_embed_bias", True)):
+            eval_argv.append("--no-pretrain-encoder-embed-bias")
 
     if args.batch_size is not None:
         eval_argv.extend(["--batch_size", str(args.batch_size)])
@@ -290,6 +439,8 @@ def build_eval_argv(args, passthrough_args):
         eval_argv.extend(["--lr", str(args.lr)])
     if args.num_epochs is not None:
         eval_argv.extend(["--num_epochs", str(args.num_epochs)])
+    if args.results_dir is not None:
+        eval_argv.extend(["--results_dir", str(args.results_dir)])
 
     eval_argv.extend(passthrough_args)
     return eval_argv, checkpoint_path
@@ -331,7 +482,15 @@ def evaluate_mnist_rows(args, checkpoint_path):
     )
     decoder = build_decoder(config, patch_dim=28)
 
-    encoder.load_state_dict(checkpoint["encoder"])
+    encoder_key = (
+        "encoder_ema" if args.pretrain_encoder_weights == "ema" else "encoder"
+    )
+    if encoder_key not in checkpoint:
+        print(
+            f"Warning: checkpoint has no {encoder_key!r}; falling back to online encoder"
+        )
+        encoder_key = "encoder"
+    encoder.load_state_dict(checkpoint[encoder_key])
     predictor.load_state_dict(checkpoint["predictor"])
     decoder.load_state_dict(checkpoint["decoder"])
     encoder.eval()
@@ -406,15 +565,25 @@ def evaluate_mnist_rows(args, checkpoint_path):
     return result
 
 
-def main():
-    args, passthrough_args = parse_args()
+def main(default_mask_strategy="random", argv=None):
+    args, passthrough_args = parse_args(
+        default_mask_strategy=default_mask_strategy,
+        argv=argv,
+    )
     eval_argv, checkpoint_path = build_eval_argv(args, passthrough_args)
 
-    print("Dual-loss checkpoint:", checkpoint_path)
+    strategy_label = {
+        "random": "Random dual-loss",
+        "local_long": "Local-MAE + long-JEPA",
+        "future_block": "Future-block dual-loss",
+        "causal_multiblock": "Causal multi-block dual-loss",
+    }[args.mask_strategy]
+    print(f"{strategy_label} checkpoint:", checkpoint_path)
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(
-            "Dual-loss checkpoint not found. "
-            "Train it with pretrain_dual_loss.py, pass --pretrain-checkpoint-path, "
+            f"{strategy_label} checkpoint not found. "
+            "Train it with a unified pretraining entrypoint, pass "
+            "--pretrain-checkpoint-path, "
             "or adjust --lambda-jepa/--lambda-mae/--pretrain-path-suffix."
         )
 
@@ -427,6 +596,8 @@ def main():
         return
 
     if args.eval_mode == "mnist_rows":
+        if args.mask_strategy != "random":
+            raise ValueError("MNIST-row evaluation is only supported for random masks")
         evaluate_mnist_rows(args, checkpoint_path)
         return
 

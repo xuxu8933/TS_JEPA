@@ -20,7 +20,7 @@ flowchart TD
     N --> O[Normalize selected features]
     O --> P[Patch sequence<br/>context shape = context_size x patch_size*feature_dim]
 
-    P --> Q[TS-JEPA Encoder<br/>pretrain_wm.py]
+    P --> Q[Unified JEPA + MAE pretraining<br/>pretrain_dual_loss.py]
     Q --> R[Pretrained representation]
     R --> S[Downstream decoder / GRU baseline<br/>eval_forecast_prequential_with_baselines_gru_volume.py]
     S --> T[Forecast target<br/>Close price patch]

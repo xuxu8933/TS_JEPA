@@ -16,6 +16,7 @@ class MNISTRowDataset(Dataset):
         download=False,
         seed=0,
         deterministic_masks=False,
+        sample_offset=0,
     ):
         from torchvision.datasets import MNIST
 
@@ -23,10 +24,19 @@ class MNISTRowDataset(Dataset):
         sample_count = int(sample_count)
         if sample_count <= 0:
             raise ValueError(f"sample_count must be positive, got {sample_count}")
-        sample_count = min(sample_count, len(dataset))
+        sample_offset = int(sample_offset)
+        if sample_offset < 0:
+            raise ValueError(f"sample_offset must be non-negative, got {sample_offset}")
+        sample_count = min(sample_count, max(0, len(dataset) - sample_offset))
+        if sample_count <= 0:
+            raise ValueError(
+                f"No MNIST samples remain at sample_offset={sample_offset}"
+            )
 
         generator = torch.Generator().manual_seed(seed)
-        indices = torch.randperm(len(dataset), generator=generator)[:sample_count]
+        indices = torch.randperm(len(dataset), generator=generator)[
+            sample_offset:sample_offset + sample_count
+        ]
         self.images = dataset.data[indices].float().div_(255.0)
         self.mask_ratio = float(mask_ratio)
         self.seed = int(seed)
@@ -62,6 +72,8 @@ def get_mnist_row_loader(
     download=False,
     seed=0,
     deterministic_masks=False,
+    sample_offset=0,
+    shuffle=None,
 ):
     dataset = MNISTRowDataset(
         root=root,
@@ -71,10 +83,13 @@ def get_mnist_row_loader(
         download=download,
         seed=seed,
         deterministic_masks=deterministic_masks,
+        sample_offset=sample_offset,
     )
+    if shuffle is None:
+        shuffle = train and not deterministic_masks
     return DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=train,
+        shuffle=shuffle,
         drop_last=False,
     )

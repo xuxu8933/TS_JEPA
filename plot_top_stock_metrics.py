@@ -47,9 +47,16 @@ def parse_data_source(txt_path):
     return None
 
 
-def latest_comparison_files(results_dir):
-    latest_by_stock = {}
-    for txt_path in sorted(results_dir.glob("last_model_comparison_*.txt")):
+def latest_comparison_files(results_dir, seeds=None):
+    latest_by_run = {}
+    allowed_seed_parts = (
+        {f"seed_{int(seed)}" for seed in seeds} if seeds is not None else None
+    )
+    for txt_path in sorted(results_dir.rglob("last_model_comparison_*.txt")):
+        if allowed_seed_parts is not None and not allowed_seed_parts.intersection(
+            txt_path.parent.parts
+        ):
+            continue
         stock = parse_data_source(txt_path)
         if not stock:
             continue
@@ -58,40 +65,78 @@ def latest_comparison_files(results_dir):
         if not csv_path.exists():
             continue
 
-        if stock not in latest_by_stock or txt_path.name > latest_by_stock[stock].name:
-            latest_by_stock[stock] = txt_path
+        run_key = (stock, txt_path.parent)
+        if run_key not in latest_by_run or txt_path.name > latest_by_run[run_key].name:
+            latest_by_run[run_key] = txt_path
 
+    latest_by_stock = {}
+    for (stock, _), txt_path in latest_by_run.items():
+        latest_by_stock.setdefault(stock, []).append(txt_path)
+    for stock, paths in latest_by_stock.items():
+        nested_paths = [
+            path
+            for path in paths
+            if stock in path.relative_to(results_dir).parts[:-1]
+        ]
+        if nested_paths:
+            paths = nested_paths
+        seed_paths = [
+            path
+            for path in paths
+            if any(part.startswith("seed_") for part in path.parent.parts)
+        ]
+        latest_by_stock[stock] = sorted(seed_paths or paths)
     return latest_by_stock
 
 
-def load_rows(results_dir, stock_order, models):
-    latest_by_stock = latest_comparison_files(results_dir)
+def load_rows(results_dir, stock_order, models, seeds=None):
+    latest_by_stock = latest_comparison_files(results_dir, seeds=seeds)
     rows = []
 
     for stock in stock_order:
-        txt_path = latest_by_stock.get(stock)
-        if txt_path is None:
+        txt_paths = latest_by_stock.get(stock, [])
+        if not txt_paths:
             print(f"Missing comparison result for {stock}; skipping")
             continue
 
-        csv_path = txt_path.with_suffix(".csv")
-        with csv_path.open(newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                if row["model"] not in models:
-                    continue
-                rows.append(
-                    {
-                        "stock": stock,
-                        "model": row["model"],
-                        "mse": float(row["mse"]),
-                        "mae": float(row["mae"]),
-                        "trend_accuracy": float(row["trend_accuracy"]),
-                        "source_file": str(csv_path),
-                    }
-                )
+        for txt_path in txt_paths:
+            csv_path = txt_path.with_suffix(".csv")
+            with csv_path.open(newline="") as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    if row["model"] not in models:
+                        continue
+                    rows.append(
+                        {
+                            "stock": stock,
+                            "model": row["model"],
+                            "mse": float(row["mse"]),
+                            "mae": float(row["mae"]),
+                            "trend_accuracy": float(row["trend_accuracy"]),
+                            "source_file": str(csv_path),
+                        }
+                    )
 
-    return pd.DataFrame(rows)
+    raw = pd.DataFrame(rows)
+    if raw.empty:
+        return raw
+
+    aggregated = (
+        raw.groupby(["stock", "model"], as_index=False)
+        .agg(
+            mse=("mse", "mean"),
+            mse_std=("mse", "std"),
+            mae=("mae", "mean"),
+            mae_std=("mae", "std"),
+            trend_accuracy=("trend_accuracy", "mean"),
+            trend_accuracy_std=("trend_accuracy", "std"),
+            num_runs=("source_file", "count"),
+            source_files=("source_file", lambda values: ";".join(sorted(values))),
+        )
+    )
+    std_columns = ["mse_std", "mae_std", "trend_accuracy_std"]
+    aggregated[std_columns] = aggregated[std_columns].fillna(0.0)
+    return aggregated
 
 
 def plot_metric(
@@ -112,6 +157,18 @@ def plot_metric(
         .reindex(stock_order)
         .dropna(how="all")
     )
+    std_column = metric + "_std"
+    std_pivot = None
+    if std_column in df.columns:
+        std_pivot = (
+            df.pivot_table(
+                index="stock",
+                columns="model",
+                values=std_column,
+                aggfunc="first",
+            )
+            .reindex(pivot.index)
+        )
     x = range(len(pivot.index))
     group_width = 0.82
     width = group_width / max(len(models), 1)
@@ -127,7 +184,18 @@ def plot_metric(
             for pos in x
         ]
         color = model_colors.get(model) if model_colors else None
-        ax.bar(offsets, values.values, width=width, label=model, color=color)
+        errors = None
+        if std_pivot is not None and model in std_pivot.columns:
+            errors = std_pivot[model].fillna(0.0).values
+        ax.bar(
+            offsets,
+            values.values,
+            width=width,
+            label=model,
+            color=color,
+            yerr=errors,
+            capsize=2 if errors is not None else 0,
+        )
 
     ax.set_xticks(list(x))
     ax.set_xticklabels(pivot.index, rotation=35, ha="right")
@@ -146,10 +214,10 @@ def plot_metric(
         ax.set_ylim(*ylim)
 
 
-def save_combined_plot(df, stock_order, models, output_path):
+def save_combined_plot(df, stock_order, models, output_path, figure_title):
     fig, axes = plt.subplots(3, 1, figsize=(14, 13), sharex=False)
     fig.suptitle(
-        "Top Nasdaq-100 Stocks - Downstream Prediction Results with Baselines",
+        figure_title,
         fontsize=16,
         fontweight="bold",
     )
@@ -205,24 +273,49 @@ def main():
     )
     parser.add_argument("--results-dir", default="./results")
     parser.add_argument("--output-dir", default="./results")
+    parser.add_argument(
+        "--output-prefix",
+        default=None,
+        help="Output filename prefix. Defaults to top_<stock-count>_nasdaq100.",
+    )
+    parser.add_argument(
+        "--figure-title",
+        default=None,
+        help="Figure title. Defaults to the output filename prefix.",
+    )
     parser.add_argument("--models", nargs="+", default=DEFAULT_MODELS)
     parser.add_argument("--stocks", nargs="+", default=DEFAULT_STOCK_ORDER)
+    parser.add_argument(
+        "--seeds",
+        type=int,
+        nargs="+",
+        default=None,
+        help="Only aggregate result directories named seed_<N> for these seeds.",
+    )
     args = parser.parse_args()
 
     results_dir = Path(args.results_dir)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    df = load_rows(results_dir, args.stocks, args.models)
+    df = load_rows(results_dir, args.stocks, args.models, seeds=args.seeds)
     if df.empty:
         raise RuntimeError("No matching comparison rows found.")
 
+    output_prefix = args.output_prefix or f"top_{len(args.stocks)}_nasdaq100"
+    figure_title = args.figure_title or output_prefix
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    csv_path = output_dir / f"top_stock_combined_metrics_{timestamp}.csv"
-    png_path = output_dir / f"top_stock_combined_metrics_{timestamp}.png"
+    csv_path = output_dir / f"{output_prefix}_{timestamp}.csv"
+    png_path = output_dir / f"{output_prefix}_{timestamp}.png"
 
     df.to_csv(csv_path, index=False)
-    save_combined_plot(df, args.stocks, args.models, png_path)
+    save_combined_plot(
+        df,
+        args.stocks,
+        args.models,
+        png_path,
+        figure_title=figure_title,
+    )
 
     print(f"Combined metrics CSV saved to: {csv_path}")
     print(f"Combined metrics figure saved to: {png_path}")
