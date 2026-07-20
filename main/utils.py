@@ -92,6 +92,13 @@ def prepare_args(config):
         default=config.get("normalization", "window_return"),
     )
     parser.add_argument(
+        "--sampling_mode",
+        "--sampling-mode",
+        dest="sampling_mode",
+        choices=("sliding_window", "temporal_segments"),
+        default=config.get("sampling_mode", "sliding_window"),
+    )
+    parser.add_argument(
         "--normalization_stats_json",
         "--normalization-stats-json",
         dest="normalization_stats_json",
@@ -237,6 +244,7 @@ def prepare_args(config):
     config["patch_size"] = args.patch_size
     config["target_feature_index"] = args.target_feature_index
     config["normalization"] = args.normalization
+    config["sampling_mode"] = args.sampling_mode
     config["normalization_stats"] = (
         json.loads(args.normalization_stats_json)
         if args.normalization_stats_json is not None

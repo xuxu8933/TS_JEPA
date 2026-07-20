@@ -61,6 +61,7 @@ EXPERIMENT_ID_KEYS = (
     "series_split_size",
     "patch_size",
     "pretrain_stride",
+    "sampling_mode",
     "normalization",
     "feature_cols",
     "timestamp_col",
@@ -138,7 +139,7 @@ def build_pretrain_path(config):
     return path_save + config.get("path_suffix", "")
 
 
-def parse_args(config, default_mask_strategy="random", argv=None):
+def parse_args(config, default_mask_strategy=None, argv=None):
     parser = argparse.ArgumentParser(
         description=(
             "Unified dual-loss TS-JEPA pretraining: "
@@ -178,7 +179,11 @@ def parse_args(config, default_mask_strategy="random", argv=None):
     parser.add_argument(
         "--mask-strategy",
         choices=("random", "local_long", "future_block", "causal_multiblock"),
-        default=default_mask_strategy,
+        default=(
+            config.get("mask_strategy", "random")
+            if default_mask_strategy is None
+            else default_mask_strategy
+        ),
         help=(
             "Choose random targets, local-MAE plus long-JEPA, one future "
             "block, or multiple causal future blocks."
@@ -301,6 +306,15 @@ def parse_args(config, default_mask_strategy="random", argv=None):
         type=int,
         default=config.get("pretrain_stride", None),
         help="Sliding-window stride. Defaults to --patch-size.",
+    )
+    parser.add_argument(
+        "--sampling-mode",
+        choices=("sliding_window", "temporal_segments"),
+        default=config.get("sampling_mode", "sliding_window"),
+        help=(
+            "Build overlapping sliding windows or contiguous non-overlapping "
+            "temporal segments."
+        ),
     )
     parser.add_argument(
         "--normalization",
@@ -461,7 +475,7 @@ def parse_args(config, default_mask_strategy="random", argv=None):
         "--decoder-type",
         dest="decoder_type",
         choices=("linear", "mlp", "residual_mlp"),
-        default=config.get("mae_decoder_type", "linear"),
+        default=config.get("mae_decoder_type", "residual_mlp"),
     )
     parser.add_argument(
         "--decoder_hidden_dim",
@@ -636,9 +650,12 @@ def parse_args(config, default_mask_strategy="random", argv=None):
     cfg["test_start_date"] = _none_if_requested(args.test_start_date)
     cfg["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
 
-    cfg["pretrain_stride"] = (
-        args.patch_size if args.pretrain_stride is None else args.pretrain_stride
-    )
+    if args.sampling_mode == "temporal_segments":
+        cfg["pretrain_stride"] = args.series_split_size
+    else:
+        cfg["pretrain_stride"] = (
+            args.patch_size if args.pretrain_stride is None else args.pretrain_stride
+        )
 
     seed = int(args.seed)
     np.random.seed(seed)
@@ -1348,6 +1365,8 @@ def run_downstream_evaluation(config):
         str(config.get("target_feature_index", 0)),
         "--normalization",
         str(config.get("normalization", "window_return")),
+        "--sampling-mode",
+        str(config.get("sampling_mode", "sliding_window")),
         "--normalization_stats_json",
         json.dumps(config.get("normalization_stats")),
         "--feature_cols",
@@ -1389,7 +1408,7 @@ def run_downstream_evaluation(config):
         sys.argv = original_argv
 
 
-def main(default_mask_strategy="random", argv=None):
+def main(default_mask_strategy=None, argv=None):
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     config = parse_args(
         base_config,
@@ -1400,6 +1419,8 @@ def main(default_mask_strategy="random", argv=None):
 
     if config["mask_strategy"] != "random" and config["input_mode"] != "timeseries":
         raise ValueError("Structured causal masks require --input-mode timeseries")
+    if config["sampling_mode"] == "temporal_segments" and config["input_mode"] != "timeseries":
+        raise ValueError("Temporal segments require --input-mode timeseries")
     if not 0 <= float(config["validation_fraction"]) < 1:
         raise ValueError("--validation-fraction must be in [0, 1)")
     if not 0 <= float(config["test_fraction"]) < 1:
@@ -1445,6 +1466,7 @@ def main(default_mask_strategy="random", argv=None):
             series_split_size=config["series_split_size"],
             patch_size=config["patch_size"],
             stride=config["pretrain_stride"],
+            sampling_mode=config["sampling_mode"],
             normalization=config["normalization"],
             feature_cols=config["feature_cols"],
             timestamp_col=config["timestamp_col"],
@@ -1468,6 +1490,7 @@ def main(default_mask_strategy="random", argv=None):
                     series_split_size=config["series_split_size"],
                     patch_size=config["patch_size"],
                     stride=config["pretrain_stride"],
+                    sampling_mode=config["sampling_mode"],
                     normalization=config["normalization"],
                     normalization_stats=config["normalization_stats"],
                     split="val",
@@ -1510,6 +1533,7 @@ def main(default_mask_strategy="random", argv=None):
         print("sentiment_path =", config["sentiment_path"])
         print("train_end_date =", config["train_end_date"])
         print("test_start_date =", config["test_start_date"])
+        print("sampling_mode =", config["sampling_mode"])
         print("pretrain_stride =", config["pretrain_stride"])
         print("normalization =", config["normalization"])
         print("train_windows =", len(loader.dataset))

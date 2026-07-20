@@ -4,6 +4,7 @@ config = {
     "series_split_size": 60,
     "patch_size": 5,
     "pretrain_stride": None,  # resolved to patch_size by the active CLI
+    "sampling_mode": "sliding_window",
     "normalization": "window_return",
     "feature_cols": [
         "Close",
@@ -21,9 +22,6 @@ config = {
     "seed": 42,
     "deterministic": True,
 
-    "wandb_project_name": "",
-    "log_wandb" : False,
-
     "batch_size" : 32,
 
     # Printing and Logging settings
@@ -33,13 +31,11 @@ config = {
     "validation_max_batches": None,
 
     # Loader
+    "mask_strategy": "random",
     "mask_ratio" : 0.7,
     "ratio_patches" : 10,
     "clip_grad": 1,
-    "warmup_ratio": 0.15,
     "ipe_scale": 1.25,
-    "lr_pretrain": 1e-05,
-    "pooling": "Mean",
 
     #optim
     "lr": 1e-5,

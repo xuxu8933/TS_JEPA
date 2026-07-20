@@ -6,10 +6,17 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 
 from config.config_pretrain import config as base_config
+from eval_dual_loss import (
+    dual_checkpoint_stem,
+    parse_args as parse_eval_args,
+    resolve_dual_checkpoint_path,
+)
 from eval_forecast_prequential_with_baselines_gru_volume import (
+    load_pretraining_checkpoint,
     load_pretrained_encoder_state,
 )
 from pretrain_dual_loss import (
@@ -28,11 +35,70 @@ from run_top_nasdaq100_stocks import (
 from src.models.decoder import ResidualMLPDecoder
 from src.models.encoder import Encoder
 from src.models.tokenizer import TS_Tokenizer
-from src.data_loaders.data_class_roll_volume import CSVDataLoader
+from src.data_loaders.data_class_roll_volume import CSVDataLoader, EvaluationDataLoader
 from tests.test_dual_loss_smoke import REPO_ROOT, _run_command, _sin_cos_rows, _write_rows
 
 
 class UnifiedDualLossTest(unittest.TestCase):
+    def _checkpoint_selector_args(self, checkpoint_dir, selection):
+        args, passthrough = parse_eval_args(
+            argv=[
+                "--data",
+                "NVDA",
+                "--mask-strategy",
+                "future_block",
+                "--lambda-jepa",
+                "1.0",
+                "--lambda-mae",
+                "0.5",
+                "--future-target-patches",
+                "4",
+                "--checkpoint-dir",
+                str(checkpoint_dir),
+                "--checkpoint-selection",
+                selection,
+            ]
+        )
+        self.assertEqual(passthrough, [])
+        return args
+
+    def test_checkpoint_selector_resolves_best_and_last(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_dir = Path(tmp) / "checkpoints"
+            data_dir = checkpoint_dir / "NVDA"
+            data_dir.mkdir(parents=True)
+
+            best_args = self._checkpoint_selector_args(checkpoint_dir, "best")
+            stem = dual_checkpoint_stem(best_args)
+            best_path = data_dir / f"{stem}_cfg_abc123_best.pt"
+            epoch_500 = data_dir / f"{stem}_cfg_abc123_epoch_500.pt"
+            epoch_2000 = data_dir / f"{stem}_cfg_abc123_epoch_2000.pt"
+            for path in (best_path, epoch_500, epoch_2000):
+                path.touch()
+
+            self.assertEqual(resolve_dual_checkpoint_path(best_args), str(best_path))
+
+            last_args = self._checkpoint_selector_args(checkpoint_dir, "last")
+            self.assertEqual(resolve_dual_checkpoint_path(last_args), str(epoch_2000))
+
+    def test_checkpoint_selector_rejects_ambiguous_best(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_dir = Path(tmp) / "checkpoints"
+            data_dir = checkpoint_dir / "NVDA"
+            data_dir.mkdir(parents=True)
+            args = self._checkpoint_selector_args(checkpoint_dir, "best")
+            stem = dual_checkpoint_stem(args)
+            (data_dir / f"{stem}_cfg_first_best.pt").touch()
+            (data_dir / f"{stem}_cfg_second_best.pt").touch()
+
+            with self.assertRaisesRegex(RuntimeError, "Multiple checkpoints match"):
+                resolve_dual_checkpoint_path(args)
+
+    def test_checkpoint_selector_path_requires_explicit_path(self):
+        args = self._checkpoint_selector_args("./logs/output_model", "path")
+        with self.assertRaisesRegex(ValueError, "requires pretrain_checkpoint_path"):
+            resolve_dual_checkpoint_path(args)
+
     def test_stock_runner_uses_unified_entrypoints_for_both_strategies(self):
         args = SimpleNamespace(
             mask_strategy="local_long",
@@ -44,6 +110,7 @@ class UnifiedDualLossTest(unittest.TestCase):
             causal_block_patches=2,
             causal_block_gap_patches=1,
             pretrain_stride=5,
+            sampling_mode="temporal_segments",
             normalization="window_return",
             seed=42,
             seeds=None,
@@ -70,6 +137,9 @@ class UnifiedDualLossTest(unittest.TestCase):
         self.assertIn("custom-results/NVDA/seed_42", eval_command)
         self.assertIn("--pretrain-checkpoint-path", eval_command)
         self.assertIn("--seed", pretrain_command)
+        self.assertIn("--sampling-mode", pretrain_command)
+        self.assertIn("temporal_segments", pretrain_command)
+        self.assertIn("--sampling-mode", eval_command)
 
         combined_command = build_combined_plot_command(args, ["NVDA", "MSFT"])
         self.assertIn("plot_top_stock_metrics.py", combined_command)
@@ -138,12 +208,38 @@ class UnifiedDualLossTest(unittest.TestCase):
         )
 
         self.assertEqual(default_config["seed"], 42)
+        self.assertEqual(default_config["mask_strategy"], "random")
         self.assertEqual(random_config["mask_strategy"], "random")
         self.assertIn("_dual_jepa_mae_", random_config["path_save"])
         self.assertEqual(local_config["mask_strategy"], "local_long")
         self.assertIn("_local_mae_long_jepa_", local_config["path_save"])
         self.assertEqual(random_config["seed"], 7)
         self.assertEqual(random_config["pretrain_stride"], random_config["patch_size"])
+        configured_future = copy.deepcopy(base_config)
+        configured_future["mask_strategy"] = "future_block"
+        self.assertEqual(
+            parse_args(configured_future, argv=[])["mask_strategy"],
+            "future_block",
+        )
+        segmented_config = parse_args(
+            copy.deepcopy(base_config),
+            argv=[
+                "--sampling-mode",
+                "temporal_segments",
+                "--pretrain-stride",
+                "1",
+            ],
+        )
+        self.assertEqual(segmented_config["sampling_mode"], "temporal_segments")
+        self.assertEqual(
+            segmented_config["pretrain_stride"],
+            segmented_config["series_split_size"],
+        )
+        eval_args, passthrough = parse_eval_args(
+            argv=["--sampling-mode", "temporal_segments"]
+        )
+        self.assertEqual(passthrough, [])
+        self.assertEqual(eval_args.sampling_mode, "temporal_segments")
         other_seed_config = parse_args(
             copy.deepcopy(base_config),
             argv=["--seed", "17"],
@@ -254,6 +350,64 @@ class UnifiedDualLossTest(unittest.TestCase):
                 dataset.normalization_stats,
             )
 
+    def test_temporal_segments_are_non_overlapping_and_keep_tensor_shapes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_path = Path(tmp) / "data" / "SEGMENTS" / "SEGMENTS.csv"
+            _write_rows(data_path, _sin_cos_rows(210))
+
+            pretrain_dataset = CSVDataLoader(
+                path_data=str(data_path),
+                series_split_size=20,
+                patch_size=5,
+                stride=1,
+                sampling_mode="temporal_segments",
+                normalization="none",
+                feature_cols=("Close", "Volume"),
+                sentiment_path=None,
+                validation_fraction=0.1,
+                test_fraction=0.1,
+            )
+
+            expected_starts = list(range(0, len(pretrain_dataset.train_df) - 19, 20))
+            self.assertEqual(pretrain_dataset.sample_starts, expected_starts)
+            self.assertEqual(pretrain_dataset.stride, 20)
+            self.assertEqual(len(pretrain_dataset), len(expected_starts))
+            self.assertTrue(
+                torch.equal(
+                    pretrain_dataset.split_series[1],
+                    pretrain_dataset.time_series[20:40],
+                )
+            )
+            patches, _, _ = pretrain_dataset[0]
+            self.assertEqual(tuple(patches.shape), (4, 10))
+
+            evaluation_dataset = EvaluationDataLoader(
+                path_data=str(data_path),
+                patch_size=5,
+                context_size=2,
+                stride=1,
+                sampling_mode="temporal_segments",
+                split="train",
+                normalization="none",
+                feature_cols=("Close", "Volume"),
+                sentiment_path=None,
+                validation_fraction=0.1,
+                test_fraction=0.1,
+            )
+
+            expected_eval_starts = list(
+                range(0, len(evaluation_dataset.train_df) - 14, 15)
+            )
+            self.assertEqual(evaluation_dataset.sample_starts, expected_eval_starts)
+            self.assertEqual(evaluation_dataset.stride, 15)
+            self.assertEqual(
+                evaluation_dataset.indices,
+                [start + 10 for start in expected_eval_starts],
+            )
+            context, target = evaluation_dataset[0]
+            self.assertEqual(tuple(context.shape), (2, 10))
+            self.assertEqual(tuple(target.shape), (5,))
+
     def test_ema_schedule_advances_per_optimizer_step(self):
         values = [ema_momentum_at_step(0.9, step, 10) for step in range(11)]
         self.assertEqual(values[0], 0.9)
@@ -355,6 +509,20 @@ class UnifiedDualLossTest(unittest.TestCase):
                 pretrained.tokenizer.fc.weight,
             )
         )
+
+    def test_downstream_loads_full_checkpoint_with_numpy_rng_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint_path = Path(tmp) / "full_state.pt"
+            payload = {
+                "encoder": {"weight": torch.ones(1)},
+                "rng_state": {"numpy": np.random.get_state()},
+            }
+            torch.save(payload, checkpoint_path)
+
+            loaded = load_pretraining_checkpoint(checkpoint_path, "cpu")
+
+            self.assertIn("rng_state", loaded)
+            self.assertEqual(loaded["rng_state"]["numpy"][0], "MT19937")
 
     def test_local_strategy_trains_and_saves_unified_checkpoint(self):
         with tempfile.TemporaryDirectory() as tmp:

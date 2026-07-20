@@ -70,6 +70,12 @@ def parse_args():
     parser.add_argument("--causal-block-gap-patches", type=int, default=1)
     parser.add_argument("--pretrain-stride", type=int, default=5)
     parser.add_argument(
+        "--sampling-mode",
+        choices=("sliding_window", "temporal_segments"),
+        default="sliding_window",
+        help="Use overlapping windows or non-overlapping temporal segments.",
+    )
+    parser.add_argument(
         "--normalization",
         choices=("window_return", "train_zscore", "none"),
         default="window_return",
@@ -124,6 +130,7 @@ def parse_args():
 def build_stock_commands(args, stock, seed=None):
     commands = []
     seed = args.seed if seed is None else seed
+    sampling_mode = getattr(args, "sampling_mode", "sliding_window")
     strategy_args = ["--mask-strategy", args.mask_strategy]
     if args.mask_strategy == "local_long":
         strategy_args.extend(
@@ -173,6 +180,8 @@ def build_stock_commands(args, stock, seed=None):
         str(args.pretrain_stride),
         "--normalization",
         args.normalization,
+        "--sampling-mode",
+        sampling_mode,
         "--seed",
         str(seed),
     ]
@@ -215,6 +224,8 @@ def build_stock_commands(args, stock, seed=None):
             args.encoder_weights,
             "--num_epochs",
             str(args.eval_num_epochs),
+            "--sampling-mode",
+            sampling_mode,
             "--results-dir",
             str(stock_results_dir),
             "--lambda_jepa",
@@ -297,6 +308,7 @@ def main():
         summary.write(f"mask_strategy={args.mask_strategy}\n")
         summary.write(f"seeds={','.join(str(seed) for seed in seeds)}\n")
         summary.write(f"normalization={args.normalization}\n")
+        summary.write(f"sampling_mode={args.sampling_mode}\n")
         summary.write(f"pretrain_stride={args.pretrain_stride}\n")
         summary.write(f"encoder_weights={args.encoder_weights}\n")
         summary.write(f"use_best_checkpoint={args.use_best_checkpoint}\n")

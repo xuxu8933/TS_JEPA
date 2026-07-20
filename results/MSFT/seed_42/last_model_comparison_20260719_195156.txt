@@ -1,0 +1,12 @@
+Data source: MSFT
+Evaluation type: last
+Generated at: 20260719_195156
+
+Model Comparison
+model,mse,mae,trend_accuracy
+naive_last,0.000889,0.021388,0.0000
+drift,0.000945,0.022113,0.5656
+GRU,0.001137,0.024572,0.5000
+TS-JEPA,0.003133,0.037976,0.4754
+mean_context,0.008166,0.073448,0.0000
+previous_patch,0.021555,0.099922,0.4672

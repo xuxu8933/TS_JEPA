@@ -9,6 +9,7 @@ import argparse
 import glob
 import json
 import os
+import re
 import runpy
 import sys
 
@@ -27,7 +28,7 @@ def _float_for_path(value):
     return str(value).replace("/", "_")
 
 
-def default_dual_checkpoint_path(args):
+def dual_checkpoint_stem(args):
     base_name = (
         "lr_"
         + str(args.lr_pretrain)
@@ -98,7 +99,20 @@ def default_dual_checkpoint_path(args):
             + _float_for_path(args.lambda_mae)
         )
 
-    filename = base_name + suffix + "_epoch_" + str(args.checkpoint_to_use) + ".pt"
+    return base_name + suffix
+
+
+def _raise_ambiguous_checkpoints(selection, matches):
+    raise RuntimeError(
+        f"Multiple checkpoints match checkpoint_selection={selection!r}. "
+        "Set pretrain_checkpoint_path in config/config_downstream.py or pass "
+        "--pretrain-checkpoint-path explicitly:\n" + "\n".join(matches)
+    )
+
+
+def default_dual_checkpoint_path(args):
+    stem = dual_checkpoint_stem(args)
+    filename = stem + "_epoch_" + str(args.checkpoint_to_use) + ".pt"
     legacy_path = os.path.join(args.checkpoint_dir, args.data, filename)
     if os.path.exists(legacy_path):
         return legacy_path
@@ -106,8 +120,7 @@ def default_dual_checkpoint_path(args):
     fingerprint_pattern = os.path.join(
         args.checkpoint_dir,
         args.data,
-        base_name
-        + suffix
+        stem
         + "_cfg_*_epoch_"
         + str(args.checkpoint_to_use)
         + ".pt",
@@ -116,14 +129,83 @@ def default_dual_checkpoint_path(args):
     if len(matches) == 1:
         return matches[0]
     if len(matches) > 1:
-        raise RuntimeError(
-            "Multiple configuration-specific checkpoints match. Pass "
-            "--pretrain-checkpoint-path explicitly:\n" + "\n".join(matches)
-        )
+        _raise_ambiguous_checkpoints("epoch", matches)
     return legacy_path
 
 
-def parse_args(default_mask_strategy="random", argv=None):
+def resolve_dual_checkpoint_path(args):
+    if args.pretrain_checkpoint_path:
+        return args.pretrain_checkpoint_path
+
+    selection = args.checkpoint_selection
+    if selection == "path":
+        raise ValueError(
+            "checkpoint_selection='path' requires pretrain_checkpoint_path in "
+            "config/config_downstream.py or --pretrain-checkpoint-path"
+        )
+    if selection == "epoch":
+        return default_dual_checkpoint_path(args)
+
+    checkpoint_dir = os.path.join(args.checkpoint_dir, args.data)
+    stem = dual_checkpoint_stem(args)
+    if selection == "best":
+        legacy_path = os.path.join(checkpoint_dir, stem + "_best.pt")
+        matches = []
+        if os.path.exists(legacy_path):
+            matches.append(legacy_path)
+        matches.extend(
+            sorted(glob.glob(os.path.join(checkpoint_dir, stem + "_cfg_*_best.pt")))
+        )
+        matches = sorted(set(matches))
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            _raise_ambiguous_checkpoints(selection, matches)
+        return legacy_path
+
+    epoch_pattern = re.compile(r"_epoch_(\d+)\.pt$")
+    matches = sorted(
+        set(
+            glob.glob(os.path.join(checkpoint_dir, stem + "_epoch_*.pt"))
+            + glob.glob(os.path.join(checkpoint_dir, stem + "_cfg_*_epoch_*.pt"))
+        )
+    )
+    epoch_matches = [
+        (int(match.group(1)), path)
+        for path in matches
+        if (match := epoch_pattern.search(path)) is not None
+    ]
+    if not epoch_matches:
+        return os.path.join(
+            checkpoint_dir,
+            stem + "_epoch_" + str(args.checkpoint_to_use) + ".pt",
+        )
+    last_epoch = max(epoch for epoch, _ in epoch_matches)
+    last_matches = sorted(path for epoch, path in epoch_matches if epoch == last_epoch)
+    if len(last_matches) > 1:
+        _raise_ambiguous_checkpoints(selection, last_matches)
+    return last_matches[0]
+
+
+def parse_args(default_mask_strategy=None, argv=None):
+    argument_list = list(argv) if argv is not None else sys.argv[1:]
+
+    def option_was_supplied(*names):
+        return any(
+            argument == name or argument.startswith(name + "=")
+            for argument in argument_list
+            for name in names
+        )
+
+    if default_mask_strategy is not None:
+        mask_strategy_default = default_mask_strategy
+    elif option_was_supplied("--data"):
+        # Preserve the historical random-mask default for ad-hoc dataset CLI
+        # invocations. A zero-argument run uses the configured strategy.
+        mask_strategy_default = "random"
+    else:
+        mask_strategy_default = downstream_config.get("mask_strategy", "random")
+
     parser = argparse.ArgumentParser(
         description="Run downstream evaluation for a dual JEPA+MAE checkpoint."
     )
@@ -132,7 +214,7 @@ def parse_args(default_mask_strategy="random", argv=None):
     parser.add_argument(
         "--mask-strategy",
         choices=("random", "local_long", "future_block", "causal_multiblock"),
-        default=default_mask_strategy,
+        default=mask_strategy_default,
     )
     parser.add_argument(
         "--eval-mode",
@@ -161,6 +243,15 @@ def parse_args(default_mask_strategy="random", argv=None):
         default=downstream_config["checkpoint_to_use"],
     )
     parser.add_argument(
+        "--checkpoint-selection",
+        choices=("best", "last", "epoch", "path"),
+        default=downstream_config.get("checkpoint_selection", "epoch"),
+        help=(
+            "Select the matching best checkpoint, largest saved epoch, configured "
+            "epoch, or explicit path."
+        ),
+    )
+    parser.add_argument(
         "--checkpoint_dir",
         "--checkpoint-dir",
         dest="checkpoint_dir",
@@ -170,14 +261,20 @@ def parse_args(default_mask_strategy="random", argv=None):
         "--pretrain_checkpoint_path",
         "--pretrain-checkpoint-path",
         dest="pretrain_checkpoint_path",
-        default=None,
+        default=downstream_config.get("pretrain_checkpoint_path"),
         help="Use this exact checkpoint path instead of computing the dual-loss path.",
     )
     parser.add_argument(
         "--pretrain-encoder-weights",
         choices=("ema", "online"),
-        default="ema",
+        default=downstream_config.get("pretrain_encoder_weights", "ema"),
         help="Use EMA target or online encoder weights for downstream evaluation.",
+    )
+    parser.add_argument(
+        "--sampling-mode",
+        choices=("sliding_window", "temporal_segments"),
+        default=downstream_config.get("sampling_mode", "sliding_window"),
+        help="Evaluate with rolling windows or non-overlapping temporal segments.",
     )
     parser.add_argument(
         "--pretrain_path_suffix",
@@ -199,40 +296,56 @@ def parse_args(default_mask_strategy="random", argv=None):
         "--lambda-jepa",
         dest="lambda_jepa",
         type=float,
-        default=1.0,
+        default=downstream_config.get("lambda_jepa", 1.0),
     )
     parser.add_argument(
         "--lambda_mae",
         "--lambda-mae",
         dest="lambda_mae",
         type=float,
-        default=1.0,
+        default=downstream_config.get("lambda_mae", 1.0),
     )
     parser.add_argument(
         "--mae_window_patches",
         "--mae-window-patches",
         dest="mae_window_patches",
         type=int,
-        default=1,
+        default=downstream_config.get("mae_window_patches", 1),
     )
     parser.add_argument(
         "--jepa_gap_patches",
         "--jepa-gap-patches",
         dest="jepa_gap_patches",
         type=int,
-        default=4,
+        default=downstream_config.get("jepa_gap_patches", 4),
     )
     parser.add_argument(
         "--jepa_target_patches",
         "--jepa-target-patches",
         dest="jepa_target_patches",
         type=int,
-        default=4,
+        default=downstream_config.get("jepa_target_patches", 4),
     )
-    parser.add_argument("--future-target-patches", type=int, default=4)
-    parser.add_argument("--causal-num-blocks", type=int, default=2)
-    parser.add_argument("--causal-block-patches", type=int, default=2)
-    parser.add_argument("--causal-block-gap-patches", type=int, default=1)
+    parser.add_argument(
+        "--future-target-patches",
+        type=int,
+        default=downstream_config.get("future_target_patches", 4),
+    )
+    parser.add_argument(
+        "--causal-num-blocks",
+        type=int,
+        default=downstream_config.get("causal_num_blocks", 2),
+    )
+    parser.add_argument(
+        "--causal-block-patches",
+        type=int,
+        default=downstream_config.get("causal_block_patches", 2),
+    )
+    parser.add_argument(
+        "--causal-block-gap-patches",
+        type=int,
+        default=downstream_config.get("causal_block_gap_patches", 1),
+    )
     parser.add_argument(
         "--lr_pretrain",
         "--lr-pretrain",
@@ -341,17 +454,22 @@ def parse_args(default_mask_strategy="random", argv=None):
         help="Print the checkpoint path and delegated command without running evaluation.",
     )
 
-    args, passthrough_args = parser.parse_known_args(argv)
+    args, passthrough_args = parser.parse_known_args(argument_list)
+    if (
+        not option_was_supplied("--checkpoint-selection")
+        and option_was_supplied("--checkpoint_to_use", "--checkpoint-to-use")
+        and not args.pretrain_checkpoint_path
+    ):
+        # Before config-driven selection existed, --checkpoint-to-use always
+        # meant epoch selection. Keep existing evaluation commands working.
+        args.checkpoint_selection = "epoch"
     return args, passthrough_args
 
 
 def build_eval_argv(args, passthrough_args):
-    checkpoint_path = (
-        args.pretrain_checkpoint_path
-        if args.pretrain_checkpoint_path
-        else default_dual_checkpoint_path(args)
-    )
+    checkpoint_path = resolve_dual_checkpoint_path(args)
     pretrain_config = {}
+    checkpoint_epoch = args.checkpoint_to_use
     if os.path.exists(checkpoint_path):
         checkpoint = torch.load(
             checkpoint_path,
@@ -359,6 +477,8 @@ def build_eval_argv(args, passthrough_args):
             weights_only=False,
         )
         pretrain_config = checkpoint.get("config", {})
+        checkpoint_epoch = int(checkpoint.get("epoch", checkpoint_epoch))
+        args.mask_strategy = pretrain_config.get("mask_strategy", args.mask_strategy)
 
     def checkpoint_value(key, fallback):
         return pretrain_config.get(key, fallback)
@@ -368,11 +488,13 @@ def build_eval_argv(args, passthrough_args):
         "--data",
         str(args.data),
         "--checkpoint_to_use",
-        str(args.checkpoint_to_use),
+        str(checkpoint_epoch),
         "--pretrain_checkpoint_path",
         checkpoint_path,
         "--pretrain-encoder-weights",
         args.pretrain_encoder_weights,
+        "--sampling-mode",
+        str(checkpoint_value("sampling_mode", args.sampling_mode)),
         "--lr_pretrain",
         str(checkpoint_value("lr", args.lr_pretrain)),
         "--ema_pretrain",
@@ -565,7 +687,7 @@ def evaluate_mnist_rows(args, checkpoint_path):
     return result
 
 
-def main(default_mask_strategy="random", argv=None):
+def main(default_mask_strategy=None, argv=None):
     args, passthrough_args = parse_args(
         default_mask_strategy=default_mask_strategy,
         argv=argv,

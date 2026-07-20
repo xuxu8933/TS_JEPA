@@ -62,10 +62,28 @@ The loader:
 - computes `MA10` and `MA50` automatically;
 - drops rows without complete moving-average values;
 - applies `log1p` to `Volume` when it is selected;
-- builds sliding windows and divides each window into patches;
+- builds sliding windows or non-overlapping temporal segments and divides each sample into patches;
 - uses only the training split during pretraining.
 
 Pretraining stride defaults to `patch_size`, rather than the complete window length. Override it with `--pretrain-stride N`. For example, a 60-row window with `patch_size=5` uses `stride=5` unless explicitly changed.
+
+Select the sample construction mode with `--sampling-mode`:
+
+| Mode | Behavior |
+| --- | --- |
+| `sliding_window` | Builds chronological fixed-length windows using `pretrain_stride`. This remains the default. |
+| `temporal_segments` | Splits each chronological data split into contiguous, non-overlapping `series_split_size` segments. An incomplete tail is dropped so model tensor shapes remain fixed. |
+
+For non-overlapping 60-observation segments:
+
+```bash
+conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --data NVDA \
+  --series-split-size 60 \
+  --sampling-mode temporal_segments
+```
+
+In temporal-segment mode, the effective pretraining stride is the complete segment length. The selected mode is stored in the checkpoint and reused by unified downstream evaluation.
 
 Normalization is selected explicitly:
 
@@ -99,6 +117,118 @@ For price-only training, explicitly select price columns and disable the sentime
 ```bash
 --feature-cols Close Volume --sentiment-path none
 ```
+
+## Configuration files
+
+The repository uses Python dictionaries for configuration; there is no
+`--config FILE` option. The two configuration files provide defaults:
+
+| File | Used for |
+| --- | --- |
+| `config/config_pretrain.py` | Pretraining data, normalization, optimization, encoder, predictor, masking, and validation defaults. |
+| `config/config_downstream.py` | Forecast decoder, fine-tuning, checkpoint, and result-output defaults. |
+
+Run pretraining with the values from `config/config_pretrain.py`:
+
+```bash
+conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py
+```
+
+Both checked-in configuration files use `mask_strategy="random"`. The causal
+`future_block` command below is an intentional experiment-specific override.
+
+Command-line arguments override configuration-file values. The effective
+precedence is configuration defaults, then command-line overrides. The complete
+resolved configuration is stored in every unified checkpoint. During
+evaluation, `eval_dual_loss.py` reads the pretraining data protocol, feature
+order, normalization statistics, and model architecture from that checkpoint.
+Keep `target_feature_index` consistent with the order of `feature_cols`; index
+`0` selects the first feature.
+
+### Recommended leakage-safe NVDA baseline
+
+There is not yet enough comparable multi-seed evidence in this repository to
+claim one empirically best configuration. In particular, do not choose a
+configuration from test-set performance. The following is the recommended
+starting point for financial forecasting because it preserves chronology and
+uses sentiment without fitting normalization statistics on validation or test
+data:
+
+| Setting | Recommended value | Reason |
+| --- | --- | --- |
+| Masking | `future_block` | Context is strictly earlier than the prediction target. |
+| Features | `Close Volume MA10 MA50 sentiment_mean` | Combines price, activity, trend, and daily news sentiment. |
+| Normalization | `train_zscore` | Fits statistics on the chronological training split only. |
+| Window geometry | 60 rows, 5-row patches, stride 5 | Produces 12 patches per window without discarding most possible windows. |
+| Objective | JEPA `1.0`, MAE `0.5` | Keeps representation prediction primary while retaining reconstruction regularization. |
+| Checkpoint | Lowest pretraining validation loss | Avoids selecting the final epoch by test performance. |
+| Encoder for evaluation | `ema` | Uses the more stable target-encoder representation. |
+
+Train once and automatically evaluate the lowest-pretraining-validation-loss
+checkpoint:
+
+```bash
+conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --data NVDA \
+  --mask-strategy future_block \
+  --feature-cols Close Volume MA10 MA50 sentiment_mean \
+  --sentiment-path ./NVDA_daily_sentiment.csv \
+  --train-end-date 2024-12-31 \
+  --test-start-date 2025-01-01 \
+  --validation-fraction 0.05 \
+  --test-fraction 0.15 \
+  --series-split-size 60 \
+  --patch-size 5 \
+  --normalization train_zscore \
+  --pretrain-stride 5 \
+  --target-feature-index 0 \
+  --future-target-patches 4 \
+  --lambda-jepa 1.0 \
+  --lambda-mae 0.5 \
+  --jepa-loss mse \
+  --mae-loss mse \
+  --decoder-type residual_mlp \
+  --batch-size 32 \
+  --lr 1e-5 \
+  --end-lr 1e-6 \
+  --ema-momentum 0.998 \
+  --num-epochs 2001 \
+  --validation-interval 10 \
+  --seed 42 \
+  --run-eval \
+  --eval-use-best \
+  --eval-encoder-weights ema \
+  --eval-num-epochs 501 \
+  --eval-results-dir results/NVDA/future_block_sentiment/seed_42
+```
+
+For a defensible comparison, repeat the complete workflow across several seeds
+and report mean and standard deviation instead of selecting the best seed:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --stocks NVDA \
+  --max-stocks 1 \
+  --skip-download \
+  --mask-strategy future_block \
+  --future-target-patches 4 \
+  --lambda-jepa 1.0 \
+  --lambda-mae 0.5 \
+  --pretrain-stride 5 \
+  --normalization train_zscore \
+  --seeds 7 17 42 73 101 \
+  --pretrain-num-epochs 2001 \
+  --use-best-checkpoint \
+  --eval-num-epochs 501 \
+  --results-dir results/NVDA_future_block_sentiment
+```
+
+The stock runner obtains feature columns, sentiment path, dates, and model
+geometry from `config/config_pretrain.py`. Before using `--skip-download`, make
+sure `data/NVDA/NVDA.csv` and the configured sentiment file cover the requested
+dates. Select configurations using validation metrics; use the held-out test
+split only for the final report, and always compare against `naive_last`,
+`drift`, and GRU.
 
 ## Unified pretraining
 
@@ -311,6 +441,60 @@ conda run --no-capture-output -n ts-jepa python eval_dual_loss.py \
 
 EMA weights are the default for downstream representation evaluation. Use `--pretrain-encoder-weights online` for an explicit online-vs-EMA ablation. Legacy checkpoints without `encoder_ema` fall back to the online encoder with a warning.
 
+### Config-driven best and last checkpoint selection
+
+Checkpoint selection is configured in `config/config_downstream.py`. The
+checked-in configuration selects the last random-mask, JEPA `1.0`, MAE `1.0`
+checkpoint:
+
+```python
+"checkpoint_selection": "last",
+"pretrain_checkpoint_path": None,
+"mask_strategy": "random",
+"lambda_jepa": 1.0,
+"lambda_mae": 1.0,
+```
+
+Run the configured checkpoint without repeating its filename or geometry:
+
+```bash
+conda run --no-capture-output -n ts-jepa python eval_dual_loss.py
+```
+
+Inspect the resolved checkpoint and delegated evaluation command first:
+
+```bash
+conda run -n ts-jepa python eval_dual_loss.py --dry-run
+```
+
+Change only `checkpoint_selection` to choose another checkpoint policy:
+
+| Value | Resolution |
+| --- | --- |
+| `best` | The matching `_best.pt` checkpoint with the lowest pretraining validation loss. |
+| `last` | The matching epoch checkpoint with the largest saved epoch number. |
+| `epoch` | The matching `checkpoint_to_use` epoch. |
+| `path` | The exact `pretrain_checkpoint_path`. |
+
+A temporary command-line override remains available. For example, evaluate the
+last checkpoint while keeping the config default unchanged:
+
+```bash
+conda run --no-capture-output -n ts-jepa python eval_dual_loss.py \
+  --checkpoint-selection last
+```
+
+The strategy, loss weights, and mask geometry in `config_downstream.py` must
+match the checkpoint family. After training the recommended MAE `0.5`
+configuration, change `lambda_mae` to `0.5`. If several fingerprints match the
+same family, selection stops with an ambiguity error; set
+`checkpoint_selection` to `path` and provide the exact
+`pretrain_checkpoint_path` instead of loading one silently.
+
+Feature order, sentiment path, chronological split, train-only normalization
+statistics, model architecture, and the actual checkpoint epoch are restored
+from the selected checkpoint.
+
 For a local/long checkpoint, use the unified evaluator:
 
 ```bash
@@ -343,12 +527,15 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --train-end-date none \
   --test-start-date none \
   --run-eval \
+  --eval-use-best \
+  --eval-encoder-weights ema \
   --eval-num-epochs 501
 ```
 
-Use `--eval-checkpoint-to-use EPOCH` to evaluate a specific saved epoch. Otherwise, the last checkpoint saved in the current run is used.
-
-Use `--eval-use-best` to launch downstream evaluation from `..._best.pt`; `--eval-encoder-weights ema|online` selects the representation source.
+The command above evaluates `..._best.pt`. Omit `--eval-use-best` to evaluate
+the last checkpoint saved in the current run, or use
+`--eval-checkpoint-to-use EPOCH` to select a specific saved epoch. Use
+`--eval-encoder-weights ema|online` to select the representation source.
 
 ## Batch NASDAQ-100 workflow
 
@@ -523,6 +710,7 @@ The strategy, loss weights, local-window settings, and checkpoint epoch must mat
 | `--seed N` | Reproducible single-seed run; default `42`. |
 | `--seeds N ...` | Runs every stock for every listed seed and aggregates mean/std; overrides `--seed`. |
 | `--pretrain-stride N` | Sliding-window stride used during pretraining; runner default `5`. |
+| `--sampling-mode MODE` | Uses overlapping `sliding_window` samples or non-overlapping `temporal_segments`. |
 | `--normalization MODE` | `window_return`, `train_zscore`, or `none`. |
 | `--encoder-weights ema|online` | Chooses downstream checkpoint encoder; default `ema`. |
 | `--use-best-checkpoint` | Evaluates each run's deterministic `..._best.pt` instead of `--checkpoint-to-use`. |
@@ -599,6 +787,7 @@ Do not use `--run-eval` for MNIST; that option launches the time-series forecast
 - `encoder_kernel_size` cannot exceed the flattened patch dimension.
 - `local_long`, `future_block`, and `causal_multiblock` require time-series input.
 - `pretrain_stride` must be positive; omitting it uses `patch_size`.
+- `temporal_segments` uses `series_split_size` as its effective stride and drops only the incomplete tail.
 - `future_block` and `causal_multiblock` require at least one context patch before all targets.
 - `max_batches_per_epoch`, when set, must be positive.
 
@@ -622,7 +811,7 @@ The suite covers:
 - random dual-loss pretraining;
 - local-MAE + long-JEPA pretraining;
 - future-block and causal multi-block geometry;
-- train-only normalization and configurable stride;
+- train-only normalization, configurable stride, and non-overlapping temporal segments;
 - complete checkpoint save/resume and evaluation resolution;
 - iteration-level EMA scheduling and online/EMA selection;
 - deterministic validation and collapse metrics;

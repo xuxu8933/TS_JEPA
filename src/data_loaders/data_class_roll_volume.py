@@ -15,6 +15,7 @@ DEFAULT_SENTIMENT_COLS = (
 )
 
 NORMALIZATION_MODES = ("window_return", "train_zscore", "none")
+SAMPLING_MODES = ("sliding_window", "temporal_segments")
 
 
 def cumulative_return_normalize_with_base(series, base, eps=1e-8, passthrough_indices=None):
@@ -44,6 +45,28 @@ def _resolve_normalization_mode(normalization, normalize=True):
             f"{NORMALIZATION_MODES}"
         )
     return normalization
+
+
+def _resolve_sampling_mode(sampling_mode):
+    if sampling_mode not in SAMPLING_MODES:
+        raise ValueError(
+            f"Unknown sampling_mode={sampling_mode!r}; expected one of "
+            f"{SAMPLING_MODES}"
+        )
+    return sampling_mode
+
+
+def _sample_starts(series_length, sample_length, stride, sampling_mode):
+    """Return chronological starts for sliding or non-overlapping samples."""
+    if sample_length <= 0:
+        raise ValueError(f"sample_length must be positive, got {sample_length}")
+    if stride <= 0:
+        raise ValueError(f"stride must be positive, got {stride}")
+    effective_stride = sample_length if sampling_mode == "temporal_segments" else stride
+    return (
+        list(range(0, series_length - sample_length + 1, effective_stride)),
+        effective_stride,
+    )
 
 
 def train_zscore_state(train_series, feature_cols, eps=1e-6):
@@ -355,6 +378,7 @@ class CSVDataLoader(Dataset):
         patch_size=5,
         mask_ratio=0.15,
         stride=None,
+        sampling_mode="sliding_window",
         normalize=True,
         normalization=None,
         normalization_stats=None,
@@ -374,6 +398,7 @@ class CSVDataLoader(Dataset):
         self.series_split_size = series_split_size
         self.patch_size = patch_size
         self.mask_ratio = mask_ratio
+        self.sampling_mode = _resolve_sampling_mode(sampling_mode)
         self.normalization = _resolve_normalization_mode(normalization, normalize)
         self.normalize = self.normalization != "none"
         self.split = split
@@ -385,8 +410,6 @@ class CSVDataLoader(Dataset):
             for idx, col in enumerate(self.feature_cols)
             if col in set(sentiment_cols)
         ]
-
-        self.stride = stride if stride is not None else patch_size
 
         self.train_df, self.val_df, self.test_df = load_price_series(
             path_data=path_data,
@@ -410,6 +433,14 @@ class CSVDataLoader(Dataset):
         else:
             raise ValueError("Pretraining split must be 'train', 'val', or 'test'")
 
+        requested_stride = stride if stride is not None else patch_size
+        self.sample_starts, self.stride = _sample_starts(
+            series_length=len(self.time_series),
+            sample_length=self.series_split_size,
+            stride=requested_stride,
+            sampling_mode=self.sampling_mode,
+        )
+
         if self.normalization == "train_zscore":
             self.normalization_stats = normalization_stats or train_zscore_state(
                 self.train_df,
@@ -427,23 +458,23 @@ class CSVDataLoader(Dataset):
             self.normalization_mean = None
             self.normalization_std = None
 
-        self.split_series = self._make_sliding_windows(
+        self.split_series = self._make_training_samples(
             series=self.time_series,
             window_size=self.series_split_size,
-            stride=self.stride,
         )
 
-    def _make_sliding_windows(self, series, window_size, stride):
+    def _make_training_samples(self, series, window_size):
         windows = [
-            series[i:i + window_size]
-            for i in range(0, len(series) - window_size + 1, stride)
+            series[start:start + window_size]
+            for start in self.sample_starts
         ]
 
         if len(windows) == 0:
             raise ValueError(
-                f"No window can be created. "
+                f"No training sample can be created. "
                 f"len(series)={len(series)}, "
-                f"window_size={window_size}, stride={stride}"
+                f"window_size={window_size}, stride={self.stride}, "
+                f"sampling_mode={self.sampling_mode!r}"
             )
 
         return windows
@@ -511,6 +542,7 @@ class EvaluationDataLoader(Dataset):
         patch_size=5,
         context_size=10,
         stride=1,
+        sampling_mode="sliding_window",
         split="test",
         normalize=True,
         normalization=None,
@@ -528,7 +560,7 @@ class EvaluationDataLoader(Dataset):
     ):
         self.patch_size = patch_size
         self.context_size = context_size
-        self.stride = stride
+        self.sampling_mode = _resolve_sampling_mode(sampling_mode)
         self.split = split
         self.normalization = _resolve_normalization_mode(normalization, normalize)
         self.normalize = self.normalization != "none"
@@ -586,7 +618,18 @@ class EvaluationDataLoader(Dataset):
         else:
             raise ValueError(f"Unknown split: {split}. Use 'train', 'val', 'test', or 'all'.")
 
-        self.samples = self._make_rolling_samples(self.series)
+        context_length = self.context_size * self.patch_size
+        sample_length = context_length + self.patch_size
+        self.sample_starts, self.stride = _sample_starts(
+            series_length=len(self.series),
+            sample_length=sample_length,
+            stride=stride,
+            sampling_mode=self.sampling_mode,
+        )
+        if self.sampling_mode == "temporal_segments":
+            # The evaluator uses the true target offsets for forecast logging.
+            self.indices = [start + context_length for start in self.sample_starts]
+        self.samples = self._make_samples(self.series)
 
         print(
             f"[EvaluationDataLoader] split={split}, "
@@ -596,16 +639,17 @@ class EvaluationDataLoader(Dataset):
             f"patch_size={patch_size}, "
             f"feature_dim={self.feature_dim}, "
             f"target_col={target_col}, "
-            f"stride={stride}"
+            f"sampling_mode={self.sampling_mode}, "
+            f"stride={self.stride}"
         )
 
-    def _make_rolling_samples(self, series):
+    def _make_samples(self, series):
         context_len = self.context_size * self.patch_size
         target_len = self.patch_size
         total_len = context_len + target_len
 
         samples = []
-        for start in range(0, len(series) - total_len + 1, self.stride):
+        for start in self.sample_starts:
             full_window = series[start:start + total_len]
             context_flat = full_window[:context_len]   # [context_len, C]
             target_flat = full_window[context_len:]    # [patch_size, C]
@@ -617,7 +661,8 @@ class EvaluationDataLoader(Dataset):
                 f"len(series)={len(series)}, "
                 f"context_size={self.context_size}, "
                 f"patch_size={self.patch_size}, "
-                f"stride={self.stride}"
+                f"stride={self.stride}, "
+                f"sampling_mode={self.sampling_mode!r}"
             )
 
         return samples

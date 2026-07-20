@@ -1,18 +1,33 @@
 config = {
     # Data Path
     "data" : "NVDA",
-    "path_train" : "./data/FordB/train_data.ts",
-    "path_test" : "./data/FordB/test_data.ts",
     "path_save" : "./logs/output_model/",
     "results_dir" : "./results",
+
+    # Unified checkpoint selection used by eval_dual_loss.py:
+    #   best  -> the matching *_best.pt checkpoint
+    #   last  -> the matching checkpoint with the largest epoch number
+    #   epoch -> checkpoint_to_use
+    #   path  -> pretrain_checkpoint_path
+    "checkpoint_selection": "last",
+    "pretrain_checkpoint_path": None,
+    "mask_strategy": "random",
+    "lambda_jepa": 1.0,
+    "lambda_mae": 1.0,
+    "mae_window_patches": 1,
+    "jepa_gap_patches": 4,
+    "jepa_target_patches": 4,
+    "future_target_patches": 4,
+    "causal_num_blocks": 2,
+    "causal_block_patches": 2,
+    "causal_block_gap_patches": 1,
+
+    "sampling_mode": "sliding_window",
     "normalization": "window_return",
     "normalization_stats": None,
     "pretrain_encoder_weights": "ema",
 
-    "regression": False,
     "target_feature_index": 0,
-    "wandb_project_name": "",
-    "log_wandb" : False,
     "feature_cols": [
         "Close",
         "Volume",
@@ -25,8 +40,6 @@ config = {
     "test_start_date": "2025-01-01",
     "validation_fraction": 0.05,
     "test_fraction": 0.15,
-    # Printing and Logging settings
-    "checkpoint_print": 20,
 
     # Loader
     "ratio_patches" : 10,
@@ -52,16 +65,11 @@ config = {
     "cnn_kernel_size" : 3,
     "cnn_dense_dim" : 32,
 
-    # Attention Only Model
-    "attention_only_dense_dim" : 512,
-    "attention_only_embed_dim": 512,
-
     # Transformer Model
     "embed_dim" : 128,
     "nhead" : 2,
     "num_layers": 1,
     "kernel_size" : 3,
-    "embed_bias": True,
     "transformer_dense_dim": 64,
     "pooling": "Mean",
 
@@ -79,7 +87,6 @@ config = {
 
     "checkpoint_to_use": 2000,
     "lr_pretrain": 1e-05,
-    "batch_size_pretrain": 256,
     "mask_ratio" : 0.7,
     "ema_pretrain" : 0.998,
 

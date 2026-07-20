@@ -862,6 +862,19 @@ def load_pretrained_encoder_state(encoder, state_dict):
     encoder.load_state_dict(encoder_state)
 
 
+def load_pretraining_checkpoint(checkpoint_path, map_location):
+    """Load a trusted, locally produced full-state pretraining checkpoint.
+
+    Unified checkpoints intentionally contain optimizer and RNG state, including
+    NumPy objects that PyTorch 2.6's default weights-only loader rejects.
+    Checkpoints from untrusted sources must not be loaded through this helper.
+    """
+    return torch.load(
+        checkpoint_path,
+        map_location=map_location,
+        weights_only=False,
+    )
+
 
 def _maybe_get_dataset_index(dataset, sample_idx, eval_stride, horizon_step):
     """
@@ -1564,6 +1577,7 @@ if __name__ == "__main__":
     validation_fraction = config.get("validation_fraction", 0.05)
     test_fraction = config.get("test_fraction", 0.30)
     normalization = config.get("normalization", "window_return")
+    sampling_mode = config.get("sampling_mode", "sliding_window")
     normalization_stats = config.get("normalization_stats", None)
     feature_dim = len(feature_cols)
     target_feature_index = int(config.get("target_feature_index", 0))  # Close index in feature_cols
@@ -1588,6 +1602,7 @@ if __name__ == "__main__":
     print("feature_dim =", feature_dim)
     print("target_feature_index =", target_feature_index)
     print("normalization =", normalization)
+    print("sampling_mode =", sampling_mode)
     print("trend_weight =", config.get("trend_weight", 0.0))
     print("trend_loss_temperature =", config.get("trend_loss_temperature", 0.01))
     print("trend_loss_threshold =", config.get("trend_loss_threshold", 0.0))
@@ -1617,6 +1632,7 @@ if __name__ == "__main__":
         patch_size=patch_size,
         context_size=context_size,
         stride=eval_stride,
+        sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
         feature_cols=feature_cols,
@@ -1638,6 +1654,7 @@ if __name__ == "__main__":
         patch_size=patch_size,
         context_size=context_size,
         stride=eval_stride,
+        sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
         feature_cols=feature_cols,
@@ -1659,6 +1676,7 @@ if __name__ == "__main__":
         patch_size=patch_size,
         context_size=context_size,
         stride=eval_stride,
+        sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
         feature_cols=feature_cols,
@@ -1745,9 +1763,9 @@ if __name__ == "__main__":
 
     print("Load checkpoint:", checkpoint_path)
 
-    checkpoint = torch.load(
+    checkpoint = load_pretraining_checkpoint(
         checkpoint_path,
-        map_location=device,
+        device,
     )
 
     encoder_key = (
