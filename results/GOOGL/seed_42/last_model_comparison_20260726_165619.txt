@@ -1,0 +1,12 @@
+Data source: GOOGL
+Evaluation type: last
+Generated at: 20260726_165619
+
+Model Comparison
+model,mse,mae,trend_accuracy
+naive_last,0.001579,0.030025,0.0000
+GRU,0.001604,0.030865,0.5205
+drift,0.001624,0.030692,0.5205
+TS-JEPA,0.002179,0.036033,0.5492
+mean_context,0.022008,0.126549,0.0000
+previous_patch,0.034555,0.135102,0.4959

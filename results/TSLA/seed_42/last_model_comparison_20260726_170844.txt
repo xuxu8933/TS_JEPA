@@ -1,0 +1,12 @@
+Data source: TSLA
+Evaluation type: last
+Generated at: 20260726_170844
+
+Model Comparison
+model,mse,mae,trend_accuracy
+naive_last,0.002715,0.039688,0.0000
+GRU,0.003063,0.042018,0.5000
+drift,0.003234,0.042047,0.5123
+TS-JEPA,0.003466,0.044816,0.5164
+mean_context,0.017233,0.099418,0.0000
+previous_patch,0.043323,0.150212,0.4057
