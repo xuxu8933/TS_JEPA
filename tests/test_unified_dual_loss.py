@@ -137,6 +137,11 @@ class UnifiedDualLossTest(unittest.TestCase):
         self.assertIn("custom-results/NVDA/seed_42", eval_command)
         self.assertIn("--pretrain-checkpoint-path", eval_command)
         self.assertIn("--seed", pretrain_command)
+        self.assertIn("--seed", eval_command)
+        self.assertEqual(
+            eval_command[eval_command.index("--seed") + 1],
+            "42",
+        )
         self.assertIn("--sampling-mode", pretrain_command)
         self.assertIn("temporal_segments", pretrain_command)
         self.assertIn("--sampling-mode", eval_command)
