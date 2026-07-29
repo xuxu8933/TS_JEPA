@@ -23,14 +23,14 @@ def _none_if_requested(value):
 
 
 def prepare_args(config):
-
-    seed = random.randint(0, 100)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, default=config["data"])
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=config.get("seed", 42),
+        help="Random seed for downstream model training and evaluation.",
+    )
     parser.add_argument("--notes", type=str, default="")
     parser.add_argument("--name_model", type=str, default="pre_train")
     parser.add_argument(
@@ -222,6 +222,13 @@ def prepare_args(config):
     )
 
     args = parser.parse_args()
+    seed = int(args.seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
     config["model"] = args.name_model.lower()
     config["data"] = args.data
     config["lr"] = args.lr

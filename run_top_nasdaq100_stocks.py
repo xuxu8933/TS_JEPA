@@ -224,6 +224,8 @@ def build_stock_commands(args, stock, seed=None):
             args.encoder_weights,
             "--num_epochs",
             str(args.eval_num_epochs),
+            "--seed",
+            str(seed),
             "--sampling-mode",
             sampling_mode,
             "--results-dir",

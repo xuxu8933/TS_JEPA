@@ -230,6 +230,30 @@ dates. Select configurations using validation metrics; use the held-out test
 split only for the final report, and always compare against `naive_last`,
 `drift`, and GRU.
 
+### Top-10 random versus local-long comparison
+
+Run both masking strategies on all 10 configured NASDAQ-100 stocks with 10
+reproducible seeds per strategy:
+
+```bash
+conda run --no-capture-output -n ts-jepa python \
+  run_top10_nasdaq_mask_comparison.py
+```
+
+The script uses seeds 42 through 51 and existing stock CSV files by default.
+Pass `--download` to refresh the data first. It writes all individual metrics,
+per-stock mean/sample-standard-deviation metrics, per-seed means across the 10
+stocks, and overall mean/sample-standard-deviation metrics across the 10 seeded
+runs under:
+
+```text
+results/top10_nasdaq100_mask_comparison/
+```
+
+Use `--dry-run` to inspect all 200 stock/strategy/seed experiment commands
+without training. Use `--aggregate-only` to rebuild the summary CSV files from
+completed runs.
+
 ## Unified pretraining
 
 Use `pretrain_dual_loss.py` for all strategies. The default seed is `42`; pass `--seed` explicitly for published experiments.

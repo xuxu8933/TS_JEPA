@@ -26,6 +26,7 @@ config = {
     "normalization": "window_return",
     "normalization_stats": None,
     "pretrain_encoder_weights": "ema",
+    "seed": 42,
 
     "target_feature_index": 0,
     "feature_cols": [
