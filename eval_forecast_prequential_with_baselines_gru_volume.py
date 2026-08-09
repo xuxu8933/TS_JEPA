@@ -236,6 +236,7 @@ def prequential_gru_evaluate(
                 )
 
                 forecast_rows.append({
+                    "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
@@ -257,6 +258,7 @@ def prequential_gru_evaluate(
                 )
 
                 score_rows.append({
+                    "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
@@ -279,6 +281,7 @@ def prequential_gru_evaluate(
         writer = csv.DictWriter(
             f,
             fieldnames=[
+                "forecast_target",
                 "rolling_step",
                 "horizon_step",
                 "target_index",
@@ -293,6 +296,7 @@ def prequential_gru_evaluate(
         writer = csv.DictWriter(
             f,
             fieldnames=[
+                "forecast_target",
                 "rolling_step",
                 "horizon_step",
                 "target_index",
@@ -352,7 +356,11 @@ def visualize_all_rolling_predictions_as_series(
 
     plt.legend()
     plt.xlabel("Time index in test rolling prediction")
-    plt.ylabel("Normalized price / return")
+    plt.ylabel(
+        "Relative return from forecast cutoff"
+        if config.get("forecast_target") == "relative_return"
+        else "Normalized target value"
+    )
 
     if gru_preds is not None:
         plt.title(
@@ -385,14 +393,73 @@ def visualize_all_rolling_predictions_as_series(
 
     print(f"All rolling prediction figure saved to {save_path}")
 
-def make_baseline_prediction(context_patches, horizon, baseline_name):
+def extract_context_target_series(context_patches, config):
+    """Extract the downstream target feature from flattened context patches."""
+    feature_dim = int(
+        config.get("feature_dim", len(config.get("feature_cols", ["Close"])))
+    )
+    patch_size = int(config.get("patch_size", 5))
+    target_feature_index = int(config.get("target_feature_index", 0))
+    context_np = context_patches.detach().cpu().numpy()
+
+    if feature_dim <= 1:
+        return context_np.reshape(-1).astype(np.float64)
+    if context_np.ndim != 2:
+        raise ValueError(
+            "Expected unbatched context patches with shape "
+            f"[context_size, patch_size * feature_dim], got {context_np.shape}"
+        )
+
+    return context_np.reshape(
+        context_np.shape[0], patch_size, feature_dim
+    )[:, :, target_feature_index].reshape(-1).astype(np.float64)
+
+
+def context_target_levels(context_patches, config):
+    """Recover target-feature levels up to a multiplicative constant.
+
+    Relative-return baselines only need ratios. For window-return inputs,
+    adding one recovers price/base; for train z-score inputs, checkpoint
+    statistics recover the original level.
+    """
+    context = extract_context_target_series(context_patches, config)
+    normalization = config.get("normalization", "window_return")
+
+    if normalization == "window_return":
+        return context + 1.0
+    if normalization == "train_zscore":
+        stats = config.get("normalization_stats")
+        if not stats:
+            raise ValueError(
+                "relative_return baselines with train_zscore require "
+                "normalization_stats"
+            )
+        target_idx = int(config.get("target_feature_index", 0))
+        return context * float(stats["std"][target_idx]) + float(
+            stats["mean"][target_idx]
+        )
+    return context
+
+
+def _safe_numpy_base(value, eps=1e-8):
+    if abs(float(value)) >= eps:
+        return float(value)
+    return eps if float(value) >= 0 else -eps
+
+
+def make_baseline_prediction(
+    context_patches,
+    horizon,
+    baseline_name,
+    config=None,
+):
     """
     Generate baseline forecast from historical context.
 
     Parameters
     ----------
     context_patches : torch.Tensor
-        Shape: [context_size, patch_size]
+        Shape: [context_size, patch_size * feature_dim]
         Historical context window before the forecast cutoff.
 
     horizon : int
@@ -412,15 +479,43 @@ def make_baseline_prediction(context_patches, horizon, baseline_name):
         Baseline prediction.
     """
 
-    feature_dim = int(config.get("feature_dim", len(config.get("feature_cols", ["Close"])))) if "config" in globals() else 1
-    patch_size = int(config.get("patch_size", 5)) if "config" in globals() else 5
-    target_feature_index = int(config.get("target_feature_index", 0)) if "config" in globals() else 0
+    if config is None:
+        config = globals().get("config", {})
+    forecast_target = config.get("forecast_target", "value")
 
-    context_np = context_patches.detach().cpu().numpy()
-    if feature_dim > 1 and context_np.ndim == 2 and context_np.shape[-1] != patch_size:
-        context_flat = context_np.reshape(context_np.shape[0], patch_size, feature_dim)[:, :, target_feature_index].reshape(-1)
-    else:
-        context_flat = context_np.reshape(-1)
+    if forecast_target == "relative_return":
+        levels = context_target_levels(context_patches, config)
+        cutoff = _safe_numpy_base(levels[-1])
+
+        if baseline_name == "naive_last":
+            pred = np.zeros(horizon, dtype=np.float64)
+        elif baseline_name in ("previous_patch", "mean_context"):
+            previous = np.where(
+                np.abs(levels[:-1]) < 1e-8,
+                np.where(levels[:-1] < 0, -1e-8, 1e-8),
+                levels[:-1],
+            )
+            one_step_returns = levels[1:] / previous - 1.0
+            if len(one_step_returns) == 0:
+                return np.zeros(horizon, dtype=np.float32)
+            if baseline_name == "previous_patch":
+                replay_returns = np.resize(one_step_returns[-horizon:], horizon)
+            else:
+                replay_returns = np.repeat(one_step_returns.mean(), horizon)
+            pred = np.cumprod(1.0 + replay_returns) - 1.0
+        elif baseline_name == "drift":
+            if len(levels) <= 1:
+                pred = np.zeros(horizon, dtype=np.float64)
+            else:
+                slope = (levels[-1] - levels[0]) / (len(levels) - 1)
+                future_levels = levels[-1] + slope * np.arange(1, horizon + 1)
+                pred = future_levels / cutoff - 1.0
+        else:
+            raise ValueError(f"Unknown baseline_name: {baseline_name}")
+
+        return pred.astype(np.float32)
+
+    context_flat = extract_context_target_series(context_patches, config)
 
     if baseline_name == "naive_last":
         # Repeat the last observed value for all future steps
@@ -428,7 +523,7 @@ def make_baseline_prediction(context_patches, horizon, baseline_name):
 
     elif baseline_name == "previous_patch":
         # Use the last context patch as the forecast
-        last_patch = context_np[-1].reshape(-1)
+        last_patch = context_flat[-horizon:]
 
         if len(last_patch) >= horizon:
             pred = last_patch[:horizon]
@@ -609,7 +704,13 @@ def visualize_all_rolling_windows(
         # ---------------------------------------------
         # Convert tensors to numpy
         # ---------------------------------------------
-        context_np = context_patches.flatten().detach().cpu().numpy()
+        if config.get("forecast_target") == "relative_return":
+            context_levels = context_target_levels(context_patches, config)
+            context_np = (
+                context_levels / _safe_numpy_base(context_levels[-1]) - 1.0
+            )
+        else:
+            context_np = extract_context_target_series(context_patches, config)
         target_np = target_patch.detach().cpu().numpy().reshape(-1)
         pred_np = pred_patch.flatten().detach().cpu().numpy()
 
@@ -665,6 +766,7 @@ def visualize_all_rolling_windows(
                 context_patches=context_patches,
                 horizon=horizon,
                 baseline_name=baseline_name,
+                config=config,
             )
 
             plt.plot(
@@ -686,7 +788,11 @@ def visualize_all_rolling_windows(
 
         plt.legend()
         plt.xlabel("Time index inside rolling window")
-        plt.ylabel("Normalized price / return")
+        plt.ylabel(
+            "Relative return from forecast cutoff"
+            if config.get("forecast_target") == "relative_return"
+            else "Normalized target value"
+        )
         plt.title(
             f"{data_title(config)} - Rolling Forecast Window #{sample_idx} "
             f"with Baselines"
@@ -757,7 +863,11 @@ def visualize_one_rolling_window(
 
         pred_patch = decoder(context_embedding)
 
-    context_np = context_patches.flatten().cpu().numpy()
+    if config.get("forecast_target") == "relative_return":
+        context_levels = context_target_levels(context_patches, config)
+        context_np = context_levels / _safe_numpy_base(context_levels[-1]) - 1.0
+    else:
+        context_np = extract_context_target_series(context_patches, config)
     target_np = target_patch.cpu().numpy()
     pred_np = pred_patch.flatten().detach().cpu().numpy()
 
@@ -778,7 +888,11 @@ def visualize_one_rolling_window(
 
     plt.legend()
     plt.xlabel("Time index inside rolling window")
-    plt.ylabel("Normalized price / return")
+    plt.ylabel(
+        "Relative return from forecast cutoff"
+        if config.get("forecast_target") == "relative_return"
+        else "Normalized target value"
+    )
     plt.title(f"{data_title(config)} - Rolling Forecast Window #{sample_idx}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -897,48 +1011,6 @@ def _maybe_get_dataset_index(dataset, sample_idx, eval_stride, horizon_step):
 
 
 
-def make_baseline_prediction(context_patches, horizon, baseline_name):
-    """
-    Produce a baseline forecast from the same historical context window.
-
-    Baselines:
-        - naive_last: repeat the last observed value for all future steps
-        - previous_patch: reuse the last context patch as the next patch
-        - mean_context: repeat the mean of the full context window
-        - drift: linear extrapolation from first to last context value
-    """
-    feature_dim = int(config.get("feature_dim", len(config.get("feature_cols", ["Close"])))) if "config" in globals() else 1
-    patch_size = int(config.get("patch_size", 5)) if "config" in globals() else 5
-    target_feature_index = int(config.get("target_feature_index", 0)) if "config" in globals() else 0
-
-    context_np = context_patches.detach().cpu().numpy()
-    if feature_dim > 1 and context_np.ndim == 2 and context_np.shape[-1] != patch_size:
-        context_flat = context_np.reshape(context_np.shape[0], patch_size, feature_dim)[:, :, target_feature_index].reshape(-1)
-    else:
-        context_flat = context_np.reshape(-1)
-
-    if baseline_name == "naive_last":
-        return np.repeat(context_flat[-1], horizon)
-
-    if baseline_name == "previous_patch":
-        last_patch = context_np[-1].reshape(-1)
-        if len(last_patch) >= horizon:
-            return last_patch[:horizon]
-        return np.resize(last_patch, horizon)
-
-    if baseline_name == "mean_context":
-        return np.repeat(context_flat.mean(), horizon)
-
-    if baseline_name == "drift":
-        if len(context_flat) <= 1:
-            return np.repeat(context_flat[-1], horizon)
-        slope = (context_flat[-1] - context_flat[0]) / (len(context_flat) - 1)
-        steps = np.arange(1, horizon + 1)
-        return context_flat[-1] + slope * steps
-
-    raise ValueError(f"Unknown baseline_name: {baseline_name}")
-
-
 def prequential_baseline_evaluate(
     dataset,
     config,
@@ -991,6 +1063,7 @@ def prequential_baseline_evaluate(
                 context_patches=context_patches,
                 horizon=horizon,
                 baseline_name=baseline_name,
+                config=config,
             ).reshape(-1)
 
             # Lock forecast before scoring.
@@ -1004,6 +1077,7 @@ def prequential_baseline_evaluate(
 
                 all_forecast_rows.append({
                     "model": baseline_name,
+                    "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
@@ -1025,6 +1099,7 @@ def prequential_baseline_evaluate(
 
                 all_score_rows.append({
                     "model": baseline_name,
+                    "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
@@ -1046,11 +1121,13 @@ def prequential_baseline_evaluate(
 
         summary_rows.append({
             "model": baseline_name,
+            "forecast_target": config.get("forecast_target", "value"),
             "mse": float(np.mean((baseline_preds - baseline_targets) ** 2)),
             "mae": float(np.mean(np.abs(baseline_preds - baseline_targets))),
             "trend_accuracy": compute_trend_accuracy(
                 all_preds=baseline_preds,
                 all_targets=baseline_targets,
+                include_origin=config.get("forecast_target") == "relative_return",
             ),
         })
 
@@ -1074,6 +1151,7 @@ def prequential_baseline_evaluate(
             f,
             fieldnames=[
                 "model",
+                "forecast_target",
                 "rolling_step",
                 "horizon_step",
                 "target_index",
@@ -1089,6 +1167,7 @@ def prequential_baseline_evaluate(
             f,
             fieldnames=[
                 "model",
+                "forecast_target",
                 "rolling_step",
                 "horizon_step",
                 "target_index",
@@ -1105,7 +1184,13 @@ def prequential_baseline_evaluate(
     with open(baseline_summary_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["model", "mse", "mae", "trend_accuracy"],
+            fieldnames=[
+                "model",
+                "forecast_target",
+                "mse",
+                "mae",
+                "trend_accuracy",
+            ],
         )
         writer.writeheader()
         writer.writerows(summary_rows)
@@ -1148,7 +1233,13 @@ def save_model_comparison(
     with open(comparison_csv_path, "w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["model", "mse", "mae", "trend_accuracy"],
+            fieldnames=[
+                "model",
+                "forecast_target",
+                "mse",
+                "mae",
+                "trend_accuracy",
+            ],
         )
         writer.writeheader()
         writer.writerows(model_rows)
@@ -1156,14 +1247,16 @@ def save_model_comparison(
     lines = [
         f"Data source: {data_title(config)}",
         f"Evaluation type: {config['eval_type']}",
+        f"Forecast target: {config.get('forecast_target', 'value')}",
         f"Generated at: {timestamp}",
         "",
         "Model Comparison",
-        "model,mse,mae,trend_accuracy",
+        "model,forecast_target,mse,mae,trend_accuracy",
     ]
     for row in model_rows:
         lines.append(
             f"{row['model']},"
+            f"{row.get('forecast_target', config.get('forecast_target', 'value'))},"
             f"{row['mse']:.6f},"
             f"{row['mae']:.6f},"
             f"{row['trend_accuracy']:.4f}"
@@ -1329,6 +1422,7 @@ def prequential_rolling_evaluate(
                 )
 
                 forecast_rows.append({
+                    "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
@@ -1365,6 +1459,7 @@ def prequential_rolling_evaluate(
                 )
 
                 score_rows.append({
+                    "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
@@ -1387,6 +1482,7 @@ def prequential_rolling_evaluate(
         writer = csv.DictWriter(
             f,
             fieldnames=[
+                "forecast_target",
                 "rolling_step",
                 "horizon_step",
                 "target_index",
@@ -1404,6 +1500,7 @@ def prequential_rolling_evaluate(
         writer = csv.DictWriter(
             f,
             fieldnames=[
+                "forecast_target",
                 "rolling_step",
                 "horizon_step",
                 "target_index",
@@ -1491,7 +1588,7 @@ def evaluate_model(
     return mean_mse, mean_mae, all_preds, all_targets
 
 
-def compute_trend_accuracy(all_preds, all_targets):
+def compute_trend_accuracy(all_preds, all_targets, include_origin=False):
     """
     Trend accuracy based on within-patch direction.
 
@@ -1500,8 +1597,17 @@ def compute_trend_accuracy(all_preds, all_targets):
         pred_diff = pred[:, 1:] - pred[:, :-1]
         true_diff = true[:, 1:] - true[:, :-1]
 
-    Accuracy checks whether predicted direction matches true direction.
+    Accuracy checks whether predicted direction matches true direction. For a
+    cutoff-relative return path, include_origin=True also scores the first move
+    from the known zero-return origin.
     """
+    if include_origin:
+        # A relative-return path is anchored at zero at the forecast cutoff.
+        # Include cutoff -> horizon 1 so the first predicted move is scored.
+        origin = np.zeros((all_preds.shape[0], 1), dtype=all_preds.dtype)
+        all_preds = np.concatenate([origin, all_preds], axis=1)
+        all_targets = np.concatenate([origin, all_targets], axis=1)
+
     pred_diff = all_preds[:, 1:] - all_preds[:, :-1]
     true_diff = all_targets[:, 1:] - all_targets[:, :-1]
 
@@ -1518,6 +1624,7 @@ def directional_auxiliary_loss(
     target_patch,
     temperature=0.01,
     threshold=0.0,
+    include_origin=False,
 ):
     """
     Differentiable direction loss for within-patch trend.
@@ -1526,6 +1633,11 @@ def directional_auxiliary_loss(
     the true consecutive differences. Near-zero true moves can be ignored with
     threshold to avoid training hard on noise.
     """
+    if include_origin:
+        origin = torch.zeros_like(predicted_patch[:, :1])
+        predicted_patch = torch.cat([origin, predicted_patch], dim=1)
+        target_patch = torch.cat([origin, target_patch], dim=1)
+
     if predicted_patch.shape[1] < 2:
         return predicted_patch.new_tensor(0.0)
 
@@ -1574,9 +1686,11 @@ if __name__ == "__main__":
     sentiment_path = config.get("sentiment_path", None)
     train_end_date = config.get("train_end_date", None)
     test_start_date = config.get("test_start_date", None)
+    data_end_date = config.get("data_end_date", None)
     validation_fraction = config.get("validation_fraction", 0.05)
     test_fraction = config.get("test_fraction", 0.30)
     normalization = config.get("normalization", "window_return")
+    forecast_target = config.get("forecast_target", "value")
     sampling_mode = config.get("sampling_mode", "sliding_window")
     normalization_stats = config.get("normalization_stats", None)
     feature_dim = len(feature_cols)
@@ -1591,16 +1705,19 @@ if __name__ == "__main__":
     config["feature_cols"] = feature_cols
     config["feature_dim"] = feature_dim
     config["target_feature_index"] = target_feature_index
+    config["forecast_target"] = forecast_target
 
     print("feature_cols =", feature_cols)
     print("timestamp_col =", timestamp_col)
     print("sentiment_path =", sentiment_path)
     print("train_end_date =", train_end_date)
     print("test_start_date =", test_start_date)
+    print("data_end_date =", data_end_date)
     print("validation_fraction =", validation_fraction)
     print("test_fraction =", test_fraction)
     print("feature_dim =", feature_dim)
     print("target_feature_index =", target_feature_index)
+    print("forecast_target =", forecast_target)
     print("normalization =", normalization)
     print("sampling_mode =", sampling_mode)
     print("trend_weight =", config.get("trend_weight", 0.0))
@@ -1637,12 +1754,14 @@ if __name__ == "__main__":
         normalization_stats=normalization_stats,
         feature_cols=feature_cols,
         target_col=target_col,
+        forecast_target=forecast_target,
         timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
+        data_end_date=data_end_date,
     )
 
     val_loader = get_evaluation_loaders(
@@ -1659,12 +1778,14 @@ if __name__ == "__main__":
         normalization_stats=normalization_stats,
         feature_cols=feature_cols,
         target_col=target_col,
+        forecast_target=forecast_target,
         timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
+        data_end_date=data_end_date,
     )
 
     test_loader = get_evaluation_loaders(
@@ -1681,12 +1802,14 @@ if __name__ == "__main__":
         normalization_stats=normalization_stats,
         feature_cols=feature_cols,
         target_col=target_col,
+        forecast_target=forecast_target,
         timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
+        data_end_date=data_end_date,
     )
 
     sample_context, sample_target = train_loader.dataset[0]
@@ -1875,6 +1998,7 @@ if __name__ == "__main__":
                 target_patch=target_patch,
                 temperature=trend_loss_temperature,
                 threshold=trend_loss_threshold,
+                include_origin=forecast_target == "relative_return",
             )
 
             loss = mse_loss + trend_weight * trend_loss
@@ -1907,6 +2031,7 @@ if __name__ == "__main__":
         val_trend_acc = compute_trend_accuracy(
             all_preds=val_preds,
             all_targets=val_targets,
+            include_origin=forecast_target == "relative_return",
         )
         val_score = val_mse + trend_selection_weight * (1.0 - val_trend_acc)
 
@@ -2060,6 +2185,7 @@ if __name__ == "__main__":
     trend_accuracy = compute_trend_accuracy(
         all_preds=all_preds,
         all_targets=all_targets,
+        include_origin=forecast_target == "relative_return",
     )
 
     print(f"========== Final Test ({data_title(config)}) ==========")
@@ -2080,6 +2206,7 @@ if __name__ == "__main__":
     gru_trend_accuracy = compute_trend_accuracy(
         all_preds=gru_preds,
         all_targets=gru_targets,
+        include_origin=forecast_target == "relative_return",
     )
 
     print(f"========== GRU Final Test ({data_title(config)}) ==========")
@@ -2111,12 +2238,14 @@ if __name__ == "__main__":
     model_comparison_rows = [
         {
             "model": "TS-JEPA",
+            "forecast_target": forecast_target,
             "mse": test_mse,
             "mae": test_mae,
             "trend_accuracy": trend_accuracy,
         },
         {
             "model": "GRU",
+            "forecast_target": forecast_target,
             "mse": gru_test_mse,
             "mae": gru_test_mae,
             "trend_accuracy": gru_trend_accuracy,
@@ -2181,7 +2310,11 @@ if __name__ == "__main__":
 
     plt.legend()
     plt.xlabel("Rolling evaluation step")
-    plt.ylabel("Normalized price / return")
+    plt.ylabel(
+        "Relative return from forecast cutoff"
+        if forecast_target == "relative_return"
+        else "Normalized target value"
+    )
     plt.title(
         f"{data_title(config)} - Rolling Forecast: "
         "Last Point of Each Predicted Patch"

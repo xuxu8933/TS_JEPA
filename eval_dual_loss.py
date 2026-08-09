@@ -271,6 +271,24 @@ def parse_args(default_mask_strategy=None, argv=None):
         help="Use EMA target or online encoder weights for downstream evaluation.",
     )
     parser.add_argument(
+        "--forecast_target",
+        "--forecast-target",
+        dest="forecast_target",
+        choices=("value", "relative_return"),
+        default=downstream_config.get("forecast_target", "value"),
+        help=(
+            "Predict normalized values or the cumulative relative-return path "
+            "P[t+h] / P[t] - 1."
+        ),
+    )
+    parser.add_argument(
+        "--data_end_date",
+        "--data-end-date",
+        dest="data_end_date",
+        default=downstream_config.get("data_end_date", None),
+        help="Inclusive maximum timestamp allowed in downstream evaluation data.",
+    )
+    parser.add_argument(
         "--sampling-mode",
         choices=("sliding_window", "temporal_segments"),
         default=downstream_config.get("sampling_mode", "sliding_window"),
@@ -493,8 +511,12 @@ def build_eval_argv(args, passthrough_args):
         checkpoint_path,
         "--pretrain-encoder-weights",
         args.pretrain_encoder_weights,
+        "--forecast-target",
+        args.forecast_target,
         "--sampling-mode",
         str(checkpoint_value("sampling_mode", args.sampling_mode)),
+        "--data_end_date",
+        str(checkpoint_value("data_end_date", args.data_end_date) or "none"),
         "--lr_pretrain",
         str(checkpoint_value("lr", args.lr_pretrain)),
         "--ema_pretrain",

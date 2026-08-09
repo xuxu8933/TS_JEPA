@@ -94,6 +94,12 @@ def parse_args():
         default="ema",
         help="Checkpoint encoder used in downstream evaluation.",
     )
+    parser.add_argument(
+        "--forecast-target",
+        choices=("value", "relative_return"),
+        default="value",
+        help="Downstream value path or cutoff-relative return path.",
+    )
     parser.add_argument("--eval-num-epochs", type=int, default=501)
     parser.add_argument("--pretrain-num-epochs", type=int, default=2001)
     parser.add_argument("--checkpoint-to-use", type=int, default=2000)
@@ -163,6 +169,7 @@ def build_stock_commands(args, stock, seed=None):
         sys.executable,
         "-u",
         "pretrain_dual_loss.py",
+        "--no-run-eval",
         "--data",
         stock,
         *strategy_args,
@@ -222,6 +229,8 @@ def build_stock_commands(args, stock, seed=None):
             *checkpoint_args,
             "--pretrain-encoder-weights",
             args.encoder_weights,
+            "--forecast-target",
+            getattr(args, "forecast_target", "value"),
             "--num_epochs",
             str(args.eval_num_epochs),
             "--seed",
@@ -313,6 +322,9 @@ def main():
         summary.write(f"sampling_mode={args.sampling_mode}\n")
         summary.write(f"pretrain_stride={args.pretrain_stride}\n")
         summary.write(f"encoder_weights={args.encoder_weights}\n")
+        summary.write(
+            f"forecast_target={getattr(args, 'forecast_target', 'value')}\n"
+        )
         summary.write(f"use_best_checkpoint={args.use_best_checkpoint}\n")
         summary.write(f"lambda_jepa={args.lambda_jepa}\n")
         summary.write(f"lambda_mae={args.lambda_mae}\n")

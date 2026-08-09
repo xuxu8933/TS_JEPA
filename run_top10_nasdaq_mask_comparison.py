@@ -91,6 +91,12 @@ def parse_args(argv=None):
         choices=("ema", "online"),
         default="ema",
     )
+    parser.add_argument(
+        "--forecast-target",
+        choices=("value", "relative_return"),
+        default="value",
+        help="Downstream value path or cutoff-relative return path.",
+    )
     parser.add_argument("--lambda-jepa", type=float, default=1.0)
     parser.add_argument("--lambda-mae", type=float, default=0.5)
     parser.add_argument(
@@ -180,6 +186,8 @@ def build_strategy_command(args, strategy, stocks, seeds):
         args.normalization,
         "--encoder-weights",
         args.encoder_weights,
+        "--forecast-target",
+        getattr(args, "forecast_target", "value"),
         "--lambda-jepa",
         str(args.lambda_jepa),
         "--lambda-mae",

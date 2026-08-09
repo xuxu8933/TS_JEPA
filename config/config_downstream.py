@@ -29,6 +29,9 @@ config = {
     "seed": 42,
 
     "target_feature_index": 0,
+    # value: predict the target feature in the selected normalization space.
+    # relative_return: predict P[t+h] / P[t] - 1 from the forecast cutoff.
+    "forecast_target": "value",
     "feature_cols": [
         "Close",
         "Volume",
@@ -39,6 +42,7 @@ config = {
     "sentiment_path": "./NVDA_daily_sentiment.csv",
     "train_end_date": "2024-12-31",
     "test_start_date": "2025-01-01",
+    "data_end_date": "2026-01-01",
     "validation_fraction": 0.05,
     "test_fraction": 0.15,
 

@@ -11,13 +11,16 @@ import torch
 
 from config.config_pretrain import config as base_config
 from eval_dual_loss import (
+    build_eval_argv,
     dual_checkpoint_stem,
     parse_args as parse_eval_args,
     resolve_dual_checkpoint_path,
 )
 from eval_forecast_prequential_with_baselines_gru_volume import (
+    compute_trend_accuracy,
     load_pretraining_checkpoint,
     load_pretrained_encoder_state,
+    make_baseline_prediction,
 )
 from pretrain_dual_loss import (
     ema_momentum_at_step,
@@ -206,14 +209,22 @@ class UnifiedDualLossTest(unittest.TestCase):
 
     def test_unified_parser_builds_strategy_specific_paths(self):
         default_config = parse_args(copy.deepcopy(base_config), argv=[])
-        random_config = parse_args(copy.deepcopy(base_config), argv=["--seed", "7"])
+        random_config = parse_args(
+            copy.deepcopy(base_config),
+            argv=["--mask-strategy", "random", "--seed", "7"],
+        )
         local_config = parse_args(
             copy.deepcopy(base_config),
             argv=["--mask-strategy", "local_long", "--seed", "7"],
         )
 
         self.assertEqual(default_config["seed"], 42)
-        self.assertEqual(default_config["mask_strategy"], "random")
+        self.assertEqual(default_config["mask_strategy"], "future_block")
+        self.assertTrue(default_config["run_eval"])
+        self.assertTrue(default_config["eval_use_best"])
+        self.assertEqual(default_config["eval_forecast_target"], "relative_return")
+        self.assertEqual(default_config["eval_num_epochs"], 501)
+        self.assertEqual(default_config["data_end_date"], "2026-01-01")
         self.assertEqual(random_config["mask_strategy"], "random")
         self.assertIn("_dual_jepa_mae_", random_config["path_save"])
         self.assertEqual(local_config["mask_strategy"], "local_long")
@@ -247,12 +258,18 @@ class UnifiedDualLossTest(unittest.TestCase):
         self.assertEqual(eval_args.sampling_mode, "temporal_segments")
         other_seed_config = parse_args(
             copy.deepcopy(base_config),
-            argv=["--seed", "17"],
+            argv=["--mask-strategy", "random", "--seed", "17"],
         )
         self.assertNotEqual(
             random_config["config_fingerprint"],
             other_seed_config["config_fingerprint"],
         )
+        no_eval_config = parse_args(
+            copy.deepcopy(base_config),
+            argv=["--no-run-eval", "--no-eval-use-best"],
+        )
+        self.assertFalse(no_eval_config["run_eval"])
+        self.assertFalse(no_eval_config["eval_use_best"])
 
     def test_local_long_masks_are_causal_disjoint_and_ordered(self):
         config = {
@@ -355,6 +372,43 @@ class UnifiedDualLossTest(unittest.TestCase):
                 dataset.normalization_stats,
             )
 
+    def test_data_end_date_caps_pretraining_and_evaluation_splits(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_path = Path(tmp) / "data" / "CUTOFF" / "CUTOFF.csv"
+            _write_rows(data_path, _sin_cos_rows(220))
+            loader_kwargs = {
+                "path_data": str(data_path),
+                "feature_cols": ("Close", "Volume"),
+                "sentiment_path": None,
+                "train_end_date": "2021-04-30",
+                "test_start_date": "2021-05-01",
+                "data_end_date": "2021-06-15",
+                "validation_fraction": 0.1,
+                "test_fraction": 0.1,
+            }
+
+            pretrain_dataset = CSVDataLoader(
+                series_split_size=20,
+                patch_size=5,
+                stride=5,
+                normalization="none",
+                **loader_kwargs,
+            )
+            evaluation_dataset = EvaluationDataLoader(
+                patch_size=5,
+                context_size=2,
+                stride=5,
+                split="test",
+                normalization="none",
+                **loader_kwargs,
+            )
+
+            # May 1 through June 15 is 46 calendar-daily observations,
+            # including the configured end date and excluding all later rows.
+            self.assertEqual(len(pretrain_dataset.test_df), 46)
+            self.assertEqual(len(evaluation_dataset.test_df), 46)
+            self.assertEqual(len(evaluation_dataset.series), 46)
+
     def test_temporal_segments_are_non_overlapping_and_keep_tensor_shapes(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_path = Path(tmp) / "data" / "SEGMENTS" / "SEGMENTS.csv"
@@ -412,6 +466,78 @@ class UnifiedDualLossTest(unittest.TestCase):
             context, target = evaluation_dataset[0]
             self.assertEqual(tuple(context.shape), (2, 10))
             self.assertEqual(tuple(target.shape), (5,))
+
+    def test_relative_return_target_is_anchored_at_forecast_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_path = Path(tmp) / "data" / "RETURNS" / "RETURNS.csv"
+            _write_rows(data_path, _sin_cos_rows(180))
+            dataset = EvaluationDataLoader(
+                path_data=str(data_path),
+                patch_size=4,
+                context_size=2,
+                stride=4,
+                split="train",
+                normalization="train_zscore",
+                forecast_target="relative_return",
+                feature_cols=("Close", "Volume"),
+                sentiment_path=None,
+                validation_fraction=0.1,
+                test_fraction=0.1,
+            )
+
+            raw_context, raw_target = dataset.samples[0]
+            _, target = dataset[0]
+            expected = raw_target[:, 0] / raw_context[-1, 0] - 1.0
+
+            self.assertTrue(torch.allclose(target, expected, atol=1e-7))
+            self.assertEqual(dataset.forecast_target, "relative_return")
+
+    def test_relative_return_baselines_and_first_move_trend(self):
+        context = torch.tensor([[100.0, 102.0], [101.0, 103.0]])
+        baseline_config = {
+            "feature_dim": 1,
+            "patch_size": 2,
+            "target_feature_index": 0,
+            "normalization": "none",
+            "forecast_target": "relative_return",
+        }
+
+        naive = make_baseline_prediction(
+            context, horizon=2, baseline_name="naive_last", config=baseline_config
+        )
+        drift = make_baseline_prediction(
+            context, horizon=2, baseline_name="drift", config=baseline_config
+        )
+        self.assertTrue(np.allclose(naive, [0.0, 0.0]))
+        self.assertTrue(
+            np.allclose(drift, np.array([104.0, 105.0]) / 103.0 - 1.0)
+        )
+
+        preds = np.array([[0.1, 0.2]], dtype=np.float32)
+        targets = np.array([[-0.1, 0.2]], dtype=np.float32)
+        self.assertEqual(compute_trend_accuracy(preds, targets), 1.0)
+        self.assertEqual(
+            compute_trend_accuracy(preds, targets, include_origin=True),
+            0.5,
+        )
+
+    def test_unified_evaluator_forwards_relative_return_target(self):
+        args, passthrough = parse_eval_args(
+            argv=[
+                "--data",
+                "NVDA",
+                "--forecast-target",
+                "relative_return",
+                "--data-end-date",
+                "2026-01-01",
+            ]
+        )
+        eval_argv, _ = build_eval_argv(args, passthrough)
+
+        target_arg = eval_argv.index("--forecast-target")
+        self.assertEqual(eval_argv[target_arg + 1], "relative_return")
+        cutoff_arg = eval_argv.index("--data_end_date")
+        self.assertEqual(eval_argv[cutoff_arg + 1], "2026-01-01")
 
     def test_ema_schedule_advances_per_optimizer_step(self):
         values = [ema_momentum_at_step(0.9, step, 10) for step in range(11)]
@@ -540,6 +666,7 @@ class UnifiedDualLossTest(unittest.TestCase):
                 [
                     sys.executable,
                     str(REPO_ROOT / "pretrain_dual_loss.py"),
+                    "--no-run-eval",
                     "--data",
                     data_name,
                     "--mask-strategy",

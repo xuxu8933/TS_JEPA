@@ -78,6 +78,7 @@ For non-overlapping 60-observation segments:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --series-split-size 60 \
   --sampling-mode temporal_segments
@@ -125,17 +126,21 @@ The repository uses Python dictionaries for configuration; there is no
 
 | File | Used for |
 | --- | --- |
-| `config/config_pretrain.py` | Pretraining data, normalization, optimization, encoder, predictor, masking, and validation defaults. |
+| `config/config_pretrain.py` | Complete pretraining plus automatic downstream-evaluation workflow. |
 | `config/config_downstream.py` | Forecast decoder, fine-tuning, checkpoint, and result-output defaults. |
 
-Run pretraining with the values from `config/config_pretrain.py`:
+Run the configured NVDA causal pretraining followed automatically by
+relative-return forecasting evaluation:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py
 ```
 
-Both checked-in configuration files use `mask_strategy="random"`. The causal
-`future_block` command below is an intentional experiment-specific override.
+The checked-in pretraining config uses `mask_strategy="future_block"`, selects
+the lowest-validation-loss checkpoint, and evaluates
+`eval_forecast_target="relative_return"`. Use `--no-run-eval` to run only
+pretraining. The downstream config remains available for standalone
+`eval_dual_loss.py` runs.
 
 Command-line arguments override configuration-file values. The effective
 precedence is configuration defaults, then command-line overrides. The complete
@@ -175,6 +180,7 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --sentiment-path ./NVDA_daily_sentiment.csv \
   --train-end-date 2024-12-31 \
   --test-start-date 2025-01-01 \
+  --data-end-date 2026-01-01 \
   --validation-fraction 0.05 \
   --test-fraction 0.15 \
   --series-split-size 60 \
@@ -201,6 +207,12 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --eval-num-epochs 501 \
   --eval-results-dir results/NVDA/future_block_sentiment/seed_42
 ```
+
+`--data-end-date` is an inclusive global cutoff applied before the
+chronological train/validation/test split. It prevents pretraining and every
+downstream evaluator from using observations after that date. The configured
+cutoff is stored in the checkpoint and restored automatically by
+`eval_dual_loss.py`.
 
 For a defensible comparison, repeat the complete workflow across several seeds
 and report mean and standard deviation instead of selecting the best seed:
@@ -262,6 +274,7 @@ Use `pretrain_dual_loss.py` for all strategies. The default seed is `42`; pass `
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --mask-strategy random \
   --feature-cols Close Volume \
@@ -290,6 +303,7 @@ For JEPA-only training compatible with the former L1 objective, disable the MAE 
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --mask-strategy random \
   --feature-cols Close Volume \
@@ -303,6 +317,7 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --mask-strategy local_long \
   --feature-cols Close Volume \
@@ -351,6 +366,7 @@ Predict one contiguous future block using only earlier context:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --mask-strategy future_block \
   --future-target-patches 4 \
@@ -363,6 +379,7 @@ Predict multiple future blocks after one forecast cutoff:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --mask-strategy causal_multiblock \
   --causal-num-blocks 2 \
@@ -380,6 +397,7 @@ Use one epoch and a small number of batches to validate the data and model confi
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --mask-strategy random \
   --feature-cols Close Volume \
@@ -419,6 +437,7 @@ Resume without restarting the optimizer, scheduler, EMA schedule, or random stre
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data NVDA \
   --resume-from logs/output_model/NVDA/CHECKPOINT_FILE.pt \
   --num-epochs 2501
@@ -515,9 +534,41 @@ same family, selection stops with an ambiguity error; set
 `checkpoint_selection` to `path` and provide the exact
 `pretrain_checkpoint_path` instead of loading one silently.
 
-Feature order, sentiment path, chronological split, train-only normalization
-statistics, model architecture, and the actual checkpoint epoch are restored
-from the selected checkpoint.
+Feature order, sentiment path, chronological split, inclusive data cutoff,
+train-only normalization statistics, model architecture, and the actual
+checkpoint epoch are restored from the selected checkpoint.
+
+### Forecast future relative-return paths
+
+The downstream decoder can predict either the target value in the configured
+normalization space (the backward-compatible default) or a cumulative simple
+return path relative to the last observation at the forecast cutoff:
+
+```text
+relative_return[h] = target[t + h] / target[t] - 1
+```
+
+Here `target[t]` is the last context value and `h=1..patch_size`, so label
+construction never uses a future value as its base. Input features still use
+the checkpoint's pretraining normalization; only the downstream label changes.
+Run the additional task with:
+
+```bash
+conda run --no-capture-output -n ts-jepa python eval_dual_loss.py \
+  --data NVDA \
+  --pretrain-checkpoint-path logs/output_model/NVDA/CHECKPOINT_FILE.pt \
+  --forecast-target relative_return \
+  --num-epochs 501
+```
+
+In this mode TS-JEPA, GRU, and all simple baselines are trained or evaluated in
+the same return space. The zero-return `naive_last` baseline represents an
+unchanged future price, and trend accuracy includes the first move from the
+zero-return forecast origin. Set `forecast_target="relative_return"` in
+`config/config_downstream.py` to make this the configured default.
+The stock batch runners accept the same `--forecast-target relative_return`
+option; with `pretrain_dual_loss.py --run-eval`, use
+`--eval-forecast-target relative_return`.
 
 For a local/long checkpoint, use the unified evaluator:
 
@@ -770,6 +821,7 @@ MNIST mode treats each 28-pixel image row as one token. It supports the random m
 
 ```bash
 conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
+  --no-run-eval \
   --data MNIST_ROWS \
   --input-mode mnist_rows \
   --mnist-root data/MNIST \

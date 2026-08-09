@@ -68,6 +68,7 @@ EXPERIMENT_ID_KEYS = (
     "sentiment_path",
     "train_end_date",
     "test_start_date",
+    "data_end_date",
     "validation_fraction",
     "test_fraction",
     "batch_size",
@@ -151,29 +152,30 @@ def parse_args(config, default_mask_strategy=None, argv=None):
     parser.add_argument(
         "--input-mode",
         choices=("timeseries", "mnist_rows"),
-        default="timeseries",
+        default=config.get("input_mode", "timeseries"),
         help="Use stock-style CSV windows or 28 MNIST image rows as tokens.",
     )
     parser.add_argument(
         "--mnist-root",
-        default="./data/MNIST",
+        default=config.get("mnist_root", "./data/MNIST"),
         help="MNIST cache directory used with --input-mode mnist_rows.",
     )
     parser.add_argument(
         "--mnist-train-samples",
         type=int,
-        default=512,
+        default=config.get("mnist_train_samples", 512),
         help="Number of MNIST training images used in row mode.",
     )
     parser.add_argument(
         "--mnist-val-samples",
         type=int,
-        default=128,
+        default=config.get("mnist_val_samples", 128),
         help="Disjoint MNIST training images reserved for deterministic validation.",
     )
     parser.add_argument(
         "--download-mnist",
         action="store_true",
+        default=config.get("download_mnist", False),
         help="Download MNIST if it is absent from --mnist-root.",
     )
     parser.add_argument(
@@ -264,7 +266,7 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         type=float,
         default=config.get("ipe_scale", 1.25),
     )
-    parser.add_argument("--notes", type=str, default="")
+    parser.add_argument("--notes", type=str, default=config.get("notes", ""))
     parser.add_argument(
         "--seed",
         type=int,
@@ -333,7 +335,7 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         "--feature-cols",
         dest="feature_cols",
         nargs="+",
-        default=None,
+        default=config.get("feature_cols", None),
     )
     parser.add_argument(
         "--timestamp_col",
@@ -362,6 +364,14 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         dest="test_start_date",
         type=str,
         default=config.get("test_start_date", None),
+    )
+    parser.add_argument(
+        "--data_end_date",
+        "--data-end-date",
+        dest="data_end_date",
+        type=str,
+        default=config.get("data_end_date", None),
+        help="Inclusive maximum timestamp allowed in pretraining and evaluation data.",
     )
     parser.add_argument(
         "--validation_fraction",
@@ -475,28 +485,40 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         "--decoder-type",
         dest="decoder_type",
         choices=("linear", "mlp", "residual_mlp"),
-        default=config.get("mae_decoder_type", "residual_mlp"),
+        default=config.get(
+            "decoder_type",
+            config.get("mae_decoder_type", "residual_mlp"),
+        ),
     )
     parser.add_argument(
         "--decoder_hidden_dim",
         "--decoder-hidden-dim",
         dest="decoder_hidden_dim",
         type=int,
-        default=config.get("mae_decoder_hidden_dim", 256),
+        default=config.get(
+            "decoder_hidden_dim",
+            config.get("mae_decoder_hidden_dim", 256),
+        ),
     )
     parser.add_argument(
         "--decoder_num_layers",
         "--decoder-num-layers",
         dest="decoder_num_layers",
         type=int,
-        default=config.get("mae_decoder_num_layers", 2),
+        default=config.get(
+            "decoder_num_layers",
+            config.get("mae_decoder_num_layers", 2),
+        ),
     )
     parser.add_argument(
         "--decoder_dropout",
         "--decoder-dropout",
         dest="decoder_dropout",
         type=float,
-        default=config.get("mae_decoder_dropout", 0.1),
+        default=config.get(
+            "decoder_dropout",
+            config.get("mae_decoder_dropout", 0.1),
+        ),
     )
 
     parser.add_argument(
@@ -569,7 +591,7 @@ def parse_args(config, default_mask_strategy=None, argv=None):
     )
     parser.add_argument(
         "--resume-from",
-        default=None,
+        default=config.get("resume_from", None),
         help="Resume complete training state from a unified checkpoint.",
     )
 
@@ -578,27 +600,28 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         "--max-batches-per-epoch",
         dest="max_batches_per_epoch",
         type=int,
-        default=None,
+        default=config.get("max_batches_per_epoch", None),
     )
     parser.add_argument(
         "--no_save_final",
         "--no-save-final",
         dest="save_final",
         action="store_false",
-        default=True,
+        default=config.get("save_final", True),
     )
     parser.add_argument(
         "--path_suffix",
         "--path-suffix",
         dest="path_suffix",
         type=str,
-        default=None,
+        default=config.get("path_suffix", None),
     )
     parser.add_argument(
         "--compatible_save_name",
         "--compatible-save-name",
         dest="compatible_save_name",
         action="store_true",
+        default=config.get("compatible_save_name", False),
         help="Save without a strategy suffix for compatibility with legacy tooling.",
     )
     parser.add_argument(
@@ -606,35 +629,59 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         "--run-eval",
         dest="run_eval",
         action="store_true",
+        default=config.get("run_eval", False),
+    )
+    parser.add_argument(
+        "--no-run-eval",
+        dest="run_eval",
+        action="store_false",
+        help="Disable the config-driven downstream evaluation stage.",
     )
     parser.add_argument(
         "--eval_checkpoint_to_use",
         "--eval-checkpoint-to-use",
         dest="eval_checkpoint_to_use",
         type=int,
-        default=None,
+        default=config.get("eval_checkpoint_to_use", None),
     )
     parser.add_argument(
         "--eval_num_epochs",
         "--eval-num-epochs",
         dest="eval_num_epochs",
         type=int,
-        default=None,
+        default=config.get("eval_num_epochs", None),
     )
     parser.add_argument(
         "--eval-use-best",
+        dest="eval_use_best",
         action="store_true",
+        default=config.get("eval_use_best", False),
         help="Run downstream evaluation from the best validation checkpoint.",
+    )
+    parser.add_argument(
+        "--no-eval-use-best",
+        dest="eval_use_best",
+        action="store_false",
+        help="Use --eval-checkpoint-to-use or the last saved checkpoint.",
     )
     parser.add_argument(
         "--eval-encoder-weights",
         choices=("ema", "online"),
-        default="ema",
+        default=config.get("eval_encoder_weights", "ema"),
         help="Encoder weights used by automatic downstream evaluation.",
     )
     parser.add_argument(
+        "--eval-forecast-target",
+        choices=("value", "relative_return"),
+        default=config.get("eval_forecast_target", "value"),
+        help=(
+            "Downstream target used by --run-eval. relative_return predicts "
+            "P[t+h] / P[t] - 1."
+        ),
+    )
+    parser.add_argument(
         "--eval-results-dir",
-        default=None,
+        default=config.get("eval_results_dir", None),
         help="Optional output directory for automatic downstream evaluation.",
     )
 
@@ -648,6 +695,7 @@ def parse_args(config, default_mask_strategy=None, argv=None):
     cfg["sentiment_path"] = _none_if_requested(args.sentiment_path)
     cfg["train_end_date"] = _none_if_requested(args.train_end_date)
     cfg["test_start_date"] = _none_if_requested(args.test_start_date)
+    cfg["data_end_date"] = _none_if_requested(args.data_end_date)
     cfg["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
 
     if args.sampling_mode == "temporal_segments":
@@ -1337,6 +1385,8 @@ def run_downstream_evaluation(config):
         checkpoint_path,
         "--pretrain-encoder-weights",
         str(config.get("eval_encoder_weights", "ema")),
+        "--forecast-target",
+        str(config.get("eval_forecast_target", "value")),
         "--lr_pretrain",
         str(config["lr"]),
         "--ema_pretrain",
@@ -1379,6 +1429,8 @@ def run_downstream_evaluation(config):
         str(config["train_end_date"] or "none"),
         "--test_start_date",
         str(config["test_start_date"] or "none"),
+        "--data_end_date",
+        str(config["data_end_date"] or "none"),
         "--validation_fraction",
         str(config["validation_fraction"]),
         "--test_fraction",
@@ -1475,6 +1527,7 @@ def main(default_mask_strategy=None, argv=None):
             test_fraction=config["test_fraction"],
             train_end_date=config["train_end_date"],
             test_start_date=config["test_start_date"],
+            data_end_date=config["data_end_date"],
         )
         config["normalization_stats"] = copy.deepcopy(
             loader.dataset.normalization_stats
@@ -1502,6 +1555,7 @@ def main(default_mask_strategy=None, argv=None):
                     test_fraction=config["test_fraction"],
                     train_end_date=config["train_end_date"],
                     test_start_date=config["test_start_date"],
+                    data_end_date=config["data_end_date"],
                 )
             except ValueError as error:
                 print(
@@ -1533,6 +1587,7 @@ def main(default_mask_strategy=None, argv=None):
         print("sentiment_path =", config["sentiment_path"])
         print("train_end_date =", config["train_end_date"])
         print("test_start_date =", config["test_start_date"])
+        print("data_end_date =", config["data_end_date"])
         print("sampling_mode =", config["sampling_mode"])
         print("pretrain_stride =", config["pretrain_stride"])
         print("normalization =", config["normalization"])

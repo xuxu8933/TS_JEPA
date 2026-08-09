@@ -27,6 +27,7 @@ def get_jepa_loaders(
     test_fraction=0.30,
     train_end_date=None,
     test_start_date=None,
+    data_end_date=None,
 ):
     """
     Load and prepare the data to be used with TS-JEPA pretraining.
@@ -51,6 +52,7 @@ def get_jepa_loaders(
         test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
+        data_end_date=data_end_date,
     )
 
     loader = DataLoader(
@@ -77,12 +79,14 @@ def get_evaluation_loaders(
     normalization_stats=None,
     feature_cols=("Close", "Volume"),
     target_col="Close",
+    forecast_target="value",
     timestamp_col="Date",
     sentiment_path=None,
     validation_fraction=0.05,
     test_fraction=0.30,
     train_end_date=None,
     test_start_date=None,
+    data_end_date=None,
 ):
     """
     Downstream / evaluation loader.
@@ -100,12 +104,14 @@ def get_evaluation_loaders(
         normalization_stats=normalization_stats,
         feature_cols=feature_cols,
         target_col=target_col,
+        forecast_target=forecast_target,
         timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
         test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
+        data_end_date=data_end_date,
     )
 
     shuffle = True if split == "train" else False

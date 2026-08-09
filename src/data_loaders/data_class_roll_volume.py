@@ -16,6 +16,7 @@ DEFAULT_SENTIMENT_COLS = (
 
 NORMALIZATION_MODES = ("window_return", "train_zscore", "none")
 SAMPLING_MODES = ("sliding_window", "temporal_segments")
+FORECAST_TARGETS = ("value", "relative_return")
 
 
 def cumulative_return_normalize_with_base(series, base, eps=1e-8, passthrough_indices=None):
@@ -54,6 +55,15 @@ def _resolve_sampling_mode(sampling_mode):
             f"{SAMPLING_MODES}"
         )
     return sampling_mode
+
+
+def _resolve_forecast_target(forecast_target):
+    if forecast_target not in FORECAST_TARGETS:
+        raise ValueError(
+            f"Unknown forecast_target={forecast_target!r}; expected one of "
+            f"{FORECAST_TARGETS}"
+        )
+    return forecast_target
 
 
 def _sample_starts(series_length, sample_length, stride, sampling_mode):
@@ -115,6 +125,7 @@ def chronological_split(
     test_fraction=0.30,
     train_end_date=None,
     test_start_date=None,
+    data_end_date=None,
 ):
     """
     Chronological split:
@@ -124,6 +135,14 @@ def chronological_split(
     """
     df = df.copy()
     df.sort_values(by=[timestamp_col], inplace=True)
+
+    if data_end_date is not None:
+        data_end_ts = pd.Timestamp(data_end_date)
+        df = df[df[timestamp_col] <= data_end_ts].copy()
+        if df.empty:
+            raise ValueError(
+                f"No rows found on or before data_end_date={data_end_date!r}."
+            )
 
     feature_cols = _as_list(feature_cols)
     missing = [c for c in feature_cols if c not in df.columns]
@@ -181,6 +200,7 @@ def chronological_split(
         print(
             "[chronological_split] date split: "
             f"train_val<= {train_end_date}, test>= {test_start_date}, "
+            f"data<= {data_end_date}, "
             f"train_len={len(train_df)}, val_len={len(val_df)}, test_len={len(test_values)}"
         )
 
@@ -298,6 +318,7 @@ def load_price_series(
     sentiment_cols=DEFAULT_SENTIMENT_COLS,
     train_end_date=None,
     test_start_date=None,
+    data_end_date=None,
 ):
     """
     Load CSV and return chronological train / val / test tensors.
@@ -353,6 +374,7 @@ def load_price_series(
         test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
+        data_end_date=data_end_date,
     )
 
     return train_df, val_df, test_df
@@ -393,6 +415,7 @@ class CSVDataLoader(Dataset):
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
         train_end_date=None,
         test_start_date=None,
+        data_end_date=None,
     ):
         self.batch_size = batch_size
         self.series_split_size = series_split_size
@@ -422,6 +445,7 @@ class CSVDataLoader(Dataset):
             sentiment_cols=sentiment_cols,
             train_end_date=train_end_date,
             test_start_date=test_start_date,
+            data_end_date=data_end_date,
         )
 
         if split == "train":
@@ -534,6 +558,10 @@ class EvaluationDataLoader(Dataset):
 
     Target can be one column, e.g. target_col="Close":
         target_patch: [patch_size]
+
+    forecast_target="relative_return" produces the cumulative simple-return
+    path from the last observed target value at the forecast cutoff:
+        target[h] / context[-1] - 1
     """
 
     def __init__(
@@ -549,6 +577,7 @@ class EvaluationDataLoader(Dataset):
         normalization_stats=None,
         feature_cols=("Close", "Volume"),
         target_col="Close",
+        forecast_target="value",
         timestamp_col="Date",
         validation_fraction=0.05,
         test_fraction=0.30,
@@ -557,6 +586,7 @@ class EvaluationDataLoader(Dataset):
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
         train_end_date=None,
         test_start_date=None,
+        data_end_date=None,
     ):
         self.patch_size = patch_size
         self.context_size = context_size
@@ -572,6 +602,7 @@ class EvaluationDataLoader(Dataset):
             if col in set(sentiment_cols)
         ]
         self.target_col = target_col
+        self.forecast_target = _resolve_forecast_target(forecast_target)
 
         if target_col not in self.feature_cols:
             raise ValueError(f"target_col={target_col} must be in feature_cols={self.feature_cols}")
@@ -588,6 +619,7 @@ class EvaluationDataLoader(Dataset):
             sentiment_cols=sentiment_cols,
             train_end_date=train_end_date,
             test_start_date=test_start_date,
+            data_end_date=data_end_date,
         )
 
         if self.normalization == "train_zscore":
@@ -639,6 +671,7 @@ class EvaluationDataLoader(Dataset):
             f"patch_size={patch_size}, "
             f"feature_dim={self.feature_dim}, "
             f"target_col={target_col}, "
+            f"forecast_target={self.forecast_target}, "
             f"sampling_mode={self.sampling_mode}, "
             f"stride={self.stride}"
         )
@@ -673,6 +706,17 @@ class EvaluationDataLoader(Dataset):
     def __getitem__(self, idx):
         context_flat, target_flat = self.samples[idx]
 
+        if self.forecast_target == "relative_return":
+            # Build the label before input normalization. The denominator is
+            # the last value available at the forecast cutoff, never a future
+            # observation, so the target is leakage-safe and independent of
+            # the configured encoder-input normalization.
+            cutoff_value = context_flat[-1, self.target_idx]
+            target_patch = cumulative_return_normalize_with_base(
+                target_flat[:, self.target_idx],
+                base=cutoff_value,
+            ).reshape(self.patch_size)
+
         if self.normalization == "window_return":
             base = context_flat[0]  # [C], only from first context point
             context_flat = cumulative_return_normalize_with_base(
@@ -698,7 +742,9 @@ class EvaluationDataLoader(Dataset):
             self.patch_size * self.feature_dim,
         )
 
-        # Forecast only target_col, usually Close.
-        target_patch = target_flat[:, self.target_idx].reshape(self.patch_size)
+        # Forecast only target_col, usually Close. Relative-return labels were
+        # already computed from raw values above.
+        if self.forecast_target == "value":
+            target_patch = target_flat[:, self.target_idx].reshape(self.patch_size)
 
         return context_patches, target_patch

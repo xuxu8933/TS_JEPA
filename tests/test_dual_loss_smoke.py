@@ -232,8 +232,11 @@ def _pretrain_smoke_case(workdir, data_name, rows, python_executable=None):
         [
             python_executable,
             str(PRETRAIN_SCRIPT),
+            "--no-run-eval",
             "--data",
             data_name,
+            "--mask-strategy",
+            "random",
             "--feature-cols",
             "Close",
             "Volume",
@@ -314,8 +317,11 @@ def _pretrain_mnist_row_case(workdir, mnist_root, python_executable=None):
         [
             python_executable,
             str(PRETRAIN_SCRIPT),
+            "--no-run-eval",
             "--data",
             "SMOKE_MNIST_ROWS",
+            "--mask-strategy",
+            "random",
             "--input-mode",
             "mnist_rows",
             "--mnist-root",

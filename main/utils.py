@@ -87,6 +87,17 @@ def prepare_args(config):
         default=config.get("target_feature_index", 0),
     )
     parser.add_argument(
+        "--forecast_target",
+        "--forecast-target",
+        dest="forecast_target",
+        choices=("value", "relative_return"),
+        default=config.get("forecast_target", "value"),
+        help=(
+            "Predict normalized target values or the future cumulative simple-return "
+            "path P[t+h] / P[t] - 1."
+        ),
+    )
+    parser.add_argument(
         "--normalization",
         choices=("window_return", "train_zscore", "none"),
         default=config.get("normalization", "window_return"),
@@ -135,6 +146,13 @@ def prepare_args(config):
         "--test-start-date",
         dest="test_start_date",
         default=config.get("test_start_date", None),
+    )
+    parser.add_argument(
+        "--data_end_date",
+        "--data-end-date",
+        dest="data_end_date",
+        default=config.get("data_end_date", None),
+        help="Inclusive maximum timestamp allowed in training and evaluation data.",
     )
     parser.add_argument(
         "--validation_fraction",
@@ -250,6 +268,7 @@ def prepare_args(config):
     config["pooling"] = args.pooling
     config["patch_size"] = args.patch_size
     config["target_feature_index"] = args.target_feature_index
+    config["forecast_target"] = args.forecast_target
     config["normalization"] = args.normalization
     config["sampling_mode"] = args.sampling_mode
     config["normalization_stats"] = (
@@ -262,6 +281,7 @@ def prepare_args(config):
     config["sentiment_path"] = _none_if_requested(args.sentiment_path)
     config["train_end_date"] = _none_if_requested(args.train_end_date)
     config["test_start_date"] = _none_if_requested(args.test_start_date)
+    config["data_end_date"] = _none_if_requested(args.data_end_date)
     config["validation_fraction"] = args.validation_fraction
     config["test_fraction"] = args.test_fraction
 
