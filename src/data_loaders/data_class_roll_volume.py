@@ -122,16 +122,16 @@ def chronological_split(
     feature_cols=("Close", "Volume"),
     timestamp_col="Date",
     validation_fraction=0.05,
-    test_fraction=0.30,
     train_end_date=None,
     test_start_date=None,
     data_end_date=None,
 ):
     """
-    Chronological split:
-        train: earliest period
-        val:   middle period
-        test:  latest future period
+    Date-based chronological split.
+
+    test_start_date is required. Rows on or after it form the held-out test
+    period. Earlier rows (or rows through train_end_date, when provided) are
+    split into train and validation periods using validation_fraction.
     """
     df = df.copy()
     df.sort_values(by=[timestamp_col], inplace=True)
@@ -149,75 +149,67 @@ def chronological_split(
     if missing:
         raise ValueError(f"Missing columns in CSV: {missing}. Available columns: {list(df.columns)}")
 
-    if train_end_date is not None or test_start_date is not None:
-        train_end_ts = pd.Timestamp(train_end_date) if train_end_date is not None else None
-        test_start_ts = pd.Timestamp(test_start_date) if test_start_date is not None else None
+    if test_start_date is None:
+        raise ValueError("test_start_date must be defined for chronological splitting.")
 
-        if train_end_ts is None:
-            train_val_df = df[df[timestamp_col] < test_start_ts].copy()
-        else:
-            train_val_df = df[df[timestamp_col] <= train_end_ts].copy()
-
-        if test_start_ts is None:
-            test_df = df[df[timestamp_col] > train_end_ts].copy()
-        else:
-            test_df = df[df[timestamp_col] >= test_start_ts].copy()
-
-        if train_val_df.empty:
-            raise ValueError(
-                f"No train/validation rows found for train_end_date={train_end_date!r} "
-                f"and test_start_date={test_start_date!r}."
-            )
-        if test_df.empty:
-            raise ValueError(
-                f"No test rows found for train_end_date={train_end_date!r} "
-                f"and test_start_date={test_start_date!r}."
-            )
-
-        train_val_values = torch.tensor(
-            train_val_df[feature_cols].values,
-            dtype=torch.float32,
-        )
-        test_values = torch.tensor(
-            test_df[feature_cols].values,
-            dtype=torch.float32,
+    train_end_ts = pd.Timestamp(train_end_date) if train_end_date is not None else None
+    test_start_ts = pd.Timestamp(test_start_date)
+    if train_end_ts is not None and train_end_ts >= test_start_ts:
+        raise ValueError(
+            "train_end_date must be earlier than test_start_date: "
+            f"train_end_date={train_end_date!r}, test_start_date={test_start_date!r}"
         )
 
-        val_len = int(len(train_val_values) * validation_fraction)
-        train_len = len(train_val_values) - val_len
-        if train_len <= 0:
-            raise ValueError(
-                f"Date split left no train rows. train_val_len={len(train_val_values)}, "
-                f"validation_fraction={validation_fraction}"
-            )
+    if train_end_ts is None:
+        train_val_df = df[df[timestamp_col] < test_start_ts].copy()
+    else:
+        train_val_df = df[df[timestamp_col] <= train_end_ts].copy()
+    test_df = df[df[timestamp_col] >= test_start_ts].copy()
 
-        if val_len > 0:
-            train_df, val_df = torch.split(train_val_values, [train_len, val_len])
-        else:
-            train_df = train_val_values
-            val_df = train_val_values[:0]
-
-        print(
-            "[chronological_split] date split: "
-            f"train_val<= {train_end_date}, test>= {test_start_date}, "
-            f"data<= {data_end_date}, "
-            f"train_len={len(train_df)}, val_len={len(val_df)}, test_len={len(test_values)}"
+    if train_val_df.empty:
+        raise ValueError(
+            f"No train/validation rows found for train_end_date={train_end_date!r} "
+            f"and test_start_date={test_start_date!r}."
+        )
+    if test_df.empty:
+        raise ValueError(
+            f"No test rows found for test_start_date={test_start_date!r}."
         )
 
-        return train_df, val_df, test_values
-
-    values = torch.tensor(df[feature_cols].values, dtype=torch.float32)
-
-    val_len = int(len(values) * validation_fraction)
-    test_len = int(len(values) * test_fraction)
-    train_len = len(values) - val_len - test_len
-
-    train_df, val_df, test_df = torch.split(
-        values,
-        [train_len, val_len, test_len]
+    train_val_values = torch.tensor(
+        train_val_df[feature_cols].values,
+        dtype=torch.float32,
+    )
+    test_values = torch.tensor(
+        test_df[feature_cols].values,
+        dtype=torch.float32,
     )
 
-    return train_df, val_df, test_df
+    val_len = int(len(train_val_values) * validation_fraction)
+    train_len = len(train_val_values) - val_len
+    if train_len <= 0:
+        raise ValueError(
+            f"Date split left no train rows. train_val_len={len(train_val_values)}, "
+            f"validation_fraction={validation_fraction}"
+        )
+
+    if val_len > 0:
+        train_df, val_df = torch.split(train_val_values, [train_len, val_len])
+    else:
+        train_df = train_val_values
+        val_df = train_val_values[:0]
+
+    train_val_boundary = (
+        f"<= {train_end_date}" if train_end_date is not None else f"< {test_start_date}"
+    )
+    print(
+        "[chronological_split] date split: "
+        f"train_val {train_val_boundary}, test>= {test_start_date}, "
+        f"data<= {data_end_date}, "
+        f"train_len={len(train_df)}, val_len={len(val_df)}, test_len={len(test_values)}"
+    )
+
+    return train_df, val_df, test_values
 
 
 def _infer_sentiment_path(path_data):
@@ -312,7 +304,6 @@ def load_price_series(
     feature_cols=("Close", "Volume"),
     timestamp_col="Date",
     validation_fraction=0.05,
-    test_fraction=0.30,
     log_volume=True,
     sentiment_path=None,
     sentiment_cols=DEFAULT_SENTIMENT_COLS,
@@ -371,7 +362,6 @@ def load_price_series(
         feature_cols=feature_cols,
         timestamp_col=timestamp_col,
         validation_fraction=validation_fraction,
-        test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
         data_end_date=data_end_date,
@@ -409,7 +399,6 @@ class CSVDataLoader(Dataset):
         feature_cols=("Close", "Volume"),
         timestamp_col="Date",
         validation_fraction=0.05,
-        test_fraction=0.30,
         log_volume=True,
         sentiment_path=None,
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
@@ -439,7 +428,6 @@ class CSVDataLoader(Dataset):
             feature_cols=self.feature_cols,
             timestamp_col=timestamp_col,
             validation_fraction=validation_fraction,
-            test_fraction=test_fraction,
             log_volume=log_volume,
             sentiment_path=sentiment_path,
             sentiment_cols=sentiment_cols,
@@ -580,7 +568,6 @@ class EvaluationDataLoader(Dataset):
         forecast_target="value",
         timestamp_col="Date",
         validation_fraction=0.05,
-        test_fraction=0.30,
         log_volume=True,
         sentiment_path=None,
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
@@ -613,7 +600,6 @@ class EvaluationDataLoader(Dataset):
             feature_cols=self.feature_cols,
             timestamp_col=timestamp_col,
             validation_fraction=validation_fraction,
-            test_fraction=test_fraction,
             log_volume=log_volume,
             sentiment_path=sentiment_path,
             sentiment_cols=sentiment_cols,

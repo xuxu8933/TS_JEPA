@@ -570,8 +570,6 @@ def build_eval_argv(args, passthrough_args):
                 str(checkpoint_value("test_start_date", None) or "none"),
                 "--validation_fraction",
                 str(checkpoint_value("validation_fraction", 0.05)),
-                "--test_fraction",
-                str(checkpoint_value("test_fraction", 0.30)),
             ]
         )
         if not bool(checkpoint_value("encoder_embed_bias", True)):

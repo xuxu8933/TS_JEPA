@@ -182,7 +182,6 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --test-start-date 2025-01-01 \
   --data-end-date 2026-01-01 \
   --validation-fraction 0.05 \
-  --test-fraction 0.15 \
   --series-split-size 60 \
   --patch-size 5 \
   --normalization train_zscore \
@@ -213,6 +212,11 @@ chronological train/validation/test split. It prevents pretraining and every
 downstream evaluator from using observations after that date. The configured
 cutoff is stored in the checkpoint and restored automatically by
 `eval_dual_loss.py`.
+
+`--test-start-date` is required for time-series runs. Rows on or after that
+date form the held-out test set; `--validation-fraction` only divides the
+earlier train/validation period. If `--train-end-date` is omitted, every row
+before `--test-start-date` is eligible for the train/validation split.
 
 For a defensible comparison, repeat the complete workflow across several seeds
 and report mean and standard deviation instead of selecting the best seed:
@@ -280,7 +284,7 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --feature-cols Close Volume \
   --sentiment-path none \
   --train-end-date none \
-  --test-start-date none \
+  --test-start-date 2025-01-01 \
   --series-split-size 120 \
   --patch-size 5 \
   --pretrain-stride 5 \
@@ -323,7 +327,7 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --feature-cols Close Volume \
   --sentiment-path none \
   --train-end-date none \
-  --test-start-date none \
+  --test-start-date 2025-01-01 \
   --series-split-size 120 \
   --patch-size 5 \
   --mae-window-patches 1 \
@@ -403,7 +407,7 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --feature-cols Close Volume \
   --sentiment-path none \
   --train-end-date none \
-  --test-start-date none \
+  --test-start-date 2025-01-01 \
   --num-epochs 1 \
   --max-batches-per-epoch 2 \
   --checkpoint-print 1 \
@@ -600,7 +604,7 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --feature-cols Close Volume \
   --sentiment-path none \
   --train-end-date none \
-  --test-start-date none \
+  --test-start-date 2025-01-01 \
   --run-eval \
   --eval-use-best \
   --eval-encoder-weights ema \

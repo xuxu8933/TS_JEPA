@@ -1688,7 +1688,6 @@ if __name__ == "__main__":
     test_start_date = config.get("test_start_date", None)
     data_end_date = config.get("data_end_date", None)
     validation_fraction = config.get("validation_fraction", 0.05)
-    test_fraction = config.get("test_fraction", 0.30)
     normalization = config.get("normalization", "window_return")
     forecast_target = config.get("forecast_target", "value")
     sampling_mode = config.get("sampling_mode", "sliding_window")
@@ -1714,7 +1713,6 @@ if __name__ == "__main__":
     print("test_start_date =", test_start_date)
     print("data_end_date =", data_end_date)
     print("validation_fraction =", validation_fraction)
-    print("test_fraction =", test_fraction)
     print("feature_dim =", feature_dim)
     print("target_feature_index =", target_feature_index)
     print("forecast_target =", forecast_target)
@@ -1758,7 +1756,6 @@ if __name__ == "__main__":
         timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
-        test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
         data_end_date=data_end_date,
@@ -1782,7 +1779,6 @@ if __name__ == "__main__":
         timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
-        test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
         data_end_date=data_end_date,
@@ -1806,7 +1802,6 @@ if __name__ == "__main__":
         timestamp_col=timestamp_col,
         sentiment_path=sentiment_path,
         validation_fraction=validation_fraction,
-        test_fraction=test_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
         data_end_date=data_end_date,

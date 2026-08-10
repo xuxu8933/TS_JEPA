@@ -161,13 +161,6 @@ def prepare_args(config):
         type=float,
         default=config.get("validation_fraction", 0.05),
     )
-    parser.add_argument(
-        "--test_fraction",
-        "--test-fraction",
-        dest="test_fraction",
-        type=float,
-        default=config.get("test_fraction", 0.30),
-    )
 
     # Transformers parameters
     parser.add_argument("--embed_dim", type=int, default=config["embed_dim"])
@@ -283,7 +276,6 @@ def prepare_args(config):
     config["test_start_date"] = _none_if_requested(args.test_start_date)
     config["data_end_date"] = _none_if_requested(args.data_end_date)
     config["validation_fraction"] = args.validation_fraction
-    config["test_fraction"] = args.test_fraction
 
     config["pretrain_transformer_dense_dim"] = args.transformer_dense_dim
 

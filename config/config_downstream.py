@@ -44,7 +44,6 @@ config = {
     "test_start_date": "2025-01-01",
     "data_end_date": "2026-01-01",
     "validation_fraction": 0.05,
-    "test_fraction": 0.15,
 
     # Loader
     "ratio_patches" : 10,

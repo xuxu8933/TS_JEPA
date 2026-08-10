@@ -219,12 +219,14 @@ class UnifiedDualLossTest(unittest.TestCase):
         )
 
         self.assertEqual(default_config["seed"], 42)
-        self.assertEqual(default_config["mask_strategy"], "future_block")
+        self.assertEqual(default_config["mask_strategy"], "random")
         self.assertTrue(default_config["run_eval"])
         self.assertTrue(default_config["eval_use_best"])
         self.assertEqual(default_config["eval_forecast_target"], "relative_return")
         self.assertEqual(default_config["eval_num_epochs"], 501)
         self.assertEqual(default_config["data_end_date"], "2026-01-01")
+        self.assertEqual(default_config["test_start_date"], "2025-01-01")
+        self.assertNotIn("test_fraction", default_config)
         self.assertEqual(random_config["mask_strategy"], "random")
         self.assertIn("_dual_jepa_mae_", random_config["path_save"])
         self.assertEqual(local_config["mask_strategy"], "local_long")
@@ -341,7 +343,7 @@ class UnifiedDualLossTest(unittest.TestCase):
                 feature_cols=("Close", "Volume"),
                 sentiment_path=None,
                 validation_fraction=0.25,
-                test_fraction=0.1,
+                test_start_date="2021-06-01",
             )
             val_dataset = CSVDataLoader(
                 path_data=str(data_path),
@@ -355,7 +357,7 @@ class UnifiedDualLossTest(unittest.TestCase):
                 feature_cols=("Close", "Volume"),
                 sentiment_path=None,
                 validation_fraction=0.25,
-                test_fraction=0.1,
+                test_start_date="2021-06-01",
             )
 
             expected_windows = (len(dataset.train_df) - 20) // 5 + 1
@@ -372,6 +374,21 @@ class UnifiedDualLossTest(unittest.TestCase):
                 dataset.normalization_stats,
             )
 
+    def test_time_series_split_requires_test_start_date(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_path = Path(tmp) / "data" / "REQUIRED_DATE" / "REQUIRED_DATE.csv"
+            _write_rows(data_path, _sin_cos_rows(180))
+
+            with self.assertRaisesRegex(ValueError, "test_start_date must be defined"):
+                CSVDataLoader(
+                    path_data=str(data_path),
+                    series_split_size=20,
+                    patch_size=5,
+                    normalization="none",
+                    feature_cols=("Close", "Volume"),
+                    sentiment_path=None,
+                )
+
     def test_data_end_date_caps_pretraining_and_evaluation_splits(self):
         with tempfile.TemporaryDirectory() as tmp:
             data_path = Path(tmp) / "data" / "CUTOFF" / "CUTOFF.csv"
@@ -384,7 +401,6 @@ class UnifiedDualLossTest(unittest.TestCase):
                 "test_start_date": "2021-05-01",
                 "data_end_date": "2021-06-15",
                 "validation_fraction": 0.1,
-                "test_fraction": 0.1,
             }
 
             pretrain_dataset = CSVDataLoader(
@@ -424,7 +440,7 @@ class UnifiedDualLossTest(unittest.TestCase):
                 feature_cols=("Close", "Volume"),
                 sentiment_path=None,
                 validation_fraction=0.1,
-                test_fraction=0.1,
+                test_start_date="2021-06-01",
             )
 
             expected_starts = list(range(0, len(pretrain_dataset.train_df) - 19, 20))
@@ -451,7 +467,7 @@ class UnifiedDualLossTest(unittest.TestCase):
                 feature_cols=("Close", "Volume"),
                 sentiment_path=None,
                 validation_fraction=0.1,
-                test_fraction=0.1,
+                test_start_date="2021-06-01",
             )
 
             expected_eval_starts = list(
@@ -482,7 +498,7 @@ class UnifiedDualLossTest(unittest.TestCase):
                 feature_cols=("Close", "Volume"),
                 sentiment_path=None,
                 validation_fraction=0.1,
-                test_fraction=0.1,
+                test_start_date="2021-06-01",
             )
 
             raw_context, raw_target = dataset.samples[0]
@@ -679,11 +695,9 @@ class UnifiedDualLossTest(unittest.TestCase):
                     "--train-end-date",
                     "none",
                     "--test-start-date",
-                    "none",
+                    "2021-09-07",
                     "--validation-fraction",
                     "0.25",
-                    "--test-fraction",
-                    "0.1",
                     "--series-split-size",
                     "40",
                     "--patch-size",

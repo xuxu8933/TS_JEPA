@@ -84,9 +84,8 @@ def _load_forecast_loaders(data_path):
         "feature_cols": ("Close", "Volume"),
         "sentiment_path": None,
         "validation_fraction": 0.1,
-        "test_fraction": 0.3,
         "train_end_date": None,
-        "test_start_date": None,
+        "test_start_date": "2021-07-01",
     }
 
     train_loader = get_evaluation_loaders(split="train", **loader_kwargs)
@@ -245,10 +244,8 @@ def _pretrain_smoke_case(workdir, data_name, rows, python_executable=None):
             "--train-end-date",
             "none",
             "--test-start-date",
-            "none",
+            "2021-09-07",
             "--validation-fraction",
-            "0.1",
-            "--test-fraction",
             "0.1",
             "--series-split-size",
             "20",

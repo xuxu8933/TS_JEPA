@@ -70,7 +70,6 @@ EXPERIMENT_ID_KEYS = (
     "test_start_date",
     "data_end_date",
     "validation_fraction",
-    "test_fraction",
     "batch_size",
     "mask_ratio",
     "end_lr",
@@ -379,13 +378,6 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         dest="validation_fraction",
         type=float,
         default=config.get("validation_fraction", 0.05),
-    )
-    parser.add_argument(
-        "--test_fraction",
-        "--test-fraction",
-        dest="test_fraction",
-        type=float,
-        default=config.get("test_fraction", 0.30),
     )
 
     parser.add_argument(
@@ -1433,8 +1425,6 @@ def run_downstream_evaluation(config):
         str(config["data_end_date"] or "none"),
         "--validation_fraction",
         str(config["validation_fraction"]),
-        "--test_fraction",
-        str(config["test_fraction"]),
     ]
 
     if not config["encoder_embed_bias"]:
@@ -1475,16 +1465,8 @@ def main(default_mask_strategy=None, argv=None):
         raise ValueError("Temporal segments require --input-mode timeseries")
     if not 0 <= float(config["validation_fraction"]) < 1:
         raise ValueError("--validation-fraction must be in [0, 1)")
-    if not 0 <= float(config["test_fraction"]) < 1:
-        raise ValueError("--test-fraction must be in [0, 1)")
-    if (
-        config["train_end_date"] is None
-        and config["test_start_date"] is None
-        and float(config["validation_fraction"]) + float(config["test_fraction"]) >= 1
-    ):
-        raise ValueError(
-            "--validation-fraction + --test-fraction must be smaller than 1"
-        )
+    if config["input_mode"] == "timeseries" and config["test_start_date"] is None:
+        raise ValueError("--test-start-date must be defined for timeseries input")
 
     if config["input_mode"] == "mnist_rows":
         loader = get_mnist_row_loader(
@@ -1524,7 +1506,6 @@ def main(default_mask_strategy=None, argv=None):
             timestamp_col=config["timestamp_col"],
             sentiment_path=config["sentiment_path"],
             validation_fraction=config["validation_fraction"],
-            test_fraction=config["test_fraction"],
             train_end_date=config["train_end_date"],
             test_start_date=config["test_start_date"],
             data_end_date=config["data_end_date"],
@@ -1552,7 +1533,6 @@ def main(default_mask_strategy=None, argv=None):
                     timestamp_col=config["timestamp_col"],
                     sentiment_path=config["sentiment_path"],
                     validation_fraction=config["validation_fraction"],
-                    test_fraction=config["test_fraction"],
                     train_end_date=config["train_end_date"],
                     test_start_date=config["test_start_date"],
                     data_end_date=config["data_end_date"],
