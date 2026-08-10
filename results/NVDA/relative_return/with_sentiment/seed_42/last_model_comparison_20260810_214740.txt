@@ -1,0 +1,13 @@
+Data source: NVDA
+Evaluation type: last
+Forecast target: relative_return
+Generated at: 20260810_214740
+
+Model Comparison
+model,forecast_target,mse,mae,trend_accuracy
+naive_last,relative_return,0.002079,0.033850,0.0000
+mean_context,relative_return,0.002184,0.034352,0.5211
+drift,relative_return,0.002218,0.034111,0.5053
+TS-JEPA,relative_return,0.002647,0.040564,0.4947
+GRU,relative_return,0.003326,0.044670,0.5105
+previous_patch,relative_return,0.004951,0.048636,0.4684
