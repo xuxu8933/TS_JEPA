@@ -25,7 +25,11 @@ from typing import Any, Iterable, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from config.file_options import results_dir_from_config
+from config.file_options import (
+    flatten_runner_options,
+    read_config_file,
+    results_dir_from_config,
+)
 
 
 METHOD_ORDER = (
@@ -241,16 +245,16 @@ def _load_json(path: Path) -> dict[str, Any]:
 
 def load_scope(args: argparse.Namespace) -> tuple[dict[str, Any], Path]:
     config_path = Path(args.config)
-    config_data = _load_json(config_path) if config_path.exists() else {}
+    config_data = read_config_file(config_path)[1] if config_path.exists() else {}
     common = config_data.get("common", {})
-    runner = config_data.get("runner", {})
+    runner = flatten_runner_options(config_data.get("runner", {}), config_path)
     analysis = config_data.get("analysis", {})
     stocks = args.stocks or common.get("stocks") or []
     seeds = args.seeds or common.get("seeds") or []
     strategies = (
         args.strategies
-        or analysis.get("strategies")
         or runner.get("mask_strategies")
+        or analysis.get("strategies")
         or ["random", "local_long"]
     )
     results_dir = results_dir_from_config(config_path)
@@ -582,7 +586,8 @@ def _load_runner_commands(results_dir: Path) -> dict[tuple[str, str, int], dict[
 def _manifest_metadata(scope: Mapping[str, Any], results_dir: Path) -> dict[str, Any]:
     config_data = scope.get("config_data", {})
     common = dict(config_data.get("common", {}))
-    runner = dict(config_data.get("runner", {}))
+    config_path = Path(str(scope.get("config_path", "<config>")))
+    runner = flatten_runner_options(config_data.get("runner", {}), config_path)
     metadata = {**common, **runner}
     runtime_manifest = results_dir / "experiment_manifest.json"
     if runtime_manifest.exists():

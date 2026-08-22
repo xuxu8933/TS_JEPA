@@ -15,54 +15,108 @@
     "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   },
   "runner": {
-    "max_stocks": 10,
-    "max_seeds": 10,
-    "download_start_date": "2015-01-01",
-    "download_end_date": "2026-01-01",
-    "skip_download": true,
-    "skip_news": true,
-    "skip_pretrain": false,
-    "mask_strategies": ["random", "local_long"],
-    "lambda_jepa": 1.0,
-    "lambda_mae": 0.5,
-    "jepa_loss": "mse",
-    "mae_loss": "mse",
-    "mae_window_patches": 1,
-    "jepa_gap_patches": 4,
-    "jepa_target_patches": 4,
-    "future_target_patches": 4,
-    "causal_num_blocks": 2,
-    "causal_block_patches": 2,
-    "causal_block_gap_patches": 1,
-    "series_split_size": 120,
-    "patch_size": 5,
-    "pretrain_stride": 5,
-    "sampling_mode": "sliding_window",
-    "normalization": "window_return",
-    "preprocessing_preset": null,
-    "feature_transform": "raw",
-    "market_data": null,
-    "robust_zscore_clip": null,
-    "feature_cols": null,
-    "market_features": ["Close", "Volume", "MA10", "MA50"],
-    "sentiment_features": ["sentiment_mean"],
-    "use_sentiment": false,
-    "encoder_weights": "ema",
-    "forecast_target": "value",
-    "eval_num_epochs": 501,
-    "pretrain_num_epochs": 2001,
-    "checkpoint_to_use": 2000,
-    "use_best_checkpoint": false,
-    "max_news_articles": null,
-    "news_chunk_days": 7,
-    "request_delay": 0.5,
-    "write_mode": "append",
-    "skip_combined_plot": false,
-    "dry_run": false,
-    "verbose": false
+    "execution": {
+      "max_stocks": 2,
+      "max_seeds": 2,
+      "dry_run": false,
+      "verbose": false
+    },
+    "download": {
+      "skip": true,
+      "start_date": "2015-01-01",
+      "end_date": "2026-01-01",
+      "write_mode": "append",
+      "news": {
+        "skip": true,
+        "max_articles": null,
+        "chunk_days": 7,
+        "request_delay": 0.5
+      }
+    },
+    "masking": {
+      "strategies": {
+        "random": {
+          "enabled": true
+        },
+        "local_long": {
+          "enabled": true,
+          "mae_window_patches": 1,
+          "jepa_gap_patches": 4,
+          "jepa_target_patches": 4
+        },
+        "future_block": {
+          "enabled": false,
+          "target_patches": 4
+        },
+        "causal_multiblock": {
+          "enabled": false,
+          "num_blocks": 2,
+          "block_patches": 2,
+          "block_gap_patches": 1
+        }
+      }
+    },
+    "objectives": {
+      "jepa": {
+        "weight": 1.0,
+        "loss": "mse"
+      },
+      "mae": {
+        "weight": 0.5,
+        "loss": "mse"
+      }
+    },
+    "pretraining": {
+      "skip": false,
+      "epochs": 2001,
+      "windows": {
+        "series_size": 120,
+        "patch_size": 5,
+        "stride": 5,
+        "sampling_mode": "sliding_window"
+      }
+    },
+    "preprocessing": {
+      "preset": null,
+      "custom": {
+        "feature_transform": "raw",
+        "normalization": {
+          "method": "window_return",
+          "robust_zscore": {
+            "clip": 5.0
+          }
+        },
+        "features": {
+          "market": ["Close", "Volume", "MA10", "MA50"],
+          "sentiment": {
+            "enabled": false,
+            "columns": ["sentiment_mean"]
+          }
+        },
+        "forecast": {
+          "target": "value",
+          "market_data": {
+            "enabled": false,
+            "name": "NASDAQ100"
+          }
+        }
+      }
+    },
+    "checkpoint": {
+      "selection": {
+        "mode": "epoch",
+        "epoch": 2000
+      },
+      "encoder_weights": "ema"
+    },
+    "downstream": {
+      "epochs": 501
+    },
+    "output": {
+      "skip_combined_plot": false
+    }
   },
   "analysis": {
-    "strategies": ["random", "local_long"],
     "models": [
       "TS-JEPA",
       "GRU",

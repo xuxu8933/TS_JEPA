@@ -59,11 +59,65 @@ def effective_experiment_config(args_or_options):
         else dict(args_or_options)
     )
     excluded = COVERAGE_CONFIG_KEYS | NON_RESULT_CONFIG_KEYS
-    return {
+    effective = {
         key: _jsonable_config_value(options[key])
         for key in sorted(options)
         if key not in excluded
     }
+    # ``feature_cols`` was a legacy runner override. Its historical null value
+    # did not affect results, so omit it when comparing old and new manifests.
+    if effective.get("feature_cols") is None:
+        effective.pop("feature_cols", None)
+
+    if effective.get("skip_download") is True:
+        for key in (
+            "download_start_date",
+            "download_end_date",
+            "skip_news",
+            "max_news_articles",
+            "news_chunk_days",
+            "request_delay",
+            "write_mode",
+        ):
+            effective.pop(key, None)
+    elif effective.get("skip_news") is True or effective.get("use_sentiment") is False:
+        for key in ("max_news_articles", "news_chunk_days", "request_delay"):
+            effective.pop(key, None)
+
+    strategies = set(effective.get("mask_strategies") or ())
+    conditional_strategy_options = {
+        "local_long": (
+            "mae_window_patches",
+            "jepa_gap_patches",
+            "jepa_target_patches",
+        ),
+        "future_block": ("future_target_patches",),
+        "causal_multiblock": (
+            "causal_num_blocks",
+            "causal_block_patches",
+            "causal_block_gap_patches",
+        ),
+    }
+    for strategy, keys in conditional_strategy_options.items():
+        if strategy not in strategies:
+            for key in keys:
+                effective.pop(key, None)
+
+    if effective.get("normalization") != "train_robust_zscore":
+        effective.pop("robust_zscore_clip", None)
+    if effective.get("preprocessing_preset") is not None:
+        for key in (
+            "feature_transform",
+            "normalization",
+            "forecast_target",
+            "market_data",
+        ):
+            effective.pop(key, None)
+    if effective.get("use_sentiment") is False:
+        effective.pop("sentiment_features", None)
+    if effective.get("use_best_checkpoint") is True:
+        effective.pop("checkpoint_to_use", None)
+    return effective
 
 
 def experiment_config_signature(args_or_options):
@@ -114,7 +168,7 @@ def _load_json(path):
 def _manifest_effective_config(manifest):
     recorded = manifest.get("effective_config")
     if isinstance(recorded, dict):
-        return recorded
+        return effective_experiment_config(recorded)
     arguments = manifest.get("arguments")
     if isinstance(arguments, dict):
         return effective_experiment_config(arguments)
@@ -248,8 +302,19 @@ def downstream_run_status(
             recorded_seed = int(run_manifest.get("seed"))
         except (TypeError, ValueError):
             recorded_seed = None
+        recorded_run_config = run_manifest.get("effective_config")
+        config_matches = run_manifest.get("config_signature") == expected_signature
+        if isinstance(recorded_run_config, dict):
+            config_matches = (
+                effective_experiment_config(recorded_run_config)
+                == effective_experiment_config(args)
+            )
+        elif legacy_manifest_compatible:
+            # The compatible experiment manifest validates legacy run manifests
+            # whose signature predates conditional-option canonicalization.
+            config_matches = True
         identity_matches = (
-            run_manifest.get("config_signature") == expected_signature
+            config_matches
             and run_manifest.get("strategy") == strategy
             and str(run_manifest.get("stock", "")).upper() == stock
             and recorded_seed == int(seed)
@@ -398,7 +463,6 @@ def build_experiment_manifest(args, stocks, seeds, strategies):
         "use_sentiment": preprocessing["use_sentiment"],
         "market_features": preprocessing["market_features"],
         "sentiment_features": preprocessing["sentiment_features"],
-        "feature_cols": preprocessing["feature_cols"],
         "feature_transform": preprocessing["feature_transform"],
         "normalization": preprocessing["normalization"],
         "forecast_target": preprocessing["forecast_target"],
@@ -438,6 +502,7 @@ def write_run_manifest(args, task, status):
         {
             "status": status,
             "config_signature": experiment_config_signature(args),
+            "effective_config": effective_experiment_config(args),
             "strategy": task["strategy"],
             "stock": task["stock"],
             "seed": task["seed"],
@@ -489,7 +554,8 @@ def parse_args(argv=None):
         "--config",
         default=None,
         help=(
-            "JSON or TOML experiment option file. Reads [common] and [runner]; "
+            "JSON, JSONC, or TOML experiment option file. Reads [common] and "
+            "[runner]; "
             "explicit command-line options except stocks/seeds take precedence."
         ),
     )
@@ -594,7 +660,6 @@ def parse_args(argv=None):
     )
     parser.add_argument("--market-data", default=None)
     parser.add_argument("--robust-zscore-clip", type=float, default=None)
-    parser.add_argument("--feature-cols", nargs="+", default=None)
     parser.add_argument("--market-features", nargs="+", default=None)
     parser.add_argument("--sentiment-features", nargs="+", default=None)
     sentiment_group = parser.add_mutually_exclusive_group()
@@ -787,7 +852,6 @@ def resolve_preprocessing_settings(args):
             "market_data": getattr(args, "market_data", None),
         }
     settings["robust_zscore_clip"] = getattr(args, "robust_zscore_clip", None)
-    settings["feature_cols"] = getattr(args, "feature_cols", None)
     settings["market_features"] = getattr(args, "market_features", None)
     settings["sentiment_features"] = getattr(args, "sentiment_features", None)
     settings["use_sentiment"] = bool(
@@ -796,7 +860,6 @@ def resolve_preprocessing_settings(args):
     if (
         settings["use_sentiment"]
         and preset_name in ("P1", "P2", "P3")
-        and settings["feature_cols"] is None
         and settings["sentiment_features"] is None
     ):
         # Return mode always adds the eight canonical price/volume features;
@@ -833,10 +896,6 @@ def build_stock_commands(args, stock, seed=None, strategy=None, results_dir=None
     if preprocessing["robust_zscore_clip"] is not None:
         preprocessing_args.extend(
             ["--robust-zscore-clip", str(preprocessing["robust_zscore_clip"])]
-        )
-    if preprocessing["feature_cols"] is not None:
-        preprocessing_args.extend(
-            ["--feature-cols", *map(str, preprocessing["feature_cols"])]
         )
     if preprocessing["market_features"] is not None:
         preprocessing_args.extend(
@@ -1116,10 +1175,6 @@ def main(argv=None):
         summary.write(f"normalization={preprocessing['normalization']}\n")
         summary.write(f"market_data={preprocessing['market_data']}\n")
         summary.write(f"use_sentiment={preprocessing['use_sentiment']}\n")
-        summary.write(
-            "effective_feature_override="
-            f"{preprocessing['feature_cols']}\n"
-        )
         summary.write(f"market_features={preprocessing['market_features']}\n")
         summary.write(
             f"sentiment_features={preprocessing['sentiment_features']}\n"

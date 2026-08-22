@@ -12,6 +12,7 @@ from analysis.thesis_results import (
     METHOD_ORDER,
     compute_direction_accuracy,
     exact_wilcoxon,
+    load_scope,
     parse_args,
     run_analysis,
 )
@@ -22,6 +23,21 @@ from eval_forecast_prequential_with_baselines_gru_volume import (
 
 
 class ThesisStatisticsTest(unittest.TestCase):
+    def test_thesis_scope_accepts_commented_experiment_template(self):
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "experiments"
+            / "template_experiment.jsonc"
+        )
+        args = parse_args(["--config", str(config_path)])
+
+        scope, results_dir = load_scope(args)
+
+        self.assertEqual(scope["stocks"], ["NVDA", "AAPL"])
+        self.assertEqual(scope["seeds"], [42, 43])
+        self.assertEqual(results_dir.name, "template_experiment")
+
     def test_exact_signed_rank_and_effect_direction(self):
         statistic, p_value, effect, count = exact_wilcoxon([-1.0, -2.0, -3.0])
         self.assertEqual(statistic, 0.0)

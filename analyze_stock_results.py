@@ -34,7 +34,9 @@ def parse_args(argv=None):
         "--config",
         default=None,
         help=(
-            "JSON or TOML experiment option file. Reads [common] and [analysis]; "
+            "JSON, JSONC, or TOML experiment option file. Reads [common] and "
+            "[analysis], with strategies inherited from "
+            "[runner].masking.strategies; "
             "explicit command-line options except stocks/seeds take precedence."
         ),
     )

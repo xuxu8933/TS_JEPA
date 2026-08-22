@@ -364,19 +364,42 @@ conda run --no-capture-output -n ts-jepa python analyze_stock_results.py \
   --config config/experiments/top10_with_sentiment.json
 ```
 
-Each JSON or TOML file may contain `common`, `runner`, and `analysis` objects.
+Each JSON, JSONC, or TOML file may contain `common`, `runner`, and `analysis`
+objects.
 Both scripts read `common`; the stock runner reads `runner`, and the analyzer
-reads `analysis`. Option names use Python/JSON underscores, such as
-`mask_strategies` and `use_sentiment`. `stocks` and `seeds` belong only to
+reads `analysis`. Analysis strategies are inherited from
+`runner.masking.strategies` and must not be repeated in `analysis`. Runner
+options are grouped under `execution`, `download`, `masking`, `objectives`,
+`pretraining`, `preprocessing`, `checkpoint`, `downstream`, and `output`.
+`stocks` and `seeds` belong only to
 `common` and cannot be duplicated in `runner`/`analysis` or overridden on the
 command line when a config file is used. They define the ordered overall
-coverage. `runner.max_stocks` and `runner.max_seeds` limit the current run to
-the first N entries of those common lists; `0` selects all entries. These limits
-define the current execution scope but do not change experiment identity or the
-overall coverage recorded in the manifest. Other explicit command-line options
-override file values. `results_dir` is not a config option: the result root is
-derived from the filename, so `config/experiments/example.json` always writes
-to `results/example/`. A safe command inspection is:
+coverage. `runner.execution.max_stocks` and `max_seeds` limit the current run
+to the first N entries of those common lists; `0` selects all entries. These
+limits define the current execution scope but do not change experiment identity
+or the overall coverage recorded in the manifest. Other explicit command-line
+options override file values. `results_dir` is not a config option: the result
+root is derived from the filename, so `config/experiments/example.json` always
+writes to `results/example/`. A safe command inspection is:
+
+Copy [`config/experiments/template_experiment.jsonc`](config/experiments/template_experiment.jsonc)
+to start a new experiment. It contains every supported config input with `//`
+comments only in its file header; the runner hierarchy itself is comment-free.
+The `.jsonc` format and project loader accept comments outside quoted strings;
+other unknown options remain errors. Rename the copy before use because its
+filename determines the result directory. The template defaults to
+`execution.dry_run: true` for safe command inspection.
+
+Conditional children remain visible in the config, while their parent controls
+whether they are applied. `download.skip` disables all download/news children;
+`download.news.skip` disables only news request settings; each masking strategy
+has its own `enabled` flag; robust clipping is applied only by
+`train_robust_zscore`; sentiment columns are applied only when sentiment is
+enabled; and forecast `market_data` has an explicit `enabled` flag that must be
+true exactly for `excess_log_return`. Preprocessing presets and custom
+preprocessing remain mutually exclusive, checkpoint epoch is valid only with
+epoch selection, and nested and legacy flat runner options cannot be mixed in
+one file. Inactive children do not change experiment identity.
 
 ```bash
 python run_top_nasdaq100_stocks.py \

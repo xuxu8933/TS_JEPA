@@ -9,7 +9,11 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from config.file_options import results_dir_from_config
+from config.file_options import (
+    flatten_runner_options,
+    read_config_file,
+    results_dir_from_config,
+)
 from analyze_stock_results import (
     aggregate_metrics,
     aggregate_strategy_runs,
@@ -108,16 +112,16 @@ class StockMaskComparisonTest(unittest.TestCase):
             runner_args = parse_stock_runner_args(["--config", str(config_path)])
             analysis_args = parse_analysis_args(["--config", str(config_path)])
 
-            runner_config_keys = set(config_data["common"]) | set(
-                config_data["runner"]
+            flattened_runner = flatten_runner_options(
+                config_data["runner"], config_path
             )
-            analysis_config_keys = set(config_data["common"]) | set(
-                config_data["analysis"]
+            analysis_config_keys = (
+                set(config_data["common"])
+                | set(config_data["analysis"])
+                | {"strategies"}
             )
-            self.assertEqual(
-                set(vars(runner_args)) - {"config", "results_dir"},
-                runner_config_keys,
-            )
+            for key, value in {**config_data["common"], **flattened_runner}.items():
+                self.assertEqual(getattr(runner_args, key), value)
             self.assertEqual(
                 set(vars(analysis_args)) - {"config", "results_dir"},
                 analysis_config_keys,
@@ -138,10 +142,10 @@ class StockMaskComparisonTest(unittest.TestCase):
                 ["random", "local_long"],
             )
             self.assertEqual(runner_args.use_sentiment, use_sentiment)
+            self.assertFalse(hasattr(runner_args, "feature_cols"))
             self.assertEqual(runner_args.series_split_size, 120)
             self.assertEqual(runner_args.patch_size, 5)
-            self.assertEqual(runner_args.download_start_date, "2015-01-01")
-            self.assertEqual(runner_args.download_end_date, "2026-01-01")
+            self.assertTrue(runner_args.skip_download)
             self.assertFalse(hasattr(runner_args, "start_date"))
             self.assertFalse(hasattr(runner_args, "end_date"))
             validate_runner_mask_geometry(
@@ -163,7 +167,7 @@ class StockMaskComparisonTest(unittest.TestCase):
     def test_all_named_configs_use_matching_result_directories_and_common_coverage(self):
         config_dir = Path(__file__).resolve().parents[1] / "config" / "experiments"
         for config_path in sorted(config_dir.glob("*.json")):
-            config_data = json.loads(config_path.read_text())
+            _, config_data = read_config_file(config_path)
             self.assertIn("stocks", config_data["common"])
             self.assertIn("seeds", config_data["common"])
             self.assertNotIn("stocks", config_data.get("runner", {}))
@@ -178,6 +182,75 @@ class StockMaskComparisonTest(unittest.TestCase):
                 Path(runner_args.results_dir),
                 results_dir_from_config(config_path),
             )
+
+    def test_commented_template_documents_every_config_input(self):
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "experiments"
+            / "template_experiment.jsonc"
+        )
+        template_text = config_path.read_text(encoding="utf-8")
+        _, config_data = read_config_file(config_path)
+        self.assertNotIn('"_comment', template_text)
+        self.assertEqual(template_text.count("//"), 2)
+
+        runner_args = parse_stock_runner_args(["--config", str(config_path)])
+        analysis_args = parse_analysis_args(["--config", str(config_path)])
+        common_keys = set(config_data["common"])
+        flattened_runner = flatten_runner_options(
+            config_data["runner"], config_path
+        )
+        analysis_keys = common_keys | set(config_data["analysis"]) | {"strategies"}
+        for key, value in {**config_data["common"], **flattened_runner}.items():
+            self.assertEqual(getattr(runner_args, key), value)
+        self.assertEqual(
+            set(vars(analysis_args)) - {"config", "results_dir"},
+            analysis_keys,
+        )
+        validate_runner_mask_geometry(
+            runner_args,
+            resolve_mask_strategies(runner_args),
+        )
+        self.assertFalse(hasattr(runner_args, "feature_cols"))
+        self.assertEqual(analysis_args.strategies, runner_args.mask_strategies)
+        self.assertEqual(
+            runner_args.mask_strategies,
+            ["random", "local_long"],
+        )
+        nested_runner = config_data["runner"]
+        self.assertEqual(
+            set(nested_runner["masking"]["strategies"]),
+            {"random", "local_long", "future_block", "causal_multiblock"},
+        )
+        self.assertIn("start_date", nested_runner["download"])
+        self.assertIn("robust_zscore", nested_runner["preprocessing"]["custom"]["normalization"])
+        self.assertIn(
+            "market_data",
+            nested_runner["preprocessing"]["custom"]["forecast"],
+        )
+        self.assertTrue(runner_args.dry_run)
+
+    def test_json_comments_do_not_modify_double_slashes_inside_strings(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "comments.json"
+            config_path.write_text(
+                "{\n"
+                "  // Coverage comment.\n"
+                '  "common": {\n'
+                '    "stocks": ["NVDA"], // Inline comment.\n'
+                '    "seeds": [42]\n'
+                "  },\n"
+                '  "runner": {\n'
+                '    "market_data": "https://example.com/a//b"\n'
+                "  }\n"
+                "}\n",
+                encoding="utf-8",
+            )
+
+            args = parse_stock_runner_args(["--config", str(config_path)])
+
+            self.assertEqual(args.market_data, "https://example.com/a//b")
 
     def test_cli_strategy_override_preserves_common_seed_coverage(self):
         repo_root = Path(__file__).resolve().parents[1]
@@ -385,7 +458,6 @@ class StockMaskComparisonTest(unittest.TestCase):
                 'mask_strategies = ["random", "local_long"]\n'
                 "use_sentiment = false\n"
                 "[analysis]\n"
-                'strategies = ["random", "local_long"]\n'
                 'models = ["TS-JEPA"]\n'
             )
 
@@ -395,6 +467,10 @@ class StockMaskComparisonTest(unittest.TestCase):
             self.assertEqual(resolve_seeds(runner_args), [3, 5])
             self.assertFalse(runner_args.use_sentiment)
             self.assertEqual(analysis_args.models, ["TS-JEPA"])
+            self.assertEqual(
+                analysis_args.strategies,
+                runner_args.mask_strategies,
+            )
             self.assertEqual(
                 Path(runner_args.results_dir),
                 Path(tmp) / "results" / "experiment",
@@ -407,6 +483,212 @@ class StockMaskComparisonTest(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "mask_stratey"):
                 parse_stock_runner_args(["--config", str(config_path)])
+
+    def test_removed_feature_cols_runner_option_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "legacy.json"
+            config_path.write_text(
+                '{"runner": {"feature_cols": ["Close", "Volume"]}}'
+            )
+
+            with self.assertRaisesRegex(ValueError, "feature_cols"):
+                parse_stock_runner_args(["--config", str(config_path)])
+
+    def test_analysis_strategies_cannot_duplicate_runner_strategies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "duplicate.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "runner": {"mask_strategies": ["random"]},
+                        "analysis": {"strategies": ["random"]},
+                    }
+                )
+            )
+
+            with self.assertRaisesRegex(ValueError, "derived from"):
+                parse_analysis_args(["--config", str(config_path)])
+
+    def test_nested_runner_rejects_conditional_conflicts(self):
+        def custom_preprocessing(*, normalization=None, sentiment=None, forecast=None):
+            return {
+                "preset": None,
+                "custom": {
+                    "feature_transform": "raw",
+                    "normalization": normalization or {"method": "window_return"},
+                    "features": {
+                        "market": ["Close", "Volume"],
+                        "sentiment": sentiment
+                        or {"enabled": True, "columns": ["sentiment_mean"]},
+                    },
+                    "forecast": forecast
+                    or {
+                        "target": "value",
+                        "market_data": {
+                            "enabled": False,
+                            "name": "NASDAQ100",
+                        },
+                    },
+                },
+            }
+
+        cases = (
+            (
+                {"execution": {}, "verbose": False},
+                "cannot be mixed",
+            ),
+            (
+                {"masking": {"strategies": {"future_block": {}}}},
+                "Missing required options",
+            ),
+            (
+                {
+                    "masking": {
+                        "strategies": {
+                            "random": {
+                                "enabled": False,
+                            }
+                        }
+                    }
+                },
+                "At least one masking strategy",
+            ),
+            (
+                {"preprocessing": {"preset": "P2", "custom": {}}},
+                "mutually exclusive",
+            ),
+            (
+                {
+                    "preprocessing": custom_preprocessing(
+                        forecast={
+                            "target": "excess_log_return",
+                            "market_data": {
+                                "enabled": False,
+                                "name": "NASDAQ100",
+                            },
+                        }
+                    )
+                },
+                "must be enabled",
+            ),
+            (
+                {
+                    "preprocessing": custom_preprocessing(
+                        forecast={
+                            "target": "value",
+                            "market_data": {
+                                "enabled": True,
+                                "name": "NASDAQ100",
+                            },
+                        }
+                    )
+                },
+                "can only be enabled",
+            ),
+            (
+                {
+                    "checkpoint": {
+                        "selection": {"mode": "best", "epoch": 2000},
+                        "encoder_weights": "ema",
+                    }
+                },
+                "epoch is not allowed",
+            ),
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "invalid.json"
+            for runner, message in cases:
+                with self.subTest(message=message):
+                    config_path.write_text(json.dumps({"runner": runner}))
+                    with self.assertRaisesRegex(ValueError, message):
+                        parse_stock_runner_args(["--config", str(config_path)])
+
+    def test_parent_flags_keep_but_do_not_apply_inactive_children(self):
+        config_path = (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "experiments"
+            / "template_experiment.jsonc"
+        )
+        _, config_data = read_config_file(config_path)
+        runner = config_data["runner"]
+        flattened = flatten_runner_options(runner, config_path)
+
+        self.assertIn("start_date", runner["download"])
+        self.assertNotIn("download_start_date", flattened)
+        self.assertIn("future_block", runner["masking"]["strategies"])
+        self.assertNotIn("future_target_patches", flattened)
+        normalization = runner["preprocessing"]["custom"]["normalization"]
+        self.assertIn("robust_zscore", normalization)
+        self.assertNotIn("robust_zscore_clip", flattened)
+        forecast = runner["preprocessing"]["custom"]["forecast"]
+        self.assertIn("market_data", forecast)
+        self.assertFalse(forecast["market_data"]["enabled"])
+        self.assertNotIn("market_data", flattened)
+
+        enabled_runner = json.loads(json.dumps(runner))
+        enabled_runner["download"]["skip"] = False
+        enabled_runner["masking"]["strategies"]["future_block"]["enabled"] = True
+        enabled_custom = enabled_runner["preprocessing"]["custom"]
+        enabled_custom["normalization"]["method"] = "train_robust_zscore"
+        enabled_custom["forecast"]["target"] = "excess_log_return"
+        enabled_custom["forecast"]["market_data"]["enabled"] = True
+        enabled = flatten_runner_options(enabled_runner, config_path)
+
+        self.assertEqual(enabled["download_start_date"], "2015-01-01")
+        self.assertEqual(enabled["future_target_patches"], 4)
+        self.assertEqual(enabled["robust_zscore_clip"], 5.0)
+        self.assertEqual(enabled["market_data"], "NASDAQ100")
+
+    def test_nested_and_flat_equivalents_share_experiment_identity(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        nested_path = (
+            repo_root / "config" / "experiments" / "top10_with_sentiment.json"
+        )
+        _, nested_data = read_config_file(nested_path)
+        nested_args = parse_stock_runner_args(["--config", str(nested_path)])
+
+        with tempfile.TemporaryDirectory() as tmp:
+            flat_path = Path(tmp) / "legacy.json"
+            flat_path.write_text(
+                json.dumps(
+                    {
+                        "common": nested_data["common"],
+                        "runner": flatten_runner_options(
+                            nested_data["runner"], nested_path
+                        ),
+                    }
+                )
+            )
+            flat_args = parse_stock_runner_args(["--config", str(flat_path)])
+
+        self.assertEqual(
+            experiment_config_signature(nested_args),
+            experiment_config_signature(flat_args),
+        )
+
+        inactive_changes = vars(nested_args).copy()
+        inactive_changes.update(
+            {
+                "download_start_date": "1900-01-01",
+                "download_end_date": "1900-01-02",
+                "future_target_patches": 99,
+                "causal_num_blocks": 99,
+                "robust_zscore_clip": 99.0,
+            }
+        )
+        self.assertEqual(
+            experiment_config_signature(nested_args),
+            experiment_config_signature(inactive_changes),
+        )
+
+        active_change = vars(nested_args).copy()
+        active_change["mae_window_patches"] += 1
+        self.assertNotEqual(
+            experiment_config_signature(nested_args),
+            experiment_config_signature(active_change),
+        )
 
     def test_stocks_and_seeds_cannot_be_overridden_outside_common(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -759,6 +1041,21 @@ class StockMaskComparisonTest(unittest.TestCase):
             self.assertTrue(validate_existing_experiment(coverage_only))
             with self.assertRaisesRegex(RuntimeError, "incompatible"):
                 validate_existing_experiment(changed)
+
+    def test_legacy_null_feature_cols_manifest_remains_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            args = self._incremental_args(
+                Path(tmp) / "results" / "experiment",
+                ["NVDA"],
+                [42],
+            )
+            manifest = build_experiment_manifest(args, ["NVDA"], [42], ["random"])
+            manifest["effective_config"]["feature_cols"] = None
+            manifest_path = Path(args.results_dir) / "experiment_manifest.json"
+            manifest_path.parent.mkdir(parents=True)
+            manifest_path.write_text(json.dumps(manifest))
+
+            self.assertTrue(validate_existing_experiment(args))
 
     def test_existing_pretraining_is_reused_when_downstream_is_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
