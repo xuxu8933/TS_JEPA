@@ -17,8 +17,9 @@ import numpy as np
 import torch
 
 from config.config_downstream import config as downstream_config
-from pretrain_dual_loss import build_decoder
+from config.experiment import KNOWN_SENTIMENT_FEATURES
 from src.data_loaders.data_loader_mnist_rows import get_mnist_row_loader
+from src.models.decoder import build_reconstruction_decoder
 from src.models.encoder import Encoder
 from src.models.predictor import Predictor
 from src.models.utils.mask_utils import apply_mask
@@ -274,12 +275,45 @@ def parse_args(default_mask_strategy=None, argv=None):
         "--forecast_target",
         "--forecast-target",
         dest="forecast_target",
-        choices=("value", "relative_return"),
+        choices=(
+            "value",
+            "relative_return",
+            "cumulative_log_return",
+            "excess_log_return",
+        ),
         default=downstream_config.get("forecast_target", "value"),
         help=(
             "Predict normalized values or the cumulative relative-return path "
             "P[t+h] / P[t] - 1."
         ),
+    )
+    parser.add_argument(
+        "--feature-transform",
+        choices=("raw", "return"),
+        default=downstream_config.get("feature_transform", "raw"),
+    )
+    parser.add_argument("--market-features", nargs="+", default=None)
+    parser.add_argument("--sentiment-features", nargs="+", default=None)
+    sentiment_group = parser.add_mutually_exclusive_group()
+    sentiment_group.add_argument(
+        "--use-sentiment",
+        dest="use_sentiment",
+        action="store_true",
+    )
+    sentiment_group.add_argument(
+        "--no-sentiment",
+        dest="use_sentiment",
+        action="store_false",
+    )
+    parser.set_defaults(use_sentiment=None)
+    parser.add_argument(
+        "--market-data",
+        default=downstream_config.get("market_data", None),
+    )
+    parser.add_argument(
+        "--robust-zscore-clip",
+        type=float,
+        default=downstream_config.get("robust_zscore_clip", None),
     )
     parser.add_argument(
         "--data_end_date",
@@ -501,6 +535,53 @@ def build_eval_argv(args, passthrough_args):
     def checkpoint_value(key, fallback):
         return pretrain_config.get(key, fallback)
 
+    checkpoint_features = list(
+        checkpoint_value(
+            "feature_cols",
+            downstream_config["feature_cols"],
+        )
+    )
+    configured_sentiment = list(
+        checkpoint_value(
+            "sentiment_features",
+            args.sentiment_features or downstream_config["sentiment_features"],
+        )
+    )
+    inferred_checkpoint_sentiment = any(
+        feature in set(KNOWN_SENTIMENT_FEATURES) | set(configured_sentiment)
+        for feature in checkpoint_features
+    )
+    checkpoint_uses_sentiment = bool(
+        checkpoint_value("use_sentiment", inferred_checkpoint_sentiment)
+    )
+    if (
+        pretrain_config
+        and args.use_sentiment is not None
+        and bool(args.use_sentiment) != checkpoint_uses_sentiment
+    ):
+        raise ValueError(
+            "The requested sentiment setting does not match the pretrained "
+            "checkpoint: "
+            f"requested={bool(args.use_sentiment)}, "
+            f"checkpoint={checkpoint_uses_sentiment}. Use a checkpoint trained "
+            "with the same effective features."
+        )
+    resolved_use_sentiment = (
+        checkpoint_uses_sentiment
+        if pretrain_config
+        else (
+            bool(downstream_config["use_sentiment"])
+            if args.use_sentiment is None
+            else bool(args.use_sentiment)
+        )
+    )
+    resolved_market_features = list(
+        checkpoint_value(
+            "market_features",
+            args.market_features or downstream_config["market_features"],
+        )
+    )
+
     eval_argv = [
         "eval_forecast_prequential_with_baselines_gru_volume.py",
         "--data",
@@ -513,6 +594,14 @@ def build_eval_argv(args, passthrough_args):
         args.pretrain_encoder_weights,
         "--forecast-target",
         args.forecast_target,
+        "--feature-transform",
+        str(checkpoint_value("feature_transform", args.feature_transform)),
+        "--market-features",
+        *[str(feature) for feature in resolved_market_features],
+        "--sentiment-features",
+        *[str(feature) for feature in configured_sentiment],
+        "--market-data",
+        str(checkpoint_value("market_data", args.market_data) or "none"),
         "--sampling-mode",
         str(checkpoint_value("sampling_mode", args.sampling_mode)),
         "--data_end_date",
@@ -540,6 +629,12 @@ def build_eval_argv(args, passthrough_args):
         "--pretrain_decoder_num_layers",
         str(checkpoint_value("predictor_num_layers", args.pretrain_decoder_num_layers)),
     ]
+    eval_argv.append(
+        "--use-sentiment" if resolved_use_sentiment else "--no-sentiment"
+    )
+    robust_clip = checkpoint_value("robust_zscore_clip", args.robust_zscore_clip)
+    if robust_clip is not None:
+        eval_argv.extend(["--robust-zscore-clip", str(robust_clip)])
 
     if pretrain_config:
         eval_argv.extend(
@@ -548,6 +643,8 @@ def build_eval_argv(args, passthrough_args):
                 str(checkpoint_value("patch_size", 5)),
                 "--target_feature_index",
                 str(checkpoint_value("target_feature_index", 0)),
+                "--target-col",
+                str(checkpoint_value("target_col", "Close")),
                 "--normalization",
                 str(checkpoint_value("normalization", "window_return")),
                 "--normalization_stats_json",
@@ -555,10 +652,7 @@ def build_eval_argv(args, passthrough_args):
                 "--feature_cols",
                 *[
                     str(column)
-                    for column in checkpoint_value(
-                        "feature_cols",
-                        downstream_config.get("feature_cols", ["Close", "Volume"]),
-                    )
+                    for column in checkpoint_features
                 ],
                 "--timestamp_col",
                 str(checkpoint_value("timestamp_col", "Date")),
@@ -622,7 +716,14 @@ def evaluate_mnist_rows(args, checkpoint_path):
         nhead=config["predictor_nhead"],
         num_layers=config["predictor_num_layers"],
     )
-    decoder = build_decoder(config, patch_dim=28)
+    decoder = build_reconstruction_decoder(
+        decoder_type=config["decoder_type"],
+        embedding_dim=config["encoder_embed_dim"],
+        output_dim=28,
+        hidden_dim=config["decoder_hidden_dim"],
+        num_layers=config["decoder_num_layers"],
+        dropout=config["decoder_dropout"],
+    )
 
     encoder_key = (
         "encoder_ema" if args.pretrain_encoder_weights == "ema" else "encoder"

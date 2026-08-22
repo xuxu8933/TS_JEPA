@@ -1,9 +1,4 @@
-"""
-    Utils script
-    ---
-        - Function to init Encoder/decoder
-        - Function to init the loader
-"""
+"""Shared CLI, reproducibility, initialization, and metric utilities."""
 
 import torch
 import argparse
@@ -13,13 +8,25 @@ import math
 import random
 import numpy as np
 
+from config.experiment import (
+    none_if_requested,
+    resolve_feature_selection,
+    validate_data_config,
+)
 
-def _none_if_requested(value):
-    if value is None:
-        return None
-    if isinstance(value, str) and value.lower() in ("", "none", "null"):
-        return None
-    return value
+
+def set_seed(seed, deterministic=None):
+    """Seed every random source used by the training pipelines."""
+    seed = int(seed)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    if deterministic is not None:
+        torch.backends.cudnn.benchmark = not deterministic
+        torch.backends.cudnn.deterministic = deterministic
+        torch.use_deterministic_algorithms(deterministic, warn_only=True)
 
 
 def prepare_args(config):
@@ -77,7 +84,19 @@ def prepare_args(config):
         "--patch-size",
         dest="patch_size",
         type=int,
-        default=config.get("patch_size", 5),
+        default=config["patch_size"],
+    )
+    parser.add_argument(
+        "--context-size",
+        type=int,
+        default=config["context_size"],
+        help="Number of historical patches used for downstream forecasting.",
+    )
+    parser.add_argument(
+        "--eval-stride",
+        type=int,
+        default=config["eval_stride"],
+        help="Chronological stride between downstream evaluation samples.",
     )
     parser.add_argument(
         "--target_feature_index",
@@ -90,7 +109,12 @@ def prepare_args(config):
         "--forecast_target",
         "--forecast-target",
         dest="forecast_target",
-        choices=("value", "relative_return"),
+        choices=(
+            "value",
+            "relative_return",
+            "cumulative_log_return",
+            "excess_log_return",
+        ),
         default=config.get("forecast_target", "value"),
         help=(
             "Predict normalized target values or the future cumulative simple-return "
@@ -99,8 +123,29 @@ def prepare_args(config):
     )
     parser.add_argument(
         "--normalization",
-        choices=("window_return", "train_zscore", "none"),
+        choices=("window_return", "train_zscore", "train_robust_zscore", "none"),
         default=config.get("normalization", "window_return"),
+    )
+    parser.add_argument(
+        "--feature_transform",
+        "--feature-transform",
+        dest="feature_transform",
+        choices=("raw", "return"),
+        default=config.get("feature_transform", "raw"),
+    )
+    parser.add_argument(
+        "--market_data",
+        "--market-data",
+        dest="market_data",
+        default=config.get("market_data", None),
+        help="Optional market ticker or CSV path used for aligned market returns.",
+    )
+    parser.add_argument(
+        "--robust_zscore_clip",
+        "--robust-zscore-clip",
+        dest="robust_zscore_clip",
+        type=float,
+        default=config.get("robust_zscore_clip", None),
     )
     parser.add_argument(
         "--sampling_mode",
@@ -121,19 +166,51 @@ def prepare_args(config):
         "--feature-cols",
         dest="feature_cols",
         nargs="+",
-        default=config.get("feature_cols", ["Close", "Volume"]),
+        default=None,
+        help="Compatibility override for the final effective feature list.",
     )
+    parser.add_argument(
+        "--market-features",
+        nargs="+",
+        default=None,
+        help="Market feature names used to construct the historical input.",
+    )
+    parser.add_argument(
+        "--sentiment-features",
+        nargs="+",
+        default=None,
+        help="Sentiment/news feature names enabled by --use-sentiment.",
+    )
+    sentiment_group = parser.add_mutually_exclusive_group()
+    sentiment_group.add_argument(
+        "--use-sentiment",
+        dest="use_sentiment",
+        action="store_true",
+        help="Include configured sentiment/news features.",
+    )
+    sentiment_group.add_argument(
+        "--no-sentiment",
+        dest="use_sentiment",
+        action="store_false",
+        help="Use market features only; no sentiment file is read.",
+    )
+    parser.set_defaults(use_sentiment=None)
     parser.add_argument(
         "--timestamp_col",
         "--timestamp-col",
         dest="timestamp_col",
-        default=config.get("timestamp_col", "Date"),
+        default=config["timestamp_col"],
     )
     parser.add_argument(
         "--sentiment_path",
         "--sentiment-path",
         dest="sentiment_path",
         default=config.get("sentiment_path", None),
+    )
+    parser.add_argument(
+        "--target-col",
+        default=config["target_col"],
+        help="Raw target column used to construct downstream labels.",
     )
     parser.add_argument(
         "--train_end_date",
@@ -234,11 +311,7 @@ def prepare_args(config):
 
     args = parser.parse_args()
     seed = int(args.seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
+    set_seed(seed)
 
     config["model"] = args.name_model.lower()
     config["data"] = args.data
@@ -260,22 +333,37 @@ def prepare_args(config):
     config["ratio_supervision"] = args.ratio_supervision
     config["pooling"] = args.pooling
     config["patch_size"] = args.patch_size
+    config["context_size"] = args.context_size
+    config["eval_stride"] = args.eval_stride
     config["target_feature_index"] = args.target_feature_index
+    config["target_col"] = args.target_col
     config["forecast_target"] = args.forecast_target
     config["normalization"] = args.normalization
+    config["feature_transform"] = args.feature_transform
+    config["market_data"] = none_if_requested(args.market_data)
+    config["robust_zscore_clip"] = args.robust_zscore_clip
     config["sampling_mode"] = args.sampling_mode
     config["normalization_stats"] = (
         json.loads(args.normalization_stats_json)
         if args.normalization_stats_json is not None
         else config.get("normalization_stats")
     )
-    config["feature_cols"] = args.feature_cols
+    config.update(
+        resolve_feature_selection(
+            config,
+            feature_cols=args.feature_cols,
+            market_features=args.market_features,
+            sentiment_features=args.sentiment_features,
+            use_sentiment=args.use_sentiment,
+        )
+    )
     config["timestamp_col"] = args.timestamp_col
-    config["sentiment_path"] = _none_if_requested(args.sentiment_path)
-    config["train_end_date"] = _none_if_requested(args.train_end_date)
-    config["test_start_date"] = _none_if_requested(args.test_start_date)
-    config["data_end_date"] = _none_if_requested(args.data_end_date)
+    config["sentiment_path"] = none_if_requested(args.sentiment_path)
+    config["train_end_date"] = none_if_requested(args.train_end_date)
+    config["test_start_date"] = none_if_requested(args.test_start_date)
+    config["data_end_date"] = none_if_requested(args.data_end_date)
     config["validation_fraction"] = args.validation_fraction
+    validate_data_config(config, stage="downstream")
 
     config["pretrain_transformer_dense_dim"] = args.transformer_dense_dim
 
@@ -311,170 +399,6 @@ def prepare_args(config):
     config["path_save"] = "./logs/output_model/" + args.data
 
     return config
-
-
-def prepare_args_pretrain(config):
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data", type=str, default=config["data"])
-
-    parser.add_argument("--mask_ratio", type=float, default=config["mask_ratio"])
-    parser.add_argument("--batch_size", type=int, default=config["batch_size"])
-    parser.add_argument("--lr", type=float, default=config["lr"])
-    parser.add_argument("--num_epochs", type=int, default=config["num_epochs"])
-    parser.add_argument("--ema_momentum", type=float, default=config["ema_momentum"])
-    parser.add_argument("--ratio_patches", type=int, default=config["ratio_patches"])
-    parser.add_argument("--notes", type=str, default="")
-    parser.add_argument("--seed", type=int, default=config.get("seed", 42))
-    parser.add_argument(
-        "--skip-pretrain",
-        dest="skip_pretrain",
-        action="store_true",
-        help="Skip TS-JEPA pretraining and run only the optional downstream stage.",
-    )
-    parser.add_argument(
-        "--run-eval",
-        dest="run_eval",
-        action="store_true",
-        help="After pretraining, run downstream TS-JEPA evaluation with GRU baseline training.",
-    )
-    parser.add_argument(
-        "--eval-checkpoint-to-use",
-        type=int,
-        default=None,
-        help="Checkpoint epoch for downstream evaluation. Defaults to the last saved pretrain checkpoint.",
-    )
-    parser.add_argument(
-        "--eval-num-epochs",
-        type=int,
-        default=None,
-        help="Override downstream decoder/GRU training epochs when --run-eval is used.",
-    )
-
-    # data / pretraining protocol
-    parser.add_argument(
-        "--series_split_size",
-        type=int,
-        default=config.get("series_split_size", 120),
-        help="Length of each time-series window used for TS-JEPA pretraining.",
-    )
-
-    parser.add_argument(
-        "--patch_size",
-        type=int,
-        default=config.get("patch_size", 5),
-        help="Number of time steps per patch.",
-    )
-
-    parser.add_argument(
-        "--pretrain_stride",
-        "--pretrain-stride",
-        dest="pretrain_stride",
-        type=int,
-        default=config.get("pretrain_stride", config.get("patch_size", 5)),
-        help="Sliding-window stride used for pretraining.",
-    )
-    parser.add_argument(
-        "--normalization",
-        choices=("window_return", "train_zscore", "none"),
-        default=config.get("normalization", "window_return"),
-    )
-
-    # Encoder
-    parser.add_argument(
-        "--encoder_embed_dim", type=int, default=config["encoder_embed_dim"]
-    )
-    parser.add_argument("--encoder_nhead", type=int, default=config["encoder_nhead"])
-    parser.add_argument(
-        "--encoder_num_layers", type=int, default=config["encoder_num_layers"]
-    )
-    parser.add_argument(
-        "--encoder_kernel_size", type=int, default=config["encoder_kernel_size"]
-    )
-
-    # predictor
-    parser.add_argument(
-        "--predictor_embed", type=int, default=config["predictor_embed"]
-    )
-    parser.add_argument(
-        "--predictor_nhead", type=int, default=config["predictor_nhead"]
-    )
-    parser.add_argument(
-        "--predictor_num_layers", type=int, default=config["predictor_num_layers"]
-    )
-
-    args = parser.parse_args()
-
-    seed = args.seed
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-
-    config["mask_ratio"] = args.mask_ratio
-    config["lr"] = args.lr
-    config["num_epochs"] = args.num_epochs
-    config["batch_size"] = args.batch_size
-    config["ema_momentum"] = args.ema_momentum
-    config["ratio_patches"] = args.ratio_patches
-    config["data"] = args.data
-    config["skip_pretrain"] = args.skip_pretrain
-    config["run_eval"] = args.run_eval
-    config["eval_checkpoint_to_use"] = args.eval_checkpoint_to_use
-    config["eval_num_epochs"] = args.eval_num_epochs
-
-    # data / pretraining protocol
-    config["series_split_size"] = args.series_split_size
-    config["patch_size"] = args.patch_size
-    config["pretrain_stride"] = args.pretrain_stride
-    config["normalization"] = args.normalization
-
-    config["seed"] = seed
-
-    config["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
-
-    config["notes"] = args.notes
-
-    config["wandb_project_name"] = args.data + "_pretrain"
-
-    # Encoder
-    config["encoder_embed_dim"] = args.encoder_embed_dim
-    config["encoder_nhead"] = args.encoder_nhead
-    config["encoder_num_layers"] = args.encoder_num_layers
-    config["encoder_kernel_size"] = args.encoder_kernel_size
-
-    # predictor
-    config["predictor_embed"] = args.predictor_embed
-    config["predictor_nhead"] = args.predictor_nhead
-    config["predictor_num_layers"] = args.predictor_num_layers
-
-    config["path_save"] = (
-        "./logs/output_model/"
-        + args.data
-        + "/lr_"
-        + str(config["lr"])
-        + "_ema_momentum_"
-        + str(config["ema_momentum"])
-        + "_mask_ratio_"
-        + str(config["mask_ratio"])
-        + "_ratio_patches_"
-        + str(config["ratio_patches"])
-        + "_encoder_"
-        + str(config["encoder_embed_dim"])
-        + "_"
-        + str(config["encoder_nhead"])
-        + "_"
-        + str(config["encoder_num_layers"])
-        + "_predictor_"
-        + str(config["predictor_embed"])
-        + "_"
-        + str(config["predictor_nhead"])
-        + "_"
-        + str(config["predictor_num_layers"])
-    )
-
-    return config
-
-
-# Init stuff
 
 
 def _no_grad_trunc_normal_(tensor, mean, std, a, b):
@@ -521,21 +445,6 @@ def init_weights(m):
     elif isinstance(m, torch.nn.LayerNorm):
         torch.nn.init.constant_(m.bias, 0)
         torch.nn.init.constant_(m.weight, 1.0)
-
-
-def grad_logger(model):
-    count_non_grad = 0
-    count_grad = 0
-    grad_norm = 0
-
-    for n, p in model.named_parameters():
-        if (p.grad is not None) and not (n.endswith(".bias")):
-            grad_norm += float(torch.norm(p.grad.data))
-            count_grad += 1
-        if p.grad is None and not (n.endswith(".bias")):
-            count_non_grad += 1
-
-    return grad_norm / count_grad, count_grad, count_non_grad
 
 
 def _reduce(metric, reduction="mean", axis=None):

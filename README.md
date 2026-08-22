@@ -92,6 +92,7 @@ Normalization is selected explicitly:
 | --- | --- |
 | `window_return` | Divides every window by its first observable row and subtracts one. This is the default and does not fit global statistics. |
 | `train_zscore` | Fits mean and standard deviation on the chronological train split only, stores them in the checkpoint, and reuses them for validation/test. |
+| `train_robust_zscore` | Fits per-feature median and MAD on the chronological train split only; an optional `--robust-zscore-clip C` clips the transformed values to `[-C, C]`. |
 | `none` | Uses the loaded feature values without additional normalization. |
 
 Example:
@@ -100,9 +101,104 @@ Example:
 --pretrain-stride 5 --normalization train_zscore
 ```
 
+## Leakage-safe financial preprocessing
+
+`--feature-transform raw` preserves the historical input format. The explicit
+`--feature-transform return` mode constructs this deterministic feature order
+before any split or sample window is made:
+
+```text
+log_return_1       = log(Close[t] / Close[t-1])
+log_return_5       = log(Close[t] / Close[t-5])
+close_ma10_gap     = Close[t] / MA10[t] - 1
+close_ma50_gap     = Close[t] / MA50[t] - 1
+ma10_ma50_gap      = MA10[t] / MA50[t] - 1
+log_volume_change  = log1p(Volume[t]) - log1p(Volume[t-1])
+rolling_vol_10     = trailing 10-observation std(log_return_1)
+rolling_vol_20     = trailing 20-observation std(log_return_1)
+sentiment_mean     = optional daily sentiment mean
+news_count         = optional daily article count
+```
+
+The moving averages and volatility windows are trailing, never centered.
+Features are computed over the complete chronological series, after which rows
+without the required history are removed with an explicit warm-up report.
+Sentiment is optional: omit its names from `--feature-cols` for price-only
+experiments.
+
+Robust scaling is fitted independently for every feature:
+
+```text
+median_j = median(x_train,j)
+MAD_j    = median(abs(x_train,j - median_j))
+scale_j  = 1.4826 * MAD_j
+z_j      = (x_j - median_j) / scale_j
+```
+
+A zero or near-zero `scale_j` safely falls back to `1.0`. Validation and test
+statistics are never used for normalization. The exact processing order is:
+
+```text
+raw chronological rows
+-> causal features and optional date-intersection with market data
+-> warm-up filtering
+-> chronological train/validation/test split
+-> fit normalizer on train only
+-> transform train/validation/test with the stored train state
+-> construct 60-observation windows
+-> form 5-observation patches
+```
+
+For `--forecast-target cumulative_log_return`, a forecast made at the last
+observable close `Close[t]` has horizons `h=1,...,H`:
+
+```text
+y[t,h] = log(Close[t+h] / Close[t])
+```
+
+The default five-point output therefore represents cumulative 1-, 2-, 3-, 4-,
+and 5-day log returns. Direction accuracy at every horizon compares
+`prediction > 0` with `target > 0`. `--market-data NASDAQ100` adds aligned
+`market_log_return_1` and `market_log_return_5` features using the deterministic
+intersection of stock and market trading dates. The explicit
+`--forecast-target excess_log_return` subtracts the corresponding cumulative
+market log return; it is never enabled implicitly.
+
+The stock runner exposes the four fixed preprocessing ablations while leaving
+the JEPA/MAE architecture, masks, baselines, and evaluation protocol unchanged:
+
+```bash
+# P0: raw + train Z-score + cumulative stock log return
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --stocks NVDA --max-stocks 1 --skip-download --preprocessing-preset P0
+
+# P1: return features + train Z-score + cumulative stock log return
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --stocks NVDA --max-stocks 1 --skip-download --preprocessing-preset P1
+
+# P2 (recommended financial representation): robust return features
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --stocks NVDA --max-stocks 1 --skip-download --preprocessing-preset P2
+
+# P3: robust return features + NASDAQ100 inputs + excess log-return target
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --stocks NVDA --max-stocks 1 --skip-download --preprocessing-preset P3
+```
+
+Each evaluation writes `preprocessing_config.json`, and checkpoints retain the
+feature order, transform, normalizer state, target definition, and market
+setting. Choose preprocessing with training/validation evidence only; final
+test performance must not be used to select P0-P3.
+
 The dataset must contain enough rows after the first 49 moving-average rows and the validation/test split to create at least one `series_split_size` window.
 
 ### Optional sentiment features
+
+The complete configuration hierarchy and parameter table are documented in
+[doc/configuration.md](doc/configuration.md). Use `--use-sentiment` (the
+repository default) or `--no-sentiment` to run the same pipeline with only the
+feature selection changed. The market-only mode never reads or requires a
+sentiment file.
 
 Sentiment columns can already exist in the price CSV, or they can be loaded from a daily sentiment file such as:
 
@@ -226,7 +322,7 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --stocks NVDA \
   --max-stocks 1 \
   --skip-download \
-  --mask-strategy future_block \
+  --mask-strategies future_block \
   --future-target-patches 4 \
   --lambda-jepa 1.0 \
   --lambda-mae 0.5 \
@@ -246,29 +342,87 @@ dates. Select configurations using validation metrics; use the held-out test
 split only for the final report, and always compare against `naive_last`,
 `drift`, and GRU.
 
-### Top-10 random versus local-long comparison
+### Multi-strategy stock comparison
 
-Run both masking strategies on all 10 configured NASDAQ-100 stocks with 10
-reproducible seeds per strategy:
+Complete reusable option files are provided for the controlled sentiment
+comparison:
 
 ```bash
-conda run --no-capture-output -n ts-jepa python \
-  run_top10_nasdaq_mask_comparison.py
+# Market features plus sentiment
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --config config/experiments/top10_with_sentiment.json
+
+# Identical stock/seed/masking setup without sentiment
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --config config/experiments/top10_without_sentiment.json
 ```
 
-The script uses seeds 42 through 51 and existing stock CSV files by default.
-Pass `--download` to refresh the data first. It writes all individual metrics,
-per-stock mean/sample-standard-deviation metrics, per-seed means across the 10
-stocks, and overall mean/sample-standard-deviation metrics across the 10 seeded
-runs under:
+The same file is passed to the standalone analyzer after training:
+
+```bash
+conda run --no-capture-output -n ts-jepa python analyze_stock_results.py \
+  --config config/experiments/top10_with_sentiment.json
+```
+
+Each JSON or TOML file may contain `common`, `runner`, and `analysis` objects.
+Both scripts read `common`; the stock runner reads `runner`, and the analyzer
+reads `analysis`. Option names use Python/JSON underscores, such as
+`mask_strategies` and `use_sentiment`. Explicit command-line options override
+file values, so a safe command inspection is:
+
+```bash
+python run_top_nasdaq100_stocks.py \
+  --config config/experiments/top10_with_sentiment.json \
+  --dry-run
+```
+
+The stock runner uses one `--mask-strategies` option for both single- and
+multi-strategy runs. It always stores each method under its own strategy
+directory, preventing result files from different masking methods from being
+aggregated together.
+
+Run random and local-long masking on the configured top 10 stocks with the same
+10 reproducible seeds and sentiment enabled:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --stocks NVDA AAPL MSFT AMZN GOOGL AVGO META TSLA GOOG WMT \
+  --max-stocks 0 \
+  --mask-strategies random local_long \
+  --series-split-size 120 \
+  --patch-size 5 \
+  --seeds 42 43 44 45 46 47 48 49 50 51 \
+  --use-sentiment \
+  --skip-download \
+  --results-dir results/top10_nasdaq100_mask_comparison
+```
+
+After training, the equivalent explicit command for extracting the comparison
+without rerunning either model is:
+
+```bash
+conda run --no-capture-output -n ts-jepa python analyze_stock_results.py \
+  --results-dir results/top10_nasdaq100_mask_comparison
+```
+
+The runner writes `experiment_manifest.json`, so the analyzer can recover the
+strategies, stocks, and seeds automatically. It creates:
 
 ```text
-results/top10_nasdaq100_mask_comparison/
+raw_runs.csv
+per_stock_summary.csv
+per_seed_summary.csv
+overall_summary.csv
+paired_strategy_differences.csv
+missing_or_failed_runs.csv
+strategy_comparison.png
 ```
 
-Use `--dry-run` to inspect all 200 stock/strategy/seed experiment commands
-without training. Use `--aggregate-only` to rebuild the summary CSV files from
-completed runs.
+By default, missing runs or expected models are recorded in
+`missing_or_failed_runs.csv` and partial summary statistics are refused. Use
+`--allow-incomplete` only for explicitly exploratory analysis.
+In `paired_strategy_differences.csv`, each delta is `strategy_b - strategy_a`;
+MSE and MAE are lower-is-better, while trend accuracy is higher-is-better.
 
 ## Unified pretraining
 
@@ -623,9 +777,10 @@ the last checkpoint saved in the current run, or use
 1. Download or append price and news-sentiment data for all selected tickers.
 2. Pretrain each ticker with `pretrain_dual_loss.py`.
 3. Evaluate each checkpoint with `eval_dual_loss.py` and the GRU baseline.
-4. Save each ticker's metrics, CSV files, and images under `results/TICKER/seed_N/`.
+4. Save each ticker's metrics, CSV files, and images under `results/TICKER/seed_N/` for a legacy singular run or `results/STRATEGY/TICKER/seed_N/` for a plural run.
 5. Generate a combined metrics CSV and image after all evaluations finish; multi-seed plots show mean with standard-deviation error bars.
 6. Record every generated command in `results/top_nasdaq100_stock_runs.txt`.
+7. Save the resolved experiment scope and comparison-relevant settings in `results/experiment_manifest.json`.
 
 Commands are executed sequentially. The workflow stops immediately if a download, pretraining, or evaluation command fails.
 
@@ -651,6 +806,13 @@ Here `2` is the actual number of selected stocks after applying `--max-stocks`. 
 
 For repeated-seed experiments, the layout becomes `results/NVDA/seed_7/`, `results/NVDA/seed_17/`, and so on. The combined CSV contains mean, standard deviation, and `num_runs` for every stock/model pair.
 
+With `--mask-strategies random local_long`, both strategy trees are created
+below the result root. Each strategy gets its own combined plot, while
+`analyze_stock_results.py` produces the cross-strategy summaries at the root.
+The supplied comparison configs use `series_split_size=120` and `patch_size=5`,
+giving 24 patches. This is required because the local-long defaults need at
+least `jepa_gap_patches + jepa_target_patches = 8` patches.
+
 ### Inspect commands safely
 
 Start with a dry run. This prints commands without executing them and still writes the run summary:
@@ -660,7 +822,7 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --stocks NVDA MSFT \
   --max-stocks 2 \
   --skip-download \
-  --mask-strategy random \
+  --mask-strategies random \
   --pretrain-num-epochs 3 \
   --checkpoint-to-use 2 \
   --eval-num-epochs 4 \
@@ -677,12 +839,12 @@ This downloads/appends data, trains three stocks, and evaluates epoch 2000:
 conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --stocks NVDA MSFT AMD \
   --max-stocks 3 \
-  --start-date 2015-01-01 \
-  --end-date 2025-12-31 \
+  --download-start-date 2015-01-01 \
+  --download-end-date 2025-12-31 \
   --write-mode append \
   --news-chunk-days 7 \
   --request-delay 0.5 \
-  --mask-strategy random \
+  --mask-strategies random \
   --lambda-jepa 1.0 \
   --lambda-mae 0.5 \
   --jepa-loss mse \
@@ -706,7 +868,7 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --stocks NVDA MSFT AMD \
   --max-stocks 3 \
   --skip-download \
-  --mask-strategy future_block \
+  --mask-strategies future_block \
   --future-target-patches 4 \
   --seeds 7 17 42 73 101 \
   --pretrain-stride 5 \
@@ -724,7 +886,9 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --stocks NVDA MSFT \
   --max-stocks 2 \
   --skip-download \
-  --mask-strategy local_long \
+  --mask-strategies local_long \
+  --series-split-size 120 \
+  --patch-size 5 \
   --mae-window-patches 1 \
   --jepa-gap-patches 4 \
   --jepa-target-patches 4 \
@@ -746,7 +910,7 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --stocks NVDA MSFT \
   --max-stocks 2 \
   --skip-download \
-  --mask-strategy random \
+  --mask-strategies random \
   --lambda-jepa 1 \
   --lambda-mae 0 \
   --jepa-loss l1 \
@@ -764,7 +928,7 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --max-stocks 2 \
   --skip-download \
   --skip-pretrain \
-  --mask-strategy random \
+  --mask-strategies random \
   --lambda-jepa 1.0 \
   --lambda-mae 0.5 \
   --checkpoint-to-use 2000 \
@@ -781,16 +945,22 @@ The strategy, loss weights, local-window settings, and checkpoint epoch must mat
 | `--max-stocks N` | Uses only the first `N` selected tickers. The default is `5`; use `0` for all. |
 | `--skip-download` | Skips both price and news ingestion. Existing local CSVs are required. |
 | `--skip-news` | Downloads prices but skips news scoring and ensures zero-valued sentiment columns exist. |
-| `--start-date`, `--end-date` | Download range in `YYYY-MM-DD` format. |
+| `--download-start-date`, `--download-end-date` | Raw price/news download range in `YYYY-MM-DD` format. |
 | `--write-mode append` | Adds to existing history; this is the default. |
 | `--max-news-articles N` | Limits the news articles processed per symbol. |
 | `--news-chunk-days N` | Size of each news request window. |
 | `--request-delay SECONDS` | Delay between news requests. |
 | `--seed N` | Reproducible single-seed run; default `42`. |
 | `--seeds N ...` | Runs every stock for every listed seed and aggregates mean/std; overrides `--seed`. |
+| `--mask-strategies NAME ...` | Runs one or more strategies in isolated strategy subdirectories; default `random`. |
+| `--series-split-size N` | Rows per pretraining window; must be divisible by `--patch-size`. |
+| `--patch-size N` | Rows per temporal patch; local/long geometry is validated against the resulting patch count. |
 | `--pretrain-stride N` | Sliding-window stride used during pretraining; runner default `5`. |
 | `--sampling-mode MODE` | Uses overlapping `sliding_window` samples or non-overlapping `temporal_segments`. |
-| `--normalization MODE` | `window_return`, `train_zscore`, or `none`. |
+| `--normalization MODE` | `window_return`, `train_zscore`, `train_robust_zscore`, or `none`. |
+| `--feature-transform raw|return` | Selects legacy raw inputs or the causal return representation. |
+| `--preprocessing-preset P0|P1|P2|P3` | Applies a fixed preprocessing ablation in the stock runners. |
+| `--market-data NAME` | Optionally aligns market returns, for example `NASDAQ100`. |
 | `--encoder-weights ema|online` | Chooses downstream checkpoint encoder; default `ema`. |
 | `--use-best-checkpoint` | Evaluates each run's deterministic `..._best.pt` instead of `--checkpoint-to-use`. |
 | `--results-dir PATH` | Changes the output root; per-stock subdirectories and combined files are created below it. |
@@ -912,6 +1082,7 @@ tests/                          Smoke and regression tests
 pretrain_dual_loss.py           Unified pretraining entrypoint
 eval_dual_loss.py               Unified evaluation wrapper
 run_top_nasdaq100_stocks.py     Multi-stock download, pretrain, and evaluation workflow
+analyze_stock_results.py        Saved-run validation and strategy comparison analysis
 ```
 
 ## Citation

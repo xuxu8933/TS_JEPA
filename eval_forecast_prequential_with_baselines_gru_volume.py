@@ -14,9 +14,9 @@ from config.config_downstream import config
 import torch
 import warnings
 import numpy as np
-import random
 import matplotlib.pyplot as plt
 import os
+import json
 from datetime import datetime
 import imageio.v2 as imageio
 
@@ -25,7 +25,7 @@ from main.utils import mse, mae
 
 from src.data_loaders.data_loader_roll_volume import get_evaluation_loaders
 from src.models.encoder import Encoder
-from src.models.decoder import LinearDecoder, MLPDecoder, ResidualMLPDecoder
+from src.models.decoder import build_reconstruction_decoder
 
 import torch.nn as nn
 
@@ -77,6 +77,17 @@ warnings.filterwarnings("ignore")
 
 def data_title(config):
     return str(config.get("data", "unknown")).upper()
+
+
+def forecast_axis_label(config):
+    target = config.get("forecast_target", "value")
+    if target == "cumulative_log_return":
+        return "Cumulative log return from forecast origin"
+    if target == "excess_log_return":
+        return "Cumulative excess log return from forecast origin"
+    if target == "relative_return":
+        return "Relative return from forecast cutoff"
+    return "Normalized target value"
 
 
 # =========================================================
@@ -356,11 +367,7 @@ def visualize_all_rolling_predictions_as_series(
 
     plt.legend()
     plt.xlabel("Time index in test rolling prediction")
-    plt.ylabel(
-        "Relative return from forecast cutoff"
-        if config.get("forecast_target") == "relative_return"
-        else "Normalized target value"
-    )
+    plt.ylabel(forecast_axis_label(config))
 
     if gru_preds is not None:
         plt.title(
@@ -427,18 +434,75 @@ def context_target_levels(context_patches, config):
 
     if normalization == "window_return":
         return context + 1.0
-    if normalization == "train_zscore":
+    if normalization in ("train_zscore", "train_robust_zscore"):
         stats = config.get("normalization_stats")
         if not stats:
             raise ValueError(
-                "relative_return baselines with train_zscore require "
+                "return baselines with fitted normalization require "
                 "normalization_stats"
             )
         target_idx = int(config.get("target_feature_index", 0))
-        return context * float(stats["std"][target_idx]) + float(
-            stats["mean"][target_idx]
+        if normalization == "train_zscore":
+            return context * float(stats["std"][target_idx]) + float(
+                stats["mean"][target_idx]
+            )
+        return context * float(stats["scale"][target_idx]) + float(
+            stats["median"][target_idx]
         )
     return context
+
+
+def context_feature_values(context_patches, config, feature_name):
+    """Extract and invert one named feature from a flattened context tensor."""
+    feature_cols = list(config.get("feature_cols", []))
+    if feature_name not in feature_cols:
+        raise ValueError(
+            f"Feature {feature_name!r} is required by the baseline; "
+            f"available={feature_cols}"
+        )
+    feature_config = dict(config)
+    feature_config["target_feature_index"] = feature_cols.index(feature_name)
+    values = extract_context_target_series(context_patches, feature_config)
+    normalization = config.get("normalization", "none")
+    index = feature_cols.index(feature_name)
+    stats = config.get("normalization_stats")
+    if normalization == "train_zscore":
+        return values * float(stats["std"][index]) + float(stats["mean"][index])
+    if normalization == "train_robust_zscore":
+        return values * float(stats["scale"][index]) + float(stats["median"][index])
+    if normalization == "window_return":
+        raise ValueError(
+            "window_return cannot be inverted for already-return-based features"
+        )
+    return values
+
+
+def context_one_day_log_returns(context_patches, config):
+    """Recover historical one-day stock or excess log returns for baselines."""
+    if config.get("feature_transform", "raw") == "return":
+        stock_returns = context_feature_values(
+            context_patches, config, "log_return_1"
+        )
+        if config.get("forecast_target") == "excess_log_return":
+            market_returns = context_feature_values(
+                context_patches, config, "market_log_return_1"
+            )
+            return stock_returns - market_returns
+        return stock_returns
+
+    levels = context_target_levels(context_patches, config)
+    if len(levels) < 2 or np.any(levels <= 0):
+        return np.empty(0, dtype=np.float64)
+    return np.diff(np.log(levels))
+
+
+def historical_cumulative_log_return_path(context_patches, config):
+    """Historical log-return path anchored at zero at the forecast origin."""
+    returns = context_one_day_log_returns(context_patches, config)
+    if len(returns) == 0:
+        return np.zeros(1, dtype=np.float64)
+    log_level = np.concatenate([[0.0], np.cumsum(returns)])
+    return log_level - log_level[-1]
 
 
 def _safe_numpy_base(value, eps=1e-8):
@@ -482,6 +546,27 @@ def make_baseline_prediction(
     if config is None:
         config = globals().get("config", {})
     forecast_target = config.get("forecast_target", "value")
+
+    if forecast_target in ("cumulative_log_return", "excess_log_return"):
+        # h=1..H definitions:
+        # naive_last:       0 for every h (no-change return forecast)
+        # previous_patch:   cumulative sum of replayed recent 1-day returns
+        # mean_context:     h times the mean historical 1-day return
+        # drift:            endpoint log drift accumulated for h days
+        one_day_returns = context_one_day_log_returns(context_patches, config)
+        if baseline_name == "naive_last" or len(one_day_returns) == 0:
+            pred = np.zeros(horizon, dtype=np.float64)
+        elif baseline_name == "previous_patch":
+            replay = np.resize(one_day_returns[-horizon:], horizon)
+            pred = np.cumsum(replay)
+        elif baseline_name == "mean_context":
+            pred = np.arange(1, horizon + 1) * one_day_returns.mean()
+        elif baseline_name == "drift":
+            drift = one_day_returns.sum() / len(one_day_returns)
+            pred = np.arange(1, horizon + 1) * drift
+        else:
+            raise ValueError(f"Unknown baseline_name: {baseline_name}")
+        return pred.astype(np.float32)
 
     if forecast_target == "relative_return":
         levels = context_target_levels(context_patches, config)
@@ -709,6 +794,13 @@ def visualize_all_rolling_windows(
             context_np = (
                 context_levels / _safe_numpy_base(context_levels[-1]) - 1.0
             )
+        elif config.get("forecast_target") in (
+            "cumulative_log_return",
+            "excess_log_return",
+        ):
+            context_np = historical_cumulative_log_return_path(
+                context_patches, config
+            )
         else:
             context_np = extract_context_target_series(context_patches, config)
         target_np = target_patch.detach().cpu().numpy().reshape(-1)
@@ -788,11 +880,7 @@ def visualize_all_rolling_windows(
 
         plt.legend()
         plt.xlabel("Time index inside rolling window")
-        plt.ylabel(
-            "Relative return from forecast cutoff"
-            if config.get("forecast_target") == "relative_return"
-            else "Normalized target value"
-        )
+        plt.ylabel(forecast_axis_label(config))
         plt.title(
             f"{data_title(config)} - Rolling Forecast Window #{sample_idx} "
             f"with Baselines"
@@ -866,6 +954,11 @@ def visualize_one_rolling_window(
     if config.get("forecast_target") == "relative_return":
         context_levels = context_target_levels(context_patches, config)
         context_np = context_levels / _safe_numpy_base(context_levels[-1]) - 1.0
+    elif config.get("forecast_target") in (
+        "cumulative_log_return",
+        "excess_log_return",
+    ):
+        context_np = historical_cumulative_log_return_path(context_patches, config)
     else:
         context_np = extract_context_target_series(context_patches, config)
     target_np = target_patch.cpu().numpy()
@@ -888,11 +981,7 @@ def visualize_one_rolling_window(
 
     plt.legend()
     plt.xlabel("Time index inside rolling window")
-    plt.ylabel(
-        "Relative return from forecast cutoff"
-        if config.get("forecast_target") == "relative_return"
-        else "Normalized target value"
-    )
+    plt.ylabel(forecast_axis_label(config))
     plt.title(f"{data_title(config)} - Rolling Forecast Window #{sample_idx}")
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -907,15 +996,6 @@ def visualize_one_rolling_window(
 
     print(f"Rolling window figure saved to {save_path}")
 
-def set_seed(seed=42):
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
 def get_context_embedding(encoded_patches, eval_type):
     if eval_type == "last":
         return encoded_patches[:, -1, :]
@@ -923,38 +1003,6 @@ def get_context_embedding(encoded_patches, eval_type):
         return encoded_patches.mean(dim=1)
     else:
         raise ValueError(f"Unknown eval_type: {eval_type}")
-
-
-def build_decoder(config, patch_size):
-    decoder_type = config.get("decoder_type", "linear")
-
-    if decoder_type == "linear":
-        return LinearDecoder(
-            emb_dim=config["pretrain_encoder_embed_dim"],
-            patch_size=patch_size,
-        )
-
-    if decoder_type == "mlp":
-        return MLPDecoder(
-            emb_dim=config["pretrain_encoder_embed_dim"],
-            patch_size=patch_size,
-            hidden_dim=int(config.get("decoder_hidden_dim", 256)),
-            num_layers=int(config.get("decoder_num_layers", 2)),
-            dropout=float(config.get("decoder_dropout", 0.1)),
-        )
-
-    if decoder_type == "residual_mlp":
-        return ResidualMLPDecoder(
-            emb_dim=config["pretrain_encoder_embed_dim"],
-            patch_size=patch_size,
-            hidden_dim=int(config.get("decoder_hidden_dim", 128)),
-            dropout=float(config.get("decoder_dropout", 0.1)),
-        )
-
-    raise ValueError(
-        f"Unknown decoder_type={decoder_type!r}. "
-        "Use 'linear', 'mlp', or 'residual_mlp'."
-    )
 
 
 def load_pretrained_encoder_state(encoder, state_dict):
@@ -1128,6 +1176,8 @@ def prequential_baseline_evaluate(
                 all_preds=baseline_preds,
                 all_targets=baseline_targets,
                 include_origin=config.get("forecast_target") == "relative_return",
+                direct_return=config.get("forecast_target")
+                in ("cumulative_log_return", "excess_log_return"),
             ),
         })
 
@@ -1248,6 +1298,10 @@ def save_model_comparison(
         f"Data source: {data_title(config)}",
         f"Evaluation type: {config['eval_type']}",
         f"Forecast target: {config.get('forecast_target', 'value')}",
+        f"Feature transform: {config.get('feature_transform', 'raw')}",
+        f"Features: {','.join(config.get('feature_cols', []))}",
+        f"Normalization: {config.get('normalization', 'none')}",
+        f"Market data: {config.get('market_data') or 'disabled'}",
         f"Generated at: {timestamp}",
         "",
         "Model Comparison",
@@ -1588,7 +1642,12 @@ def evaluate_model(
     return mean_mse, mean_mae, all_preds, all_targets
 
 
-def compute_trend_accuracy(all_preds, all_targets, include_origin=False):
+def compute_trend_accuracy(
+    all_preds,
+    all_targets,
+    include_origin=False,
+    direct_return=False,
+):
     """
     Trend accuracy based on within-patch direction.
 
@@ -1601,6 +1660,9 @@ def compute_trend_accuracy(all_preds, all_targets, include_origin=False):
     cutoff-relative return path, include_origin=True also scores the first move
     from the known zero-return origin.
     """
+    if direct_return:
+        return float(((all_preds > 0) == (all_targets > 0)).mean())
+
     if include_origin:
         # A relative-return path is anchored at zero at the forecast cutoff.
         # Include cutoff -> horizon 1 so the first predicted move is scored.
@@ -1625,6 +1687,7 @@ def directional_auxiliary_loss(
     temperature=0.01,
     threshold=0.0,
     include_origin=False,
+    direct_return=False,
 ):
     """
     Differentiable direction loss for within-patch trend.
@@ -1633,6 +1696,14 @@ def directional_auxiliary_loss(
     the true consecutive differences. Near-zero true moves can be ignored with
     threshold to avoid training hard on noise.
     """
+    if direct_return:
+        valid_mask = target_patch.abs() > threshold
+        if not valid_mask.any():
+            return predicted_patch.new_tensor(0.0)
+        true_sign = torch.sign(target_patch[valid_mask])
+        pred_scaled = predicted_patch[valid_mask] / max(float(temperature), 1e-8)
+        return torch.nn.functional.softplus(-true_sign * pred_scaled).mean()
+
     if include_origin:
         origin = torch.zeros_like(predicted_patch[:, :1])
         predicted_patch = torch.cat([origin, predicted_patch], dim=1)
@@ -1655,8 +1726,6 @@ def directional_auxiliary_loss(
 
 
 if __name__ == "__main__":
-    set_seed(42)
-
     # =========================
     # Config
     # =========================
@@ -1680,9 +1749,10 @@ if __name__ == "__main__":
     # Important parameters
     # =========================
     # These should match your pretraining patch setting.
-    patch_size = int(config.get("patch_size", 5))
-    feature_cols = config.get("feature_cols", ["Close", "Volume"])
-    timestamp_col = config.get("timestamp_col", "Date")
+    patch_size = int(config["patch_size"])
+    feature_cols = list(config["feature_cols"])
+    use_sentiment = bool(config["use_sentiment"])
+    timestamp_col = config["timestamp_col"]
     sentiment_path = config.get("sentiment_path", None)
     train_end_date = config.get("train_end_date", None)
     test_start_date = config.get("test_start_date", None)
@@ -1692,31 +1762,39 @@ if __name__ == "__main__":
     forecast_target = config.get("forecast_target", "value")
     sampling_mode = config.get("sampling_mode", "sliding_window")
     normalization_stats = config.get("normalization_stats", None)
-    feature_dim = len(feature_cols)
-    target_feature_index = int(config.get("target_feature_index", 0))  # Close index in feature_cols
-    if not 0 <= target_feature_index < feature_dim:
-        raise ValueError(
-            f"target_feature_index={target_feature_index} is outside feature_cols={feature_cols}"
-        )
-    target_col = feature_cols[target_feature_index]
+    feature_transform = config.get("feature_transform", "raw")
+    market_data = config.get("market_data", None)
+    robust_zscore_clip = config.get("robust_zscore_clip", None)
+    target_feature_index = int(config.get("target_feature_index", 0))
+    target_col = config["target_col"]
+    if forecast_target == "value" and target_col not in feature_cols:
+        if not 0 <= target_feature_index < len(feature_cols):
+            raise ValueError(
+                f"target_feature_index={target_feature_index} is outside "
+                f"feature_cols={feature_cols}"
+            )
+        target_col = feature_cols[target_feature_index]
 
     config["patch_size"] = patch_size
     config["feature_cols"] = feature_cols
-    config["feature_dim"] = feature_dim
     config["target_feature_index"] = target_feature_index
     config["forecast_target"] = forecast_target
 
     print("feature_cols =", feature_cols)
+    print("use_sentiment =", use_sentiment)
     print("timestamp_col =", timestamp_col)
     print("sentiment_path =", sentiment_path)
     print("train_end_date =", train_end_date)
     print("test_start_date =", test_start_date)
     print("data_end_date =", data_end_date)
     print("validation_fraction =", validation_fraction)
-    print("feature_dim =", feature_dim)
     print("target_feature_index =", target_feature_index)
+    print("target_col =", target_col)
     print("forecast_target =", forecast_target)
+    print("feature_transform =", feature_transform)
     print("normalization =", normalization)
+    print("robust_zscore_clip =", robust_zscore_clip)
+    print("market_data =", market_data)
     print("sampling_mode =", sampling_mode)
     print("trend_weight =", config.get("trend_weight", 0.0))
     print("trend_loss_temperature =", config.get("trend_loss_temperature", 0.01))
@@ -1728,11 +1806,11 @@ if __name__ == "__main__":
     # Number of context patches for downstream forecasting.
     # For example:
     # context_size=10 means 10 patches * 5 days = 50 days context.
-    context_size = config.get("context_size", 12)
+    context_size = config["context_size"]
 
     # For rolling evaluation, stride=1 gives day-by-day rolling.
     # If you want patch-by-patch rolling, use stride=patch_size.
-    eval_stride = config.get("eval_stride", 5)
+    eval_stride = config["eval_stride"]
 
     # =========================
     # Data loaders
@@ -1741,8 +1819,6 @@ if __name__ == "__main__":
     train_loader = get_evaluation_loaders(
         config["path_data"],
         config["batch_size"],
-        config["ratio_patches"],
-        config["mask_ratio"],
         split="train",
         patch_size=patch_size,
         context_size=context_size,
@@ -1750,6 +1826,9 @@ if __name__ == "__main__":
         sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
+        feature_transform=feature_transform,
+        market_data=market_data,
+        robust_zscore_clip=robust_zscore_clip,
         feature_cols=feature_cols,
         target_col=target_col,
         forecast_target=forecast_target,
@@ -1761,11 +1840,71 @@ if __name__ == "__main__":
         data_end_date=data_end_date,
     )
 
+    # Resolve the deterministic transformed order once and reuse the training
+    # normalizer state for validation/test without refitting.
+    feature_cols = list(train_loader.dataset.feature_cols)
+    feature_dim = len(feature_cols)
+    normalization_stats = train_loader.dataset.normalization_stats
+    config["feature_cols"] = feature_cols
+    config["feature_names"] = list(feature_cols)
+    config["feature_dim"] = feature_dim
+    config["normalization_stats"] = normalization_stats
+    config["warmup_report"] = train_loader.dataset.warmup_report
+    config["market_alignment_report"] = train_loader.dataset.market_alignment_report
+    if not 0 <= target_feature_index < feature_dim:
+        raise ValueError(
+            f"target_feature_index={target_feature_index} is outside resolved "
+            f"feature_cols={feature_cols}"
+        )
+
+    print("\n=== Financial preprocessing summary ===")
+    print("Feature transform:", feature_transform)
+    print("Features:")
+    for feature_name in feature_cols:
+        print(" ", feature_name)
+    print("Normalization:", normalization)
+    print("Normalization fit split: train only")
+    print("Forecast target:", forecast_target)
+    print(f"Forecast horizons: 1..{patch_size}")
+    print(f"Window length: {context_size * patch_size}")
+    print("Patch size:", patch_size)
+    print("Market data:", market_data or "disabled")
+    print("Warm-up rows:", config["warmup_report"])
+    preprocessing_metadata = {
+        "feature_transform": feature_transform,
+        "use_sentiment": use_sentiment,
+        "market_features": list(config["market_features"]),
+        "sentiment_features": list(config["sentiment_features"]),
+        "feature_names": feature_cols,
+        "normalization": normalization,
+        "normalization_fit_split": "train",
+        "normalization_stats": normalization_stats,
+        "robust_zscore_clip": robust_zscore_clip,
+        "forecast_target": forecast_target,
+        "target_definition": (
+            "log(Close[t+h] / Close[t]) - log(Market[t+h] / Market[t])"
+            if forecast_target == "excess_log_return"
+            else (
+                "log(Close[t+h] / Close[t])"
+                if forecast_target == "cumulative_log_return"
+                else forecast_target
+            )
+        ),
+        "forecast_horizons": list(range(1, patch_size + 1)),
+        "market_data": market_data,
+        "warmup_report": config["warmup_report"],
+        "market_alignment_report": config["market_alignment_report"],
+        "window_length": context_size * patch_size,
+        "patch_size": patch_size,
+    }
+    metadata_path = os.path.join(results_dir, "preprocessing_config.json")
+    with open(metadata_path, "w") as metadata_file:
+        json.dump(preprocessing_metadata, metadata_file, indent=2, sort_keys=True)
+    print("Preprocessing metadata saved to:", metadata_path)
+
     val_loader = get_evaluation_loaders(
         config["path_data"],
         config["batch_size"],
-        config["ratio_patches"],
-        config["mask_ratio"],
         split="val",
         patch_size=patch_size,
         context_size=context_size,
@@ -1773,6 +1912,9 @@ if __name__ == "__main__":
         sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
+        feature_transform=feature_transform,
+        market_data=market_data,
+        robust_zscore_clip=robust_zscore_clip,
         feature_cols=feature_cols,
         target_col=target_col,
         forecast_target=forecast_target,
@@ -1787,8 +1929,6 @@ if __name__ == "__main__":
     test_loader = get_evaluation_loaders(
         config["path_data"],
         config["batch_size"],
-        config["ratio_patches"],
-        config["mask_ratio"],
         split="test",
         patch_size=patch_size,
         context_size=context_size,
@@ -1796,6 +1936,9 @@ if __name__ == "__main__":
         sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
+        feature_transform=feature_transform,
+        market_data=market_data,
+        robust_zscore_clip=robust_zscore_clip,
         feature_cols=feature_cols,
         target_col=target_col,
         forecast_target=forecast_target,
@@ -1833,7 +1976,14 @@ if __name__ == "__main__":
         jepa=True,
     )
 
-    decoder = build_decoder(config, patch_size)
+    decoder = build_reconstruction_decoder(
+        decoder_type=config["decoder_type"],
+        embedding_dim=config["pretrain_encoder_embed_dim"],
+        output_dim=patch_size,
+        hidden_dim=config["decoder_hidden_dim"],
+        num_layers=config["decoder_num_layers"],
+        dropout=config["decoder_dropout"],
+    )
 
     print("decoder_type =", config.get("decoder_type", "linear"))
     if config.get("decoder_type", "linear") in ("mlp", "residual_mlp"):
@@ -1885,6 +2035,22 @@ if __name__ == "__main__":
         checkpoint_path,
         device,
     )
+    checkpoint_config = checkpoint.get("config", {})
+    checkpoint_features = checkpoint_config.get(
+        "feature_names", checkpoint_config.get("feature_cols")
+    )
+    if checkpoint_features is not None and list(checkpoint_features) != feature_cols:
+        raise ValueError(
+            "Checkpoint feature order/dimension does not match evaluation data: "
+            f"checkpoint={list(checkpoint_features)}, evaluation={feature_cols}. "
+            "Use the preprocessing settings stored in the checkpoint."
+        )
+    checkpoint_transform = checkpoint_config.get("feature_transform")
+    if checkpoint_transform is not None and checkpoint_transform != feature_transform:
+        raise ValueError(
+            "Checkpoint feature_transform does not match evaluation: "
+            f"checkpoint={checkpoint_transform!r}, evaluation={feature_transform!r}"
+        )
 
     encoder_key = (
         "encoder_ema"
@@ -1994,6 +2160,8 @@ if __name__ == "__main__":
                 temperature=trend_loss_temperature,
                 threshold=trend_loss_threshold,
                 include_origin=forecast_target == "relative_return",
+                direct_return=forecast_target
+                in ("cumulative_log_return", "excess_log_return"),
             )
 
             loss = mse_loss + trend_weight * trend_loss
@@ -2027,6 +2195,8 @@ if __name__ == "__main__":
             all_preds=val_preds,
             all_targets=val_targets,
             include_origin=forecast_target == "relative_return",
+            direct_return=forecast_target
+            in ("cumulative_log_return", "excess_log_return"),
         )
         val_score = val_mse + trend_selection_weight * (1.0 - val_trend_acc)
 
@@ -2181,6 +2351,8 @@ if __name__ == "__main__":
         all_preds=all_preds,
         all_targets=all_targets,
         include_origin=forecast_target == "relative_return",
+        direct_return=forecast_target
+        in ("cumulative_log_return", "excess_log_return"),
     )
 
     print(f"========== Final Test ({data_title(config)}) ==========")
@@ -2202,6 +2374,8 @@ if __name__ == "__main__":
         all_preds=gru_preds,
         all_targets=gru_targets,
         include_origin=forecast_target == "relative_return",
+        direct_return=forecast_target
+        in ("cumulative_log_return", "excess_log_return"),
     )
 
     print(f"========== GRU Final Test ({data_title(config)}) ==========")
@@ -2305,11 +2479,7 @@ if __name__ == "__main__":
 
     plt.legend()
     plt.xlabel("Rolling evaluation step")
-    plt.ylabel(
-        "Relative return from forecast cutoff"
-        if forecast_target == "relative_return"
-        else "Normalized target value"
-    )
+    plt.ylabel(forecast_axis_label(config))
     plt.title(
         f"{data_title(config)} - Rolling Forecast: "
         "Last Point of Each Predicted Patch"

@@ -82,3 +82,36 @@ class ResidualMLPDecoder(nn.Module):
 
     def forward(self, encoded_patch):
         return self.linear_head(encoded_patch) + self.residual_head(encoded_patch)
+
+
+def build_reconstruction_decoder(
+    *,
+    decoder_type,
+    embedding_dim,
+    output_dim,
+    hidden_dim,
+    num_layers,
+    dropout,
+):
+    """Build the MAE/downstream decoder from an explicit narrow interface."""
+    if decoder_type == "linear":
+        return LinearDecoder(emb_dim=embedding_dim, patch_size=output_dim)
+    if decoder_type == "mlp":
+        return MLPDecoder(
+            emb_dim=embedding_dim,
+            patch_size=output_dim,
+            hidden_dim=hidden_dim,
+            num_layers=num_layers,
+            dropout=dropout,
+        )
+    if decoder_type == "residual_mlp":
+        return ResidualMLPDecoder(
+            emb_dim=embedding_dim,
+            patch_size=output_dim,
+            hidden_dim=hidden_dim,
+            dropout=dropout,
+        )
+    raise ValueError(
+        f"Unknown decoder_type={decoder_type!r}. "
+        "Use 'linear', 'mlp', or 'residual_mlp'."
+    )

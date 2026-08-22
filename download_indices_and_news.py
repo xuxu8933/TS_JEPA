@@ -115,8 +115,8 @@ def collect_symbol_news(data_name, news_symbol, gdelt_query, args):
             api_key_id=args.alpaca_key_id,
             secret_key=args.alpaca_secret_key,
             ticker=news_symbol,
-            start_date=args.start_date,
-            end_date=args.end_date,
+            start_date=args.download_start_date,
+            end_date=args.download_end_date,
             chunk_days=args.news_chunk_days,
             limit=args.alpaca_limit,
             include_content=args.alpaca_include_content,
@@ -129,8 +129,8 @@ def collect_symbol_news(data_name, news_symbol, gdelt_query, args):
     if args.news_source == "gdelt":
         return collect_gdelt_news(
             ticker=news_symbol,
-            start_date=args.start_date,
-            end_date=args.end_date,
+            start_date=args.download_start_date,
+            end_date=args.download_end_date,
             chunk_days=args.news_chunk_days,
             query=gdelt_query,
             max_records=args.gdelt_max_records,
@@ -220,8 +220,8 @@ def parse_args():
         action="store_true",
         help="Download the current top 10 NASDAQ-100/QQQ holdings used by this project.",
     )
-    parser.add_argument("--start-date", default="2015-01-01")
-    parser.add_argument("--end-date", default=date.today().isoformat())
+    parser.add_argument("--download-start-date", default="2015-01-01")
+    parser.add_argument("--download-end-date", default=date.today().isoformat())
     parser.add_argument(
         "--news-source",
         choices=["alpaca", "gdelt"],
@@ -276,7 +276,7 @@ def main():
         print(
             f"Preparing {index_name}: prices={cfg['price_symbol']}, "
             f"news proxy={cfg['news_symbol']}, "
-            f"date_range={args.start_date}..{args.end_date}",
+            f"date_range={args.download_start_date}..{args.download_end_date}",
             flush=True,
         )
 
@@ -291,8 +291,8 @@ def main():
             price_path = download_index_prices(
                 index_name=index_name,
                 cfg=cfg,
-                start_date=args.start_date,
-                end_date=args.end_date,
+                start_date=args.download_start_date,
+                end_date=args.download_end_date,
             )
 
         if args.skip_news:
@@ -307,7 +307,7 @@ def main():
         print("=" * 80, flush=True)
         print(
             f"Preparing stock {symbol}: prices={symbol}, news={symbol}, "
-            f"date_range={args.start_date}..{args.end_date}",
+            f"date_range={args.download_start_date}..{args.download_end_date}",
             flush=True,
         )
 
@@ -322,8 +322,8 @@ def main():
             price_path = download_symbol_prices(
                 data_name=symbol,
                 price_symbol=symbol,
-                start_date=args.start_date,
-                end_date=args.end_date,
+                start_date=args.download_start_date,
+                end_date=args.download_end_date,
             )
 
         if args.skip_news:

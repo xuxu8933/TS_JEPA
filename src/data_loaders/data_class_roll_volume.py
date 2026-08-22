@@ -4,6 +4,11 @@ import torch
 import random
 from torch.utils.data import Dataset
 
+from .financial_preprocessing import (
+    FEATURE_TRANSFORMS,
+    prepare_financial_frame,
+)
+
 
 DEFAULT_SENTIMENT_COLS = (
     "sentiment_mean",
@@ -14,9 +19,19 @@ DEFAULT_SENTIMENT_COLS = (
     "news_count",
 )
 
-NORMALIZATION_MODES = ("window_return", "train_zscore", "none")
+NORMALIZATION_MODES = (
+    "window_return",
+    "train_zscore",
+    "train_robust_zscore",
+    "none",
+)
 SAMPLING_MODES = ("sliding_window", "temporal_segments")
-FORECAST_TARGETS = ("value", "relative_return")
+FORECAST_TARGETS = (
+    "value",
+    "relative_return",
+    "cumulative_log_return",
+    "excess_log_return",
+)
 
 
 def cumulative_return_normalize_with_base(series, base, eps=1e-8, passthrough_indices=None):
@@ -93,12 +108,34 @@ def train_zscore_state(train_series, feature_cols, eps=1e-6):
     }
 
 
+def train_robust_zscore_state(train_series, feature_cols, eps=1e-6, clip=None):
+    """Fit median/MAD statistics on the chronological training split only."""
+    if len(train_series) == 0:
+        raise ValueError(
+            "Cannot fit train_robust_zscore normalization on an empty train split"
+        )
+    median = torch.quantile(train_series, 0.5, dim=0)
+    mad = torch.quantile(torch.abs(train_series - median), 0.5, dim=0)
+    raw_scale = 1.4826 * mad
+    scale = torch.where(raw_scale > eps, raw_scale, torch.ones_like(raw_scale))
+    return {
+        "mode": "train_robust_zscore",
+        "feature_cols": list(feature_cols),
+        "median": median.tolist(),
+        "mad": mad.tolist(),
+        "scale": scale.tolist(),
+        "clip": None if clip is None else float(clip),
+        "eps": float(eps),
+    }
+
+
 def normalization_tensors(state, feature_cols):
     if state is None:
         return None, None
-    if state.get("mode") != "train_zscore":
+    if state.get("mode") not in ("train_zscore", "train_robust_zscore"):
         raise ValueError(
-            "train_zscore requires normalization state with mode='train_zscore', "
+            "Fitted normalization requires train_zscore or train_robust_zscore "
+            "state, "
             f"got {state.get('mode')!r}"
         )
     if list(state.get("feature_cols", [])) != list(feature_cols):
@@ -106,15 +143,80 @@ def normalization_tensors(state, feature_cols):
             "Normalization feature order does not match loader feature order: "
             f"state={state.get('feature_cols')}, loader={list(feature_cols)}"
         )
-    mean = torch.tensor(state["mean"], dtype=torch.float32)
-    std = torch.tensor(state["std"], dtype=torch.float32)
-    return mean, std
+    if state["mode"] == "train_zscore":
+        center = torch.tensor(state["mean"], dtype=torch.float32)
+        scale = torch.tensor(state["std"], dtype=torch.float32)
+    else:
+        center = torch.tensor(state["median"], dtype=torch.float32)
+        scale = torch.tensor(state["scale"], dtype=torch.float32)
+    return center, scale
 
 
 def _as_list(x):
     if isinstance(x, str):
         return [x]
     return list(x)
+
+
+def _chronological_split_frames(
+    df,
+    timestamp_col="Date",
+    validation_fraction=0.05,
+    train_end_date=None,
+    test_start_date=None,
+    data_end_date=None,
+):
+    """Split an already-prepared frame without fitting or recomputing features."""
+    df = df.copy().sort_values(by=[timestamp_col]).reset_index(drop=True)
+    if data_end_date is not None:
+        df = df[df[timestamp_col] <= pd.Timestamp(data_end_date)].copy()
+        if df.empty:
+            raise ValueError(
+                f"No rows found on or before data_end_date={data_end_date!r}."
+            )
+    if test_start_date is None:
+        raise ValueError("test_start_date must be defined for chronological splitting.")
+    if not 0 <= float(validation_fraction) < 1:
+        raise ValueError("validation_fraction must be in [0, 1)")
+
+    train_end_ts = pd.Timestamp(train_end_date) if train_end_date is not None else None
+    test_start_ts = pd.Timestamp(test_start_date)
+    if train_end_ts is not None and train_end_ts >= test_start_ts:
+        raise ValueError(
+            "train_end_date must be earlier than test_start_date: "
+            f"train_end_date={train_end_date!r}, test_start_date={test_start_date!r}"
+        )
+    if train_end_ts is None:
+        train_val = df[df[timestamp_col] < test_start_ts].copy()
+    else:
+        train_val = df[df[timestamp_col] <= train_end_ts].copy()
+    test = df[df[timestamp_col] >= test_start_ts].copy()
+    if train_val.empty:
+        raise ValueError(
+            f"No train/validation rows found for train_end_date={train_end_date!r} "
+            f"and test_start_date={test_start_date!r}."
+        )
+    if test.empty:
+        raise ValueError(f"No test rows found for test_start_date={test_start_date!r}.")
+
+    val_len = int(len(train_val) * validation_fraction)
+    train_len = len(train_val) - val_len
+    if train_len <= 0:
+        raise ValueError(
+            f"Date split left no train rows. train_val_len={len(train_val)}, "
+            f"validation_fraction={validation_fraction}"
+        )
+    train = train_val.iloc[:train_len].copy()
+    val = train_val.iloc[train_len:].copy()
+    boundary = (
+        f"<= {train_end_date}" if train_end_date is not None else f"< {test_start_date}"
+    )
+    print(
+        "[chronological_split] date split: "
+        f"train_val {boundary}, test>= {test_start_date}, data<= {data_end_date}, "
+        f"train_len={len(train)}, val_len={len(val)}, test_len={len(test)}"
+    )
+    return train, val, test
 
 
 def chronological_split(
@@ -133,83 +235,22 @@ def chronological_split(
     period. Earlier rows (or rows through train_end_date, when provided) are
     split into train and validation periods using validation_fraction.
     """
-    df = df.copy()
-    df.sort_values(by=[timestamp_col], inplace=True)
-
-    if data_end_date is not None:
-        data_end_ts = pd.Timestamp(data_end_date)
-        df = df[df[timestamp_col] <= data_end_ts].copy()
-        if df.empty:
-            raise ValueError(
-                f"No rows found on or before data_end_date={data_end_date!r}."
-            )
-
     feature_cols = _as_list(feature_cols)
     missing = [c for c in feature_cols if c not in df.columns]
     if missing:
         raise ValueError(f"Missing columns in CSV: {missing}. Available columns: {list(df.columns)}")
-
-    if test_start_date is None:
-        raise ValueError("test_start_date must be defined for chronological splitting.")
-
-    train_end_ts = pd.Timestamp(train_end_date) if train_end_date is not None else None
-    test_start_ts = pd.Timestamp(test_start_date)
-    if train_end_ts is not None and train_end_ts >= test_start_ts:
-        raise ValueError(
-            "train_end_date must be earlier than test_start_date: "
-            f"train_end_date={train_end_date!r}, test_start_date={test_start_date!r}"
-        )
-
-    if train_end_ts is None:
-        train_val_df = df[df[timestamp_col] < test_start_ts].copy()
-    else:
-        train_val_df = df[df[timestamp_col] <= train_end_ts].copy()
-    test_df = df[df[timestamp_col] >= test_start_ts].copy()
-
-    if train_val_df.empty:
-        raise ValueError(
-            f"No train/validation rows found for train_end_date={train_end_date!r} "
-            f"and test_start_date={test_start_date!r}."
-        )
-    if test_df.empty:
-        raise ValueError(
-            f"No test rows found for test_start_date={test_start_date!r}."
-        )
-
-    train_val_values = torch.tensor(
-        train_val_df[feature_cols].values,
-        dtype=torch.float32,
+    train, val, test = _chronological_split_frames(
+        df,
+        timestamp_col=timestamp_col,
+        validation_fraction=validation_fraction,
+        train_end_date=train_end_date,
+        test_start_date=test_start_date,
+        data_end_date=data_end_date,
     )
-    test_values = torch.tensor(
-        test_df[feature_cols].values,
-        dtype=torch.float32,
+    return tuple(
+        torch.tensor(part[feature_cols].values, dtype=torch.float32)
+        for part in (train, val, test)
     )
-
-    val_len = int(len(train_val_values) * validation_fraction)
-    train_len = len(train_val_values) - val_len
-    if train_len <= 0:
-        raise ValueError(
-            f"Date split left no train rows. train_val_len={len(train_val_values)}, "
-            f"validation_fraction={validation_fraction}"
-        )
-
-    if val_len > 0:
-        train_df, val_df = torch.split(train_val_values, [train_len, val_len])
-    else:
-        train_df = train_val_values
-        val_df = train_val_values[:0]
-
-    train_val_boundary = (
-        f"<= {train_end_date}" if train_end_date is not None else f"< {test_start_date}"
-    )
-    print(
-        "[chronological_split] date split: "
-        f"train_val {train_val_boundary}, test>= {test_start_date}, "
-        f"data<= {data_end_date}, "
-        f"train_len={len(train_df)}, val_len={len(val_df)}, test_len={len(test_values)}"
-    )
-
-    return train_df, val_df, test_values
 
 
 def _infer_sentiment_path(path_data):
@@ -310,6 +351,9 @@ def load_price_series(
     train_end_date=None,
     test_start_date=None,
     data_end_date=None,
+    feature_transform="raw",
+    market_data=None,
+    return_metadata=False,
 ):
     """
     Load CSV and return chronological train / val / test tensors.
@@ -318,56 +362,70 @@ def load_price_series(
         ("Close", "Volume")
         ("Open", "High", "Low", "Close", "Volume")
     """
-    df = pd.read_csv(
-        path_data,
-        parse_dates=[timestamp_col],
-        low_memory=False,
-        sep=",",
-    )
     feature_cols = _as_list(feature_cols)
-
-    df = _merge_daily_sentiment(
-        df=df,
+    prepared = prepare_financial_frame(
         path_data=path_data,
-        timestamp_col=timestamp_col,
         feature_cols=feature_cols,
-        sentiment_path=sentiment_path,
         sentiment_cols=sentiment_cols,
+        merge_sentiment=lambda frame: _merge_daily_sentiment(
+            df=frame,
+            path_data=path_data,
+            timestamp_col=timestamp_col,
+            feature_cols=feature_cols,
+            sentiment_path=sentiment_path,
+            sentiment_cols=sentiment_cols,
+        ),
+        timestamp_col=timestamp_col,
+        feature_transform=feature_transform,
+        market_data=market_data,
+        data_end_date=data_end_date,
+        log_volume=log_volume,
     )
-
-    # Add moving average features
-    # df["MA5"] = df["Close"].rolling(window=5, min_periods=5).mean()
-    df["MA10"] = df["Close"].rolling(window=10, min_periods=10).mean()
-    df["MA50"] = df["Close"].rolling(window=50, min_periods=50).mean()
-
-    # Drop rows where MA is NaN
-    df = df.dropna().reset_index(drop=True)
-
-    # Downcast float columns
-    fcols = df.select_dtypes("float").columns
-    df[fcols] = df[fcols].apply(pd.to_numeric, downcast="float")
-
-    # Downcast integer columns
-    icols = df.select_dtypes("integer").columns
-    df[icols] = df[icols].apply(pd.to_numeric, downcast="integer")
-
-    # Volume is usually very large and heavy-tailed, so log1p is safer.
-    if log_volume and "Volume" in feature_cols:
-        df["Volume"] = torch.log1p(
-            torch.tensor(df["Volume"].values, dtype=torch.float32)
-        ).numpy()
-
-    train_df, val_df, test_df = chronological_split(
-        df=df,
-        feature_cols=feature_cols,
+    frame_splits = _chronological_split_frames(
+        prepared.frame,
         timestamp_col=timestamp_col,
         validation_fraction=validation_fraction,
         train_end_date=train_end_date,
         test_start_date=test_start_date,
         data_end_date=data_end_date,
     )
+    feature_splits = tuple(
+        torch.tensor(
+            split_frame[prepared.feature_cols].values,
+            dtype=torch.float32,
+        )
+        for split_frame in frame_splits
+    )
+    if not return_metadata:
+        return feature_splits
 
-    return train_df, val_df, test_df
+    close_splits = tuple(
+        torch.tensor(split_frame["Close"].values, dtype=torch.float32)
+        for split_frame in frame_splits
+    )
+    market_close_splits = (
+        tuple(
+            torch.tensor(split_frame["_market_close"].values, dtype=torch.float32)
+            for split_frame in frame_splits
+        )
+        if market_data is not None
+        else (None, None, None)
+    )
+    date_splits = tuple(
+        list(pd.to_datetime(split_frame[timestamp_col]))
+        for split_frame in frame_splits
+    )
+    return {
+        "features": feature_splits,
+        "close": close_splits,
+        "market_close": market_close_splits,
+        "dates": date_splits,
+        "feature_cols": list(prepared.feature_cols),
+        "feature_transform": feature_transform,
+        "warmup_report": dict(prepared.warmup_report),
+        "market_data": prepared.market_data,
+        "market_alignment_report": prepared.market_alignment_report,
+    }
 
 
 class CSVDataLoader(Dataset):
@@ -385,7 +443,6 @@ class CSVDataLoader(Dataset):
     def __init__(
         self,
         path_data,
-        batch_size=32,
         series_split_size=120,
         patch_size=5,
         mask_ratio=0.15,
@@ -402,11 +459,13 @@ class CSVDataLoader(Dataset):
         log_volume=True,
         sentiment_path=None,
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
+        feature_transform="raw",
+        market_data=None,
+        robust_zscore_clip=None,
         train_end_date=None,
         test_start_date=None,
         data_end_date=None,
     ):
-        self.batch_size = batch_size
         self.series_split_size = series_split_size
         self.patch_size = patch_size
         self.mask_ratio = mask_ratio
@@ -415,26 +474,50 @@ class CSVDataLoader(Dataset):
         self.normalize = self.normalization != "none"
         self.split = split
         self.mask_seed = mask_seed
-        self.feature_cols = _as_list(feature_cols)
-        self.feature_dim = len(self.feature_cols)
+        self.feature_transform = feature_transform
+        if feature_transform not in FEATURE_TRANSFORMS:
+            raise ValueError(
+                f"Unknown feature_transform={feature_transform!r}; "
+                f"expected one of {FEATURE_TRANSFORMS}"
+            )
+        self.market_data = market_data
+        if feature_transform == "return" and self.normalization == "window_return":
+            raise ValueError(
+                "window_return is not defined for already-return-based features; "
+                "use train_zscore, train_robust_zscore, or none"
+            )
+        self.robust_zscore_clip = robust_zscore_clip
+        requested_feature_cols = _as_list(feature_cols)
         self.passthrough_indices = [
             idx
-            for idx, col in enumerate(self.feature_cols)
+            for idx, col in enumerate(requested_feature_cols)
             if col in set(sentiment_cols)
         ]
 
-        self.train_df, self.val_df, self.test_df = load_price_series(
+        prepared = load_price_series(
             path_data=path_data,
-            feature_cols=self.feature_cols,
+            feature_cols=requested_feature_cols,
             timestamp_col=timestamp_col,
             validation_fraction=validation_fraction,
             log_volume=log_volume,
             sentiment_path=sentiment_path,
             sentiment_cols=sentiment_cols,
+            feature_transform=feature_transform,
+            market_data=market_data,
             train_end_date=train_end_date,
             test_start_date=test_start_date,
             data_end_date=data_end_date,
+            return_metadata=True,
         )
+        self.train_df, self.val_df, self.test_df = prepared["features"]
+        self.feature_cols = prepared["feature_cols"]
+        self.feature_names = list(self.feature_cols)
+        self.feature_dim = len(self.feature_cols)
+        self.warmup_report = prepared["warmup_report"]
+        self.market_alignment_report = prepared["market_alignment_report"]
+        self.passthrough_indices = [
+            idx for idx, col in enumerate(self.feature_cols) if col in set(sentiment_cols)
+        ]
 
         if split == "train":
             self.time_series = self.train_df
@@ -453,11 +536,25 @@ class CSVDataLoader(Dataset):
             sampling_mode=self.sampling_mode,
         )
 
-        if self.normalization == "train_zscore":
-            self.normalization_stats = normalization_stats or train_zscore_state(
-                self.train_df,
-                self.feature_cols,
-            )
+        if self.normalization in ("train_zscore", "train_robust_zscore"):
+            if normalization_stats is not None and normalization_stats.get("mode") != self.normalization:
+                raise ValueError(
+                    "Normalization state mode does not match loader mode: "
+                    f"state={normalization_stats.get('mode')!r}, "
+                    f"loader={self.normalization!r}"
+                )
+            if normalization_stats is None:
+                if self.normalization == "train_zscore":
+                    normalization_stats = train_zscore_state(
+                        self.train_df, self.feature_cols
+                    )
+                else:
+                    normalization_stats = train_robust_zscore_state(
+                        self.train_df,
+                        self.feature_cols,
+                        clip=robust_zscore_clip,
+                    )
+            self.normalization_stats = normalization_stats
             self.normalization_mean, self.normalization_std = normalization_tensors(
                 self.normalization_stats,
                 self.feature_cols,
@@ -504,10 +601,13 @@ class CSVDataLoader(Dataset):
                 base=base,
                 passthrough_indices=self.passthrough_indices,
             )
-        elif self.normalization == "train_zscore":
+        elif self.normalization in ("train_zscore", "train_robust_zscore"):
             selected_series = (
                 selected_series - self.normalization_mean
             ) / self.normalization_std
+            clip = self.normalization_stats.get("clip")
+            if clip is not None:
+                selected_series = selected_series.clamp(-float(clip), float(clip))
 
         num_patches = len(selected_series) // self.patch_size
 
@@ -550,6 +650,9 @@ class EvaluationDataLoader(Dataset):
     forecast_target="relative_return" produces the cumulative simple-return
     path from the last observed target value at the forecast cutoff:
         target[h] / context[-1] - 1
+
+    forecast_target="cumulative_log_return" produces:
+        log(Close[t+h] / Close[t]), h=1,...,H
     """
 
     def __init__(
@@ -571,6 +674,9 @@ class EvaluationDataLoader(Dataset):
         log_volume=True,
         sentiment_path=None,
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
+        feature_transform="raw",
+        market_data=None,
+        robust_zscore_clip=None,
         train_end_date=None,
         test_start_date=None,
         data_end_date=None,
@@ -581,38 +687,85 @@ class EvaluationDataLoader(Dataset):
         self.split = split
         self.normalization = _resolve_normalization_mode(normalization, normalize)
         self.normalize = self.normalization != "none"
-        self.feature_cols = _as_list(feature_cols)
-        self.feature_dim = len(self.feature_cols)
-        self.passthrough_indices = [
-            idx
-            for idx, col in enumerate(self.feature_cols)
-            if col in set(sentiment_cols)
-        ]
+        self.feature_transform = feature_transform
+        self.market_data = market_data
+        if feature_transform == "return" and self.normalization == "window_return":
+            raise ValueError(
+                "window_return is not defined for already-return-based features; "
+                "use train_zscore, train_robust_zscore, or none"
+            )
+        self.robust_zscore_clip = robust_zscore_clip
+        requested_feature_cols = _as_list(feature_cols)
         self.target_col = target_col
         self.forecast_target = _resolve_forecast_target(forecast_target)
 
-        if target_col not in self.feature_cols:
-            raise ValueError(f"target_col={target_col} must be in feature_cols={self.feature_cols}")
-        self.target_idx = self.feature_cols.index(target_col)
-
-        self.train_df, self.val_df, self.test_df = load_price_series(
+        prepared = load_price_series(
             path_data=path_data,
-            feature_cols=self.feature_cols,
+            feature_cols=requested_feature_cols,
             timestamp_col=timestamp_col,
             validation_fraction=validation_fraction,
             log_volume=log_volume,
             sentiment_path=sentiment_path,
             sentiment_cols=sentiment_cols,
+            feature_transform=feature_transform,
+            market_data=market_data,
             train_end_date=train_end_date,
             test_start_date=test_start_date,
             data_end_date=data_end_date,
+            return_metadata=True,
         )
+        self.train_df, self.val_df, self.test_df = prepared["features"]
+        self.train_close, self.val_close, self.test_close = prepared["close"]
+        (
+            self.train_market_close,
+            self.val_market_close,
+            self.test_market_close,
+        ) = prepared["market_close"]
+        self.train_dates, self.val_dates, self.test_dates = prepared["dates"]
+        self.feature_cols = prepared["feature_cols"]
+        self.feature_names = list(self.feature_cols)
+        self.feature_dim = len(self.feature_cols)
+        self.warmup_report = prepared["warmup_report"]
+        self.market_alignment_report = prepared["market_alignment_report"]
+        self.passthrough_indices = [
+            idx for idx, col in enumerate(self.feature_cols) if col in set(sentiment_cols)
+        ]
 
-        if self.normalization == "train_zscore":
-            self.normalization_stats = normalization_stats or train_zscore_state(
-                self.train_df,
-                self.feature_cols,
+        if target_col in self.feature_cols:
+            self.target_idx = self.feature_cols.index(target_col)
+        elif self.forecast_target in (
+            "relative_return",
+            "cumulative_log_return",
+            "excess_log_return",
+        ) and target_col == "Close":
+            self.target_idx = None
+        else:
+            raise ValueError(
+                f"target_col={target_col!r} must be in feature_cols={self.feature_cols} "
+                f"for forecast_target={self.forecast_target!r}"
             )
+        if self.forecast_target == "excess_log_return" and market_data is None:
+            raise ValueError("excess_log_return requires market_data")
+
+        if self.normalization in ("train_zscore", "train_robust_zscore"):
+            if normalization_stats is not None and normalization_stats.get("mode") != self.normalization:
+                raise ValueError(
+                    "Normalization state mode does not match loader mode: "
+                    f"state={normalization_stats.get('mode')!r}, "
+                    f"loader={self.normalization!r}"
+                )
+            if normalization_stats is None:
+                if self.normalization == "train_zscore":
+                    normalization_stats = train_zscore_state(
+                        self.train_df, self.feature_cols
+                    )
+                else:
+                    normalization_stats = train_robust_zscore_state(
+                        self.train_df,
+                        self.feature_cols,
+                        clip=robust_zscore_clip,
+                    )
+            self.normalization_stats = normalization_stats
             self.normalization_mean, self.normalization_std = normalization_tensors(
                 self.normalization_stats,
                 self.feature_cols,
@@ -627,12 +780,37 @@ class EvaluationDataLoader(Dataset):
 
         if split == "train":
             self.series = self.train_df
+            self.close_series = self.train_close
+            self.market_close_series = self.train_market_close
+            self.dates = self.train_dates
         elif split == "val":
             self.series = self.val_df
+            self.close_series = self.val_close
+            self.market_close_series = self.val_market_close
+            self.dates = self.val_dates
         elif split == "test":
             self.series = self.test_df
+            self.close_series = self.test_close
+            self.market_close_series = self.test_market_close
+            self.dates = self.test_dates
         elif split == "all":
             self.series = torch.cat([self.train_df, self.val_df, self.test_df], dim=0)
+            self.close_series = torch.cat(
+                [self.train_close, self.val_close, self.test_close], dim=0
+            )
+            self.market_close_series = (
+                torch.cat(
+                    [
+                        self.train_market_close,
+                        self.val_market_close,
+                        self.test_market_close,
+                    ],
+                    dim=0,
+                )
+                if self.train_market_close is not None
+                else None
+            )
+            self.dates = self.train_dates + self.val_dates + self.test_dates
         else:
             raise ValueError(f"Unknown split: {split}. Use 'train', 'val', 'test', or 'all'.")
 
@@ -691,17 +869,45 @@ class EvaluationDataLoader(Dataset):
 
     def __getitem__(self, idx):
         context_flat, target_flat = self.samples[idx]
+        context_len = self.context_size * self.patch_size
+        start = self.sample_starts[idx]
+        cutoff_index = start + context_len - 1
+        future_slice = slice(cutoff_index + 1, cutoff_index + 1 + self.patch_size)
 
         if self.forecast_target == "relative_return":
             # Build the label before input normalization. The denominator is
             # the last value available at the forecast cutoff, never a future
             # observation, so the target is leakage-safe and independent of
             # the configured encoder-input normalization.
-            cutoff_value = context_flat[-1, self.target_idx]
+            if self.target_col == "Close":
+                cutoff_value = self.close_series[cutoff_index]
+                future_values = self.close_series[future_slice]
+            else:
+                cutoff_value = context_flat[-1, self.target_idx]
+                future_values = target_flat[:, self.target_idx]
             target_patch = cumulative_return_normalize_with_base(
-                target_flat[:, self.target_idx],
+                future_values,
                 base=cutoff_value,
             ).reshape(self.patch_size)
+        elif self.forecast_target in (
+            "cumulative_log_return",
+            "excess_log_return",
+        ):
+            cutoff_close = self.close_series[cutoff_index]
+            future_close = self.close_series[future_slice]
+            if cutoff_close <= 0 or torch.any(future_close <= 0):
+                raise ValueError("Close must be positive for cumulative log-return targets")
+            target_patch = torch.log(future_close / cutoff_close)
+            if self.forecast_target == "excess_log_return":
+                market_cutoff = self.market_close_series[cutoff_index]
+                market_future = self.market_close_series[future_slice]
+                if market_cutoff <= 0 or torch.any(market_future <= 0):
+                    raise ValueError(
+                        "Market Close must be positive for excess log-return targets"
+                    )
+                target_patch = target_patch - torch.log(
+                    market_future / market_cutoff
+                )
 
         if self.normalization == "window_return":
             base = context_flat[0]  # [C], only from first context point
@@ -715,13 +921,17 @@ class EvaluationDataLoader(Dataset):
                 base=base,
                 passthrough_indices=self.passthrough_indices,
             )
-        elif self.normalization == "train_zscore":
+        elif self.normalization in ("train_zscore", "train_robust_zscore"):
             context_flat = (
                 context_flat - self.normalization_mean
             ) / self.normalization_std
             target_flat = (
                 target_flat - self.normalization_mean
             ) / self.normalization_std
+            clip = self.normalization_stats.get("clip")
+            if clip is not None:
+                context_flat = context_flat.clamp(-float(clip), float(clip))
+                target_flat = target_flat.clamp(-float(clip), float(clip))
 
         context_patches = context_flat.reshape(
             self.context_size,

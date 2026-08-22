@@ -104,7 +104,7 @@ class UnifiedDualLossTest(unittest.TestCase):
 
     def test_stock_runner_uses_unified_entrypoints_for_both_strategies(self):
         args = SimpleNamespace(
-            mask_strategy="local_long",
+            mask_strategies=["local_long"],
             mae_window_patches=1,
             jepa_gap_patches=4,
             jepa_target_patches=4,

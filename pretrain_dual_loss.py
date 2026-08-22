@@ -30,21 +30,18 @@ import torch.nn.functional as F
 import torch.optim.lr_scheduler as lr_scheduler
 
 from config.config_pretrain import config as base_config
-from main.utils import init_weights
+from config.experiment import (
+    none_if_requested,
+    resolve_feature_selection,
+    validate_data_config,
+)
+from main.utils import init_weights, set_seed
 from src.data_loaders.data_loader_mnist_rows import get_mnist_row_loader
 from src.data_loaders.data_loader_roll_volume import get_jepa_loaders
-from src.models.decoder import LinearDecoder, MLPDecoder, ResidualMLPDecoder
+from src.models.decoder import ResidualMLPDecoder, build_reconstruction_decoder
 from src.models.encoder import Encoder
 from src.models.predictor import Predictor
 from src.models.utils.mask_utils import apply_mask
-
-
-def _none_if_requested(value):
-    if value is None:
-        return None
-    if isinstance(value, str) and value.lower() in ("", "none", "null"):
-        return None
-    return value
 
 
 def _float_for_path(value):
@@ -62,7 +59,10 @@ EXPERIMENT_ID_KEYS = (
     "patch_size",
     "pretrain_stride",
     "sampling_mode",
+    "feature_transform",
     "normalization",
+    "robust_zscore_clip",
+    "market_data",
     "feature_cols",
     "timestamp_col",
     "sentiment_path",
@@ -106,6 +106,14 @@ EXPERIMENT_ID_KEYS = (
 def experiment_fingerprint(config):
     """Stable identifier preventing incompatible runs from sharing a filename."""
     identity = {key: config.get(key) for key in EXPERIMENT_ID_KEYS}
+    # Preserve the historical fingerprint for the backward-compatible raw
+    # defaults, while distinguishing every newly enabled preprocessing choice.
+    if identity.get("feature_transform") in (None, "raw"):
+        identity.pop("feature_transform", None)
+    if identity.get("market_data") is None:
+        identity.pop("market_data", None)
+    if identity.get("robust_zscore_clip") is None:
+        identity.pop("robust_zscore_clip", None)
     encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
 
@@ -291,14 +299,14 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         "--series-split-size",
         dest="series_split_size",
         type=int,
-        default=config.get("series_split_size", 120),
+        default=config["series_split_size"],
     )
     parser.add_argument(
         "--patch_size",
         "--patch-size",
         dest="patch_size",
         type=int,
-        default=config.get("patch_size", 5),
+        default=config["patch_size"],
     )
     parser.add_argument(
         "--pretrain_stride",
@@ -319,8 +327,25 @@ def parse_args(config, default_mask_strategy=None, argv=None):
     )
     parser.add_argument(
         "--normalization",
-        choices=("window_return", "train_zscore", "none"),
+        choices=("window_return", "train_zscore", "train_robust_zscore", "none"),
         default=config.get("normalization", "window_return"),
+    )
+    parser.add_argument(
+        "--feature-transform",
+        choices=("raw", "return"),
+        default=config.get("feature_transform", "raw"),
+        help="Use backward-compatible raw features or causal return features.",
+    )
+    parser.add_argument(
+        "--market-data",
+        default=config.get("market_data", None),
+        help="Optional market ticker (for example NASDAQ100) or CSV path.",
+    )
+    parser.add_argument(
+        "--robust-zscore-clip",
+        type=float,
+        default=config.get("robust_zscore_clip", None),
+        help="Optional symmetric clipping after train-only robust scaling.",
     )
     parser.add_argument(
         "--target_feature_index",
@@ -334,14 +359,41 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         "--feature-cols",
         dest="feature_cols",
         nargs="+",
-        default=config.get("feature_cols", None),
+        default=None,
+        help="Compatibility override for the final effective feature list.",
     )
+    parser.add_argument(
+        "--market-features",
+        nargs="+",
+        default=None,
+        help="Market feature names used to construct historical inputs.",
+    )
+    parser.add_argument(
+        "--sentiment-features",
+        nargs="+",
+        default=None,
+        help="Sentiment/news features enabled by --use-sentiment.",
+    )
+    sentiment_group = parser.add_mutually_exclusive_group()
+    sentiment_group.add_argument(
+        "--use-sentiment",
+        dest="use_sentiment",
+        action="store_true",
+        help="Include configured sentiment/news features.",
+    )
+    sentiment_group.add_argument(
+        "--no-sentiment",
+        dest="use_sentiment",
+        action="store_false",
+        help="Use market features only; no sentiment file is read.",
+    )
+    parser.set_defaults(use_sentiment=None)
     parser.add_argument(
         "--timestamp_col",
         "--timestamp-col",
         dest="timestamp_col",
         type=str,
-        default=config.get("timestamp_col", "Date"),
+        default=config["timestamp_col"],
     )
     parser.add_argument(
         "--sentiment_path",
@@ -664,7 +716,12 @@ def parse_args(config, default_mask_strategy=None, argv=None):
     )
     parser.add_argument(
         "--eval-forecast-target",
-        choices=("value", "relative_return"),
+        choices=(
+            "value",
+            "relative_return",
+            "cumulative_log_return",
+            "excess_log_return",
+        ),
         default=config.get("eval_forecast_target", "value"),
         help=(
             "Downstream target used by --run-eval. relative_return predicts "
@@ -683,11 +740,20 @@ def parse_args(config, default_mask_strategy=None, argv=None):
     for key, value in vars(args).items():
         cfg[key] = value
 
-    cfg["feature_cols"] = args.feature_cols or config.get("feature_cols", ["Close", "Volume"])
-    cfg["sentiment_path"] = _none_if_requested(args.sentiment_path)
-    cfg["train_end_date"] = _none_if_requested(args.train_end_date)
-    cfg["test_start_date"] = _none_if_requested(args.test_start_date)
-    cfg["data_end_date"] = _none_if_requested(args.data_end_date)
+    cfg.update(
+        resolve_feature_selection(
+            config,
+            feature_cols=args.feature_cols,
+            market_features=args.market_features,
+            sentiment_features=args.sentiment_features,
+            use_sentiment=args.use_sentiment,
+        )
+    )
+    cfg["sentiment_path"] = none_if_requested(args.sentiment_path)
+    cfg["market_data"] = none_if_requested(args.market_data)
+    cfg["train_end_date"] = none_if_requested(args.train_end_date)
+    cfg["test_start_date"] = none_if_requested(args.test_start_date)
+    cfg["data_end_date"] = none_if_requested(args.data_end_date)
     cfg["path_data"] = "./data/" + args.data + "/" + args.data + ".csv"
 
     if args.sampling_mode == "temporal_segments":
@@ -697,15 +763,10 @@ def parse_args(config, default_mask_strategy=None, argv=None):
             args.patch_size if args.pretrain_stride is None else args.pretrain_stride
         )
 
+    validate_data_config(cfg, stage="pretrain")
+
     seed = int(args.seed)
-    np.random.seed(seed)
-    random.seed(seed)
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.benchmark = not args.deterministic
-    torch.backends.cudnn.deterministic = args.deterministic
-    torch.use_deterministic_algorithms(args.deterministic, warn_only=True)
+    set_seed(seed, deterministic=args.deterministic)
     cfg["seed"] = seed
 
     positive_args = (
@@ -714,8 +775,6 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         ("checkpoint-save", args.checkpoint_save),
         ("checkpoint-print", args.checkpoint_print),
         ("ratio-patches", args.ratio_patches),
-        ("series-split-size", args.series_split_size),
-        ("patch-size", args.patch_size),
         ("pretrain-stride", cfg["pretrain_stride"]),
         ("validation-interval", args.validation_interval),
         ("future-target-patches", args.future_target_patches),
@@ -1179,35 +1238,6 @@ def evaluate_pretraining(
     }
 
 
-def build_decoder(config, patch_dim):
-    decoder_type = config["decoder_type"]
-
-    if decoder_type == "linear":
-        return LinearDecoder(
-            emb_dim=config["encoder_embed_dim"],
-            patch_size=patch_dim,
-        )
-
-    if decoder_type == "mlp":
-        return MLPDecoder(
-            emb_dim=config["encoder_embed_dim"],
-            patch_size=patch_dim,
-            hidden_dim=config["decoder_hidden_dim"],
-            num_layers=config["decoder_num_layers"],
-            dropout=config["decoder_dropout"],
-        )
-
-    if decoder_type == "residual_mlp":
-        return ResidualMLPDecoder(
-            emb_dim=config["encoder_embed_dim"],
-            patch_size=patch_dim,
-            hidden_dim=config["decoder_hidden_dim"],
-            dropout=config["decoder_dropout"],
-        )
-
-    raise ValueError(f"Unknown decoder_type={decoder_type!r}")
-
-
 def initialize_models(encoder, predictor, decoder):
     for model in (encoder, predictor, decoder):
         for module in model.modules():
@@ -1407,14 +1437,24 @@ def run_downstream_evaluation(config):
         str(config.get("target_feature_index", 0)),
         "--normalization",
         str(config.get("normalization", "window_return")),
+        "--feature-transform",
+        str(config.get("feature_transform", "raw")),
+        "--market-data",
+        str(config.get("market_data") or "none"),
         "--sampling-mode",
         str(config.get("sampling_mode", "sliding_window")),
         "--normalization_stats_json",
         json.dumps(config.get("normalization_stats")),
         "--feature_cols",
         *[str(column) for column in config["feature_cols"]],
+        "--market-features",
+        *[str(column) for column in config["market_features"]],
+        "--sentiment-features",
+        *[str(column) for column in config["sentiment_features"]],
         "--timestamp_col",
         str(config["timestamp_col"]),
+        "--target-col",
+        str(config["target_col"]),
         "--sentiment_path",
         str(config["sentiment_path"] or "none"),
         "--train_end_date",
@@ -1426,6 +1466,13 @@ def run_downstream_evaluation(config):
         "--validation_fraction",
         str(config["validation_fraction"]),
     ]
+    eval_argv.append(
+        "--use-sentiment" if config["use_sentiment"] else "--no-sentiment"
+    )
+    if config.get("robust_zscore_clip") is not None:
+        eval_argv.extend(
+            ["--robust-zscore-clip", str(config["robust_zscore_clip"])]
+        )
 
     if not config["encoder_embed_bias"]:
         eval_argv.append("--no-pretrain-encoder-embed-bias")
@@ -1457,17 +1504,22 @@ def main(default_mask_strategy=None, argv=None):
         default_mask_strategy=default_mask_strategy,
         argv=argv,
     )
+    checkpoint_target = config.get("eval_forecast_target", "value")
+    config["target_definition"] = {
+        "cumulative_log_return": "log(Close[t+h] / Close[t])",
+        "excess_log_return": (
+            "log(Close[t+h] / Close[t]) - "
+            "log(Market[t+h] / Market[t])"
+        ),
+        "relative_return": "Close[t+h] / Close[t] - 1",
+        "value": "selected normalized feature value",
+    }[checkpoint_target]
     print("Device:", device)
 
     if config["mask_strategy"] != "random" and config["input_mode"] != "timeseries":
         raise ValueError("Structured causal masks require --input-mode timeseries")
     if config["sampling_mode"] == "temporal_segments" and config["input_mode"] != "timeseries":
         raise ValueError("Temporal segments require --input-mode timeseries")
-    if not 0 <= float(config["validation_fraction"]) < 1:
-        raise ValueError("--validation-fraction must be in [0, 1)")
-    if config["input_mode"] == "timeseries" and config["test_start_date"] is None:
-        raise ValueError("--test-start-date must be defined for timeseries input")
-
     if config["input_mode"] == "mnist_rows":
         loader = get_mnist_row_loader(
             root=config["mnist_root"],
@@ -1495,13 +1547,15 @@ def main(default_mask_strategy=None, argv=None):
         loader = get_jepa_loaders(
             path=config["path_data"],
             batch_size=config["batch_size"],
-            ratio_patches=config["ratio_patches"],
             mask_ratio=config["mask_ratio"],
             series_split_size=config["series_split_size"],
             patch_size=config["patch_size"],
             stride=config["pretrain_stride"],
             sampling_mode=config["sampling_mode"],
             normalization=config["normalization"],
+            feature_transform=config.get("feature_transform", "raw"),
+            market_data=config.get("market_data"),
+            robust_zscore_clip=config.get("robust_zscore_clip"),
             feature_cols=config["feature_cols"],
             timestamp_col=config["timestamp_col"],
             sentiment_path=config["sentiment_path"],
@@ -1513,13 +1567,19 @@ def main(default_mask_strategy=None, argv=None):
         config["normalization_stats"] = copy.deepcopy(
             loader.dataset.normalization_stats
         )
+        config["feature_cols"] = list(loader.dataset.feature_cols)
+        config["feature_names"] = list(loader.dataset.feature_names)
+        config["feature_dim"] = int(loader.dataset.feature_dim)
+        config["warmup_report"] = copy.deepcopy(loader.dataset.warmup_report)
+        config["market_alignment_report"] = copy.deepcopy(
+            loader.dataset.market_alignment_report
+        )
         val_loader = None
         if float(config["validation_fraction"]) > 0:
             try:
                 val_loader = get_jepa_loaders(
                     path=config["path_data"],
                     batch_size=config["batch_size"],
-                    ratio_patches=config["ratio_patches"],
                     mask_ratio=config["mask_ratio"],
                     series_split_size=config["series_split_size"],
                     patch_size=config["patch_size"],
@@ -1527,6 +1587,9 @@ def main(default_mask_strategy=None, argv=None):
                     sampling_mode=config["sampling_mode"],
                     normalization=config["normalization"],
                     normalization_stats=config["normalization_stats"],
+                    feature_transform=config.get("feature_transform", "raw"),
+                    market_data=config.get("market_data"),
+                    robust_zscore_clip=config.get("robust_zscore_clip"),
                     split="val",
                     mask_seed=config["seed"] + 10_000,
                     feature_cols=config["feature_cols"],
@@ -1563,6 +1626,9 @@ def main(default_mask_strategy=None, argv=None):
         print("mnist_train_samples =", config["mnist_train_samples"])
     else:
         print("path_data =", config["path_data"])
+        print("use_sentiment =", config["use_sentiment"])
+        print("market_features =", config["market_features"])
+        print("sentiment_features =", config["sentiment_features"])
         print("feature_cols =", config["feature_cols"])
         print("sentiment_path =", config["sentiment_path"])
         print("train_end_date =", config["train_end_date"])
@@ -1571,6 +1637,10 @@ def main(default_mask_strategy=None, argv=None):
         print("sampling_mode =", config["sampling_mode"])
         print("pretrain_stride =", config["pretrain_stride"])
         print("normalization =", config["normalization"])
+        print("feature_transform =", config.get("feature_transform", "raw"))
+        print("robust_zscore_clip =", config.get("robust_zscore_clip"))
+        print("market_data =", config.get("market_data"))
+        print("warmup_report =", config.get("warmup_report"))
         print("train_windows =", len(loader.dataset))
         print("validation_windows =", len(val_loader.dataset) if val_loader else 0)
     print("num_patches =", num_patches)
@@ -1614,7 +1684,14 @@ def main(default_mask_strategy=None, argv=None):
         num_layers=config["predictor_num_layers"],
     )
 
-    decoder = build_decoder(config, patch_dim)
+    decoder = build_reconstruction_decoder(
+        decoder_type=config["decoder_type"],
+        embedding_dim=config["encoder_embed_dim"],
+        output_dim=patch_dim,
+        hidden_dim=config["decoder_hidden_dim"],
+        num_layers=config["decoder_num_layers"],
+        dropout=config["decoder_dropout"],
+    )
 
     initialize_models(encoder, predictor, decoder)
 

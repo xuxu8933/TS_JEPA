@@ -75,8 +75,6 @@ def _load_forecast_loaders(data_path):
     loader_kwargs = {
         "path_data": str(data_path),
         "batch_size": 16,
-        "ratio_patches": int(RATIO_PATCHES),
-        "mask_ratio": float(MASK_RATIO),
         "patch_size": 4,
         "context_size": 5,
         "stride": 1,
