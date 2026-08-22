@@ -12,6 +12,22 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
 
 
 CONFIG_SECTIONS = ("common", "runner", "analysis")
+COMMON_ONLY_OPTIONS = frozenset(("stocks", "seeds"))
+DERIVED_CONFIG_OPTIONS = frozenset(("results_dir",))
+
+
+def results_dir_from_config(config_path):
+    """Derive ``results/<config_stem>`` without a configured output option."""
+    path = Path(config_path)
+    resolved_path = path.resolve()
+    if (
+        resolved_path.parent.name == "experiments"
+        and resolved_path.parent.parent.name == "config"
+    ):
+        project_root = resolved_path.parent.parent.parent
+    else:
+        project_root = resolved_path.parent
+    return project_root / "results" / path.stem
 
 
 def _read_config_file(path):
@@ -56,6 +72,22 @@ def _section_options(data, section, config_path):
         raise ValueError(f"[common] must be an object in {config_path}")
     if not isinstance(script_options, dict):
         raise ValueError(f"[{section}] must be an object in {config_path}")
+
+    configured_derived_options = sorted(
+        DERIVED_CONFIG_OPTIONS & (set(common) | set(script_options))
+    )
+    if configured_derived_options:
+        raise ValueError(
+            "Options derived from the config filename must not be configured in "
+            f"{config_path}: " + ", ".join(configured_derived_options)
+        )
+
+    misplaced_common_options = sorted(COMMON_ONLY_OPTIONS & set(script_options))
+    if misplaced_common_options:
+        raise ValueError(
+            "Coverage options must be defined only in [common] in "
+            f"{config_path}: " + ", ".join(misplaced_common_options)
+        )
     return {**common, **script_options}
 
 
@@ -153,6 +185,28 @@ def load_config_defaults(parser, config_path, section, argv):
     resolved_path, data = _read_config_file(config_path)
     raw_options = _section_options(data, section, resolved_path)
     actions = _actions_by_destination(parser)
+
+    if any(name in data for name in CONFIG_SECTIONS):
+        explicitly_overridden = {
+            action.dest for action in _explicit_actions(parser, argv)
+        }
+        overridden_coverage = sorted(
+            COMMON_ONLY_OPTIONS & explicitly_overridden
+        )
+        if overridden_coverage:
+            raise ValueError(
+                "Coverage options come only from [common] when --config is used: "
+                + ", ".join(overridden_coverage)
+            )
+        overridden_derived = sorted(
+            DERIVED_CONFIG_OPTIONS & explicitly_overridden
+        )
+        if overridden_derived:
+            raise ValueError(
+                "Options derived from the config filename cannot be overridden "
+                "when --config is used: " + ", ".join(overridden_derived)
+            )
+
     valid_destinations = set(actions) - {"help", "config"}
     unknown_options = sorted(set(raw_options) - valid_destinations)
     if unknown_options:
@@ -170,7 +224,7 @@ def load_config_defaults(parser, config_path, section, argv):
 
 
 def parse_args_with_config(parser, argv=None, section="runner"):
-    """Apply file defaults before parsing, so explicit CLI values win."""
+    """Apply file defaults; configured stocks/seeds remain common-only."""
     argv = list(sys.argv[1:] if argv is None else argv)
     config_probe = argparse.ArgumentParser(add_help=False)
     config_probe.add_argument("--config", default=None)
@@ -184,4 +238,7 @@ def parse_args_with_config(parser, argv=None, section="runner"):
             argv,
         )
         parser.set_defaults(**defaults)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if config_args.config is not None and hasattr(args, "results_dir"):
+        args.results_dir = str(results_dir_from_config(config_args.config))
+    return args

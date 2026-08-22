@@ -69,6 +69,11 @@ def prepare_args(config):
         help="Explicit pretrained encoder checkpoint path. Overrides the default naming scheme.",
     )
     parser.add_argument(
+        "--checkpoint-selection",
+        default=config.get("checkpoint_selection", "unknown"),
+        help="Resolved pre-training checkpoint selection mode for provenance logging.",
+    )
+    parser.add_argument(
         "--pretrain_encoder_weights",
         "--pretrain-encoder-weights",
         dest="pretrain_encoder_weights",
@@ -323,6 +328,7 @@ def prepare_args(config):
     config["ratio_patches"] = args.ratio_patches
     config["checkpoint_to_use"] = args.checkpoint_to_use
     config["pretrain_checkpoint_path"] = args.pretrain_checkpoint_path
+    config["checkpoint_selection"] = args.checkpoint_selection
     config["pretrain_encoder_weights"] = args.pretrain_encoder_weights
     config["results_dir"] = args.results_dir
 

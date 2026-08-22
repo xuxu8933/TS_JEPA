@@ -1,6 +1,8 @@
 import argparse
 import copy
+import hashlib
 import json
+import re
 import subprocess
 import sys
 from datetime import date
@@ -17,15 +19,463 @@ from pretrain_dual_loss import (
 
 
 MASK_STRATEGIES = ("random", "local_long", "future_block", "causal_multiblock")
+RUN_MANIFEST_FILENAME = "run_manifest.json"
+COVERAGE_CONFIG_KEYS = frozenset(
+    ("stocks", "seeds", "seed", "max_stocks", "max_seeds")
+)
+NON_RESULT_CONFIG_KEYS = frozenset(
+    (
+        "config",
+        "results_dir",
+        "skip_pretrain",
+        "skip_combined_plot",
+        "dry_run",
+        "request_delay",
+        "verbose",
+    )
+)
 
 
-def run_command(command, dry_run=False):
-    print("=" * 80, flush=True)
-    print("Running:", " ".join(command), flush=True)
-    if dry_run:
-        print("Dry run: command not executed", flush=True)
+def _jsonable_config_value(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, tuple):
+        return [_jsonable_config_value(item) for item in value]
+    if isinstance(value, list):
+        return [_jsonable_config_value(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _jsonable_config_value(item)
+            for key, item in value.items()
+        }
+    return value
+
+
+def effective_experiment_config(args_or_options):
+    """Return result-affecting runner options, excluding execution coverage."""
+    options = (
+        vars(args_or_options)
+        if isinstance(args_or_options, argparse.Namespace)
+        else dict(args_or_options)
+    )
+    excluded = COVERAGE_CONFIG_KEYS | NON_RESULT_CONFIG_KEYS
+    return {
+        key: _jsonable_config_value(options[key])
+        for key in sorted(options)
+        if key not in excluded
+    }
+
+
+def experiment_config_signature(args_or_options):
+    encoded = json.dumps(
+        effective_experiment_config(args_or_options),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def requested_stock_seed_runs(stocks, seeds):
+    normalized_stocks = [str(stock).upper() for stock in stocks]
+    normalized_seeds = [int(seed) for seed in seeds]
+    if not normalized_stocks:
+        raise ValueError("At least one stock must be configured in [common]")
+    if not normalized_seeds:
+        raise ValueError("At least one seed must be configured in [common]")
+    if len(normalized_stocks) != len(set(normalized_stocks)):
+        raise ValueError("[common].stocks must contain unique tickers")
+    if len(normalized_seeds) != len(set(normalized_seeds)):
+        raise ValueError("[common].seeds must contain unique values")
+    return [
+        (stock, seed)
+        for stock in normalized_stocks
+        for seed in normalized_seeds
+    ]
+
+
+def stock_result_dir(args, strategy, stock, seed):
+    result_dir = strategy_results_dir(args, strategy)
+    if getattr(args, "preprocessing_preset", None):
+        result_dir /= args.preprocessing_preset
+    return result_dir / stock / f"seed_{seed}"
+
+
+def _load_json(path):
+    try:
+        with path.open() as input_file:
+            value = json.load(input_file)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read compatibility metadata {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Compatibility metadata must be an object: {path}")
+    return value
+
+
+def _manifest_effective_config(manifest):
+    recorded = manifest.get("effective_config")
+    if isinstance(recorded, dict):
+        return recorded
+    arguments = manifest.get("arguments")
+    if isinstance(arguments, dict):
+        return effective_experiment_config(arguments)
+    return None
+
+
+def _config_difference(previous, current):
+    changed = []
+    for key in sorted(set(previous) | set(current)):
+        if previous.get(key) != current.get(key):
+            changed.append(
+                f"{key}: previous={previous.get(key)!r}, current={current.get(key)!r}"
+            )
+    return changed
+
+
+def validate_existing_experiment(args):
+    """Validate the result root and return whether legacy runs are compatible."""
+    results_dir = Path(args.results_dir)
+    manifest_path = results_dir / "experiment_manifest.json"
+    existing_run_outputs = any(
+        results_dir.rglob("last_model_comparison_*.txt")
+    ) if results_dir.exists() else False
+
+    if not manifest_path.exists():
+        if existing_run_outputs:
+            raise RuntimeError(
+                f"Existing results under {results_dir} have no experiment manifest, "
+                "so their configuration cannot be verified. They will not be reused "
+                "or overwritten."
+            )
+        return False
+
+    manifest = _load_json(manifest_path)
+    previous = _manifest_effective_config(manifest)
+    if previous is None:
+        raise RuntimeError(
+            f"Existing manifest {manifest_path} does not contain enough resolved "
+            "configuration metadata. Existing data will not be reused or overwritten."
+        )
+
+    current = effective_experiment_config(args)
+    if previous != current:
+        differences = _config_difference(previous, current)
+        details = "\n  ".join(differences[:12])
+        if len(differences) > 12:
+            details += f"\n  ... and {len(differences) - 12} more"
+        raise RuntimeError(
+            "The current result-affecting configuration is incompatible with "
+            f"{manifest_path}. Existing results will not be reused or overwritten. "
+            "Use a config file/result directory with a different matching name."
+            + (f"\n  {details}" if details else "")
+        )
+    return True
+
+
+def compatible_result_directories(args):
+    """Find sibling result roots with the same result-affecting configuration."""
+    current_results_dir = Path(args.results_dir).resolve()
+    current_config = effective_experiment_config(args)
+    compatible = []
+    for manifest_path in sorted(
+        current_results_dir.parent.glob("*/experiment_manifest.json")
+    ):
+        candidate_results_dir = manifest_path.parent.resolve()
+        if candidate_results_dir == current_results_dir:
+            continue
+        try:
+            manifest = _load_json(manifest_path)
+        except RuntimeError:
+            continue
+        candidate_config = _manifest_effective_config(manifest)
+        if candidate_config == current_config:
+            compatible.append(candidate_results_dir)
+    return compatible
+
+
+def reject_duplicate_experiment_config(args):
+    """Reject a renamed config that would duplicate an existing experiment."""
+    compatible = compatible_result_directories(args)
+    if not compatible:
         return
-    subprocess.run(command, check=True)
+    locations = "\n  ".join(str(path) for path in compatible)
+    raise RuntimeError(
+        "An experiment with the same result-affecting runner configuration "
+        "already exists. Renaming the config file does not create a new "
+        "experiment. Reuse the existing config/result folder and change only "
+        "[common].stocks or [common].seeds to extend coverage:\n  "
+        + locations
+    )
+
+
+def validate_config_result_mapping(args):
+    if not args.config:
+        return
+    config_name = Path(args.config).stem
+    result_name = Path(args.results_dir).resolve().name
+    if result_name != config_name:
+        raise ValueError(
+            "Experiment config and result directory names must match: "
+            f"config={config_name!r}, result_directory={result_name!r}"
+        )
+
+
+def _comparison_outputs_complete(run_dir):
+    for txt_path in sorted(run_dir.glob("last_model_comparison_*.txt")):
+        csv_path = txt_path.with_suffix(".csv")
+        if txt_path.is_file() and txt_path.stat().st_size > 0:
+            if csv_path.is_file() and csv_path.stat().st_size > 0:
+                return True
+    return False
+
+
+def downstream_run_status(
+    args,
+    strategy,
+    stock,
+    seed,
+    *,
+    legacy_manifest_compatible,
+):
+    """Return complete, missing, or incompatible for one downstream run."""
+    run_dir = stock_result_dir(args, strategy, stock, seed)
+    run_manifest_path = run_dir / RUN_MANIFEST_FILENAME
+    outputs_complete = _comparison_outputs_complete(run_dir)
+
+    if run_manifest_path.exists():
+        run_manifest = _load_json(run_manifest_path)
+        expected_signature = experiment_config_signature(args)
+        try:
+            recorded_seed = int(run_manifest.get("seed"))
+        except (TypeError, ValueError):
+            recorded_seed = None
+        identity_matches = (
+            run_manifest.get("config_signature") == expected_signature
+            and run_manifest.get("strategy") == strategy
+            and str(run_manifest.get("stock", "")).upper() == stock
+            and recorded_seed == int(seed)
+        )
+        if not identity_matches:
+            return "incompatible"
+        if run_manifest.get("status") == "complete" and outputs_complete:
+            return "complete"
+        return "missing"
+
+    if outputs_complete:
+        return "complete" if legacy_manifest_compatible else "incompatible"
+
+    if run_dir.exists() and any(run_dir.iterdir()):
+        return "incompatible"
+    return "missing"
+
+
+def _command_option(command, option):
+    try:
+        index = command.index(option)
+    except ValueError:
+        return None
+    if index + 1 >= len(command):
+        raise ValueError(f"Command option {option} has no value: {command}")
+    return command[index + 1]
+
+
+def _related_checkpoint_paths(checkpoint_path):
+    match = re.match(r"^(.*)_(?:epoch_\d+|best)\.pt$", str(checkpoint_path))
+    if not match:
+        return []
+    prefix = Path(match.group(1))
+    return sorted(
+        set(prefix.parent.glob(prefix.name + "_epoch_*.pt"))
+        | set(prefix.parent.glob(prefix.name + "_best.pt"))
+    )
+
+
+def plan_incremental_execution(
+    args,
+    stocks,
+    seeds,
+    strategies,
+    *,
+    legacy_manifest_compatible,
+):
+    requested_runs = requested_stock_seed_runs(stocks, seeds)
+    completed_runs = set()
+    tasks = []
+
+    for stock, seed in requested_runs:
+        tuple_complete = True
+        for strategy in strategies:
+            status = downstream_run_status(
+                args,
+                strategy,
+                stock,
+                seed,
+                legacy_manifest_compatible=legacy_manifest_compatible,
+            )
+            if status == "incompatible":
+                run_dir = stock_result_dir(args, strategy, stock, seed)
+                raise RuntimeError(
+                    f"Existing data for {strategy}/{stock}/seed_{seed} at "
+                    f"{run_dir} is incompatible or cannot be verified. It will "
+                    "not be reused or overwritten."
+                )
+            if status == "complete":
+                continue
+
+            tuple_complete = False
+            commands = build_stock_commands(
+                args,
+                stock,
+                seed=seed,
+                strategy=strategy,
+                results_dir=strategy_results_dir(args, strategy),
+            )
+            eval_command = commands[-1]
+            pretrain_command = (
+                commands[0]
+                if len(commands) > 1 and "pretrain_dual_loss.py" in commands[0]
+                else None
+            )
+            checkpoint_value = _command_option(
+                eval_command,
+                "--pretrain-checkpoint-path",
+            )
+            checkpoint_path = Path(checkpoint_value) if checkpoint_value else None
+
+            if checkpoint_path is not None and checkpoint_path.is_file():
+                pretrain_command = None
+            elif pretrain_command is not None and checkpoint_path is not None:
+                related = _related_checkpoint_paths(checkpoint_path)
+                if related:
+                    raise RuntimeError(
+                        f"Compatible pretraining for {strategy}/{stock}/seed_{seed} "
+                        f"is incomplete: expected {checkpoint_path}, but related "
+                        "checkpoints already exist. Automatic retraining would "
+                        "overwrite them, so execution was stopped."
+                    )
+
+            tasks.append(
+                {
+                    "strategy": strategy,
+                    "stock": stock,
+                    "seed": seed,
+                    "run_dir": stock_result_dir(args, strategy, stock, seed),
+                    "checkpoint_path": checkpoint_path,
+                    "pretrain_command": pretrain_command,
+                    "eval_command": eval_command,
+                }
+            )
+
+        if tuple_complete:
+            completed_runs.add((stock, seed))
+
+    missing_runs = set(requested_runs) - completed_runs
+    return {
+        "requested_runs": requested_runs,
+        "completed_runs": completed_runs,
+        "missing_runs": missing_runs,
+        "tasks": tasks,
+    }
+
+
+def build_experiment_manifest(args, stocks, seeds, strategies):
+    preprocessing = resolve_preprocessing_settings(args)
+    return {
+        "runner": "run_top_nasdaq100_stocks.py",
+        "config_name": Path(args.config).stem if args.config else None,
+        "arguments": _jsonable_config_value(vars(args)),
+        "effective_config": effective_experiment_config(args),
+        "config_signature": experiment_config_signature(args),
+        "stocks": [str(stock).upper() for stock in args.stocks],
+        "seeds": [int(seed) for seed in args.seeds],
+        "run_stocks": list(stocks),
+        "run_seeds": list(seeds),
+        "mask_strategies": list(strategies),
+        "results_dir": str(args.results_dir),
+        "strategy_results_dirs": {
+            strategy: str(strategy_results_dir(args, strategy))
+            for strategy in strategies
+        },
+        "use_sentiment": preprocessing["use_sentiment"],
+        "market_features": preprocessing["market_features"],
+        "sentiment_features": preprocessing["sentiment_features"],
+        "feature_cols": preprocessing["feature_cols"],
+        "feature_transform": preprocessing["feature_transform"],
+        "normalization": preprocessing["normalization"],
+        "forecast_target": preprocessing["forecast_target"],
+        "sampling_mode": args.sampling_mode,
+        "pretrain_stride": args.pretrain_stride,
+        "pretrain_num_epochs": args.pretrain_num_epochs,
+        "eval_num_epochs": args.eval_num_epochs,
+        "checkpoint_to_use": args.checkpoint_to_use,
+        "use_best_checkpoint": args.use_best_checkpoint,
+        "lambda_jepa": args.lambda_jepa,
+        "lambda_mae": args.lambda_mae,
+        "jepa_loss": args.jepa_loss,
+        "mae_loss": args.mae_loss,
+    }
+
+
+def _write_json(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = path.with_name(path.name + ".tmp")
+    with temporary_path.open("w") as output_file:
+        json.dump(value, output_file, indent=2, sort_keys=True)
+        output_file.write("\n")
+    temporary_path.replace(path)
+
+
+def write_run_manifest(args, task, status):
+    run_dir = task["run_dir"]
+    comparison_files = []
+    if status == "complete":
+        comparison_files = [
+            path.name
+            for path in sorted(run_dir.glob("last_model_comparison_*.*"))
+            if path.suffix in (".csv", ".txt")
+        ]
+    _write_json(
+        run_dir / RUN_MANIFEST_FILENAME,
+        {
+            "status": status,
+            "config_signature": experiment_config_signature(args),
+            "strategy": task["strategy"],
+            "stock": task["stock"],
+            "seed": task["seed"],
+            "checkpoint_path": (
+                str(task["checkpoint_path"])
+                if task["checkpoint_path"] is not None
+                else None
+            ),
+            "comparison_files": comparison_files,
+        },
+    )
+
+
+def run_command(command, dry_run=False, verbose=False):
+    if verbose:
+        print("=" * 80, flush=True)
+        print("Running:", " ".join(command), flush=True)
+    if dry_run:
+        if verbose:
+            print("Dry run: command not executed", flush=True)
+        return
+    if verbose:
+        subprocess.run(command, check=True)
+    else:
+        subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.STDOUT,
+        )
+
+
+def report_run_status(task, status):
+    print(
+        f"stock={task['stock']} seed={task['seed']} "
+        f"status={task['strategy']}:{status}",
+        flush=True,
+    )
 
 
 def parse_args(argv=None):
@@ -40,7 +490,7 @@ def parse_args(argv=None):
         default=None,
         help=(
             "JSON or TOML experiment option file. Reads [common] and [runner]; "
-            "explicit command-line options take precedence."
+            "explicit command-line options except stocks/seeds take precedence."
         ),
     )
     parser.add_argument(
@@ -54,6 +504,12 @@ def parse_args(argv=None):
         type=int,
         default=5,
         help="Limit how many selected stocks to run. Use 0 to run all selected stocks.",
+    )
+    parser.add_argument(
+        "--max-seeds",
+        type=int,
+        default=0,
+        help="Limit how many configured seeds to run. Use 0 to run all seeds.",
     )
     parser.add_argument("--download-start-date", default="2015-01-01")
     parser.add_argument("--download-end-date", default=date.today().isoformat())
@@ -155,14 +611,12 @@ def parse_args(argv=None):
         help="Run the identical pipeline with market features only.",
     )
     parser.set_defaults(use_sentiment=pretrain_defaults["use_sentiment"])
-    seed_group = parser.add_mutually_exclusive_group()
-    seed_group.add_argument("--seed", type=int, default=42)
-    seed_group.add_argument(
+    parser.add_argument(
         "--seeds",
         type=int,
         nargs="+",
-        default=None,
-        help="Run every stock for multiple seeds; overrides --seed.",
+        default=[42],
+        help="Ordered pool of reproducible seeds to run.",
     )
     parser.add_argument(
         "--encoder-weights",
@@ -198,8 +652,9 @@ def parse_args(argv=None):
         "--results-dir",
         default="./results",
         help=(
-            "Root output directory. Singular runs use TICKER/seed_N; plural "
-            "strategy runs use STRATEGY/TICKER/seed_N."
+            "Standalone-run output root. Configured runs derive "
+            "results/<config filename>; strategy runs use "
+            "STRATEGY/TICKER/seed_N below that root."
         ),
     )
     parser.add_argument(
@@ -212,7 +667,19 @@ def parse_args(argv=None):
         "--dry-run",
         action=argparse.BooleanOptionalAction,
         default=False,
-        help="Print the commands and write the summary without executing them.",
+        help=(
+            "Do not execute commands; combine with --verbose to print the "
+            "generated commands."
+        ),
+    )
+    parser.add_argument(
+        "--verbose",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Show configuration summaries, commands, and child-process output. "
+            "By default, show only per-run stock/seed status."
+        ),
     )
     return parse_args_with_config(parser, argv, section="runner")
 
@@ -226,10 +693,27 @@ def resolve_mask_strategies(args):
     return strategies
 
 
+def resolve_stocks(args):
+    stocks = [str(stock).upper() for stock in args.stocks]
+    max_stocks = int(args.max_stocks)
+    if max_stocks < 0:
+        raise ValueError("--max-stocks must be >= 0")
+    if len(stocks) != len(set(stocks)):
+        raise ValueError("--stocks must contain unique tickers")
+    if max_stocks > 0:
+        stocks = stocks[:max_stocks]
+    return stocks
+
+
 def resolve_seeds(args):
-    seeds = list(args.seeds or [args.seed])
+    seeds = list(args.seeds)
+    max_seeds = int(args.max_seeds)
+    if max_seeds < 0:
+        raise ValueError("--max-seeds must be >= 0")
     if len(seeds) != len(set(seeds)):
         raise ValueError("--seeds must contain unique values")
+    if max_seeds > 0:
+        seeds = seeds[:max_seeds]
     return seeds
 
 
@@ -323,7 +807,7 @@ def resolve_preprocessing_settings(args):
 
 def build_stock_commands(args, stock, seed=None, strategy=None, results_dir=None):
     commands = []
-    seed = args.seed if seed is None else seed
+    seed = resolve_seeds(args)[0] if seed is None else seed
     if strategy is None:
         strategies = resolve_mask_strategies(args)
         if len(strategies) != 1:
@@ -500,7 +984,7 @@ def build_combined_plot_command(
     output_prefix = f"top_{len(stocks)}_nasdaq100"
     if strategy is not None:
         output_prefix += f"_{strategy}"
-    seeds = args.seeds or [args.seed]
+    seeds = resolve_seeds(args)
     results_dir = str(results_dir or args.results_dir)
     return [
         sys.executable,
@@ -524,23 +1008,68 @@ def build_combined_plot_command(
 def main(argv=None):
     args = parse_args(argv)
     preprocessing = resolve_preprocessing_settings(args)
-    stocks = [stock.upper() for stock in args.stocks]
+    stocks = resolve_stocks(args)
     seeds = resolve_seeds(args)
     strategies = resolve_mask_strategies(args)
     validate_runner_mask_geometry(args, strategies)
 
-    if args.max_stocks < 0:
-        raise ValueError("--max-stocks must be >= 0")
-    if args.max_stocks > 0:
-        stocks = stocks[:args.max_stocks]
+    validate_config_result_mapping(args)
+    requested_stock_seed_runs(stocks, seeds)
+    legacy_manifest_compatible = validate_existing_experiment(args)
+    if not legacy_manifest_compatible:
+        reject_duplicate_experiment_config(args)
+    execution_plan = plan_incremental_execution(
+        args,
+        stocks,
+        seeds,
+        strategies,
+        legacy_manifest_compatible=legacy_manifest_compatible,
+    )
 
+    requested_count = len(execution_plan["requested_runs"])
+    completed_count = len(execution_plan["completed_runs"])
+    missing_count = len(execution_plan["missing_runs"])
+    if args.verbose:
+        if legacy_manifest_compatible:
+            print("Configuration unchanged.", flush=True)
+        else:
+            print("No existing compatible experiment configuration.", flush=True)
+        print(f"Requested coverage: {requested_count} runs.", flush=True)
+        print(f"Completed compatible runs: {completed_count}.", flush=True)
+        print(f"Missing runs: {missing_count}.", flush=True)
+
+    if not execution_plan["tasks"]:
+        if not args.dry_run:
+            current_manifest = build_experiment_manifest(
+                args,
+                stocks,
+                seeds,
+                strategies,
+            )
+            manifest_path = Path(args.results_dir) / "experiment_manifest.json"
+            previous_manifest = (
+                _load_json(manifest_path) if manifest_path.exists() else None
+            )
+            if previous_manifest != current_manifest:
+                _write_json(manifest_path, current_manifest)
+        if args.verbose:
+            print("Nothing to run.", flush=True)
+        return
+
+    missing_stocks = list(
+        dict.fromkeys(
+            stock
+            for stock, seed in execution_plan["requested_runs"]
+            if (stock, seed) in execution_plan["missing_runs"]
+        )
+    )
     if not args.skip_download:
         download_cmd = [
             sys.executable,
             "download_indices_and_news.py",
             "--skip-indices",
             "--stocks",
-            *stocks,
+            *missing_stocks,
             "--download-start-date",
             args.download_start_date,
             "--download-end-date",
@@ -556,44 +1085,19 @@ def main(argv=None):
             download_cmd.append("--skip-news")
         if args.max_news_articles is not None:
             download_cmd.extend(["--max-news-articles", str(args.max_news_articles)])
-        run_command(download_cmd, dry_run=args.dry_run)
+        run_command(
+            download_cmd,
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
 
     summary_path = Path(args.results_dir) / "top_nasdaq100_stock_runs.txt"
     summary_path.parent.mkdir(parents=True, exist_ok=True)
 
-    manifest = {
-        "runner": "run_top_nasdaq100_stocks.py",
-        "arguments": vars(args),
-        "stocks": stocks,
-        "seeds": seeds,
-        "mask_strategies": strategies,
-        "results_dir": str(args.results_dir),
-        "strategy_results_dirs": {
-            strategy: str(strategy_results_dir(args, strategy))
-            for strategy in strategies
-        },
-        "use_sentiment": preprocessing["use_sentiment"],
-        "market_features": preprocessing["market_features"],
-        "sentiment_features": preprocessing["sentiment_features"],
-        "feature_cols": preprocessing["feature_cols"],
-        "feature_transform": preprocessing["feature_transform"],
-        "normalization": preprocessing["normalization"],
-        "forecast_target": preprocessing["forecast_target"],
-        "sampling_mode": args.sampling_mode,
-        "pretrain_stride": args.pretrain_stride,
-        "pretrain_num_epochs": args.pretrain_num_epochs,
-        "eval_num_epochs": args.eval_num_epochs,
-        "checkpoint_to_use": args.checkpoint_to_use,
-        "use_best_checkpoint": args.use_best_checkpoint,
-        "lambda_jepa": args.lambda_jepa,
-        "lambda_mae": args.lambda_mae,
-        "jepa_loss": args.jepa_loss,
-        "mae_loss": args.mae_loss,
-    }
+    manifest = build_experiment_manifest(args, stocks, seeds, strategies)
     manifest_path = Path(args.results_dir) / "experiment_manifest.json"
-    with manifest_path.open("w") as manifest_file:
-        json.dump(manifest, manifest_file, indent=2)
-        manifest_file.write("\n")
+    if not args.dry_run:
+        _write_json(manifest_path, manifest)
 
     with summary_path.open("w") as summary:
         summary.write("Top NASDAQ-100 stock workflow\n")
@@ -633,24 +1137,70 @@ def main(argv=None):
         summary.write(f"mae_loss={args.mae_loss}\n")
         summary.write(f"eval_num_epochs={args.eval_num_epochs}\n\n")
 
-        for strategy in strategies:
-            strategy_dir = strategy_results_dir(args, strategy)
-            for stock in stocks:
-                for seed in seeds:
-                    for cmd in build_stock_commands(
-                        args,
-                        stock,
-                        seed=seed,
-                        strategy=strategy,
-                        results_dir=strategy_dir,
+        for task in execution_plan["tasks"]:
+            label = (
+                f"{task['strategy']}/{task['stock']}[seed={task['seed']}]"
+            )
+            if args.dry_run and not args.verbose:
+                report_run_status(task, "dry-run")
+            try:
+                if task["pretrain_command"] is not None:
+                    summary.write(
+                        f"{label}/pretrain: {' '.join(task['pretrain_command'])}\n"
+                    )
+                    summary.flush()
+                    if not args.verbose and not args.dry_run:
+                        report_run_status(task, "pretraining")
+                    run_command(
+                        task["pretrain_command"],
+                        dry_run=args.dry_run,
+                        verbose=args.verbose,
+                    )
+                    if (
+                        not args.dry_run
+                        and task["checkpoint_path"] is not None
+                        and not task["checkpoint_path"].is_file()
                     ):
-                        summary.write(
-                            f"{strategy}/{stock}[seed={seed}]: {' '.join(cmd)}\n"
+                        raise RuntimeError(
+                            "Pretraining completed without creating the requested "
+                            f"checkpoint: {task['checkpoint_path']}"
                         )
-                        summary.flush()
-                        run_command(cmd, dry_run=args.dry_run)
+                else:
+                    summary.write(
+                        f"{label}/pretrain: reused or explicitly skipped\n"
+                    )
 
-            if not args.skip_combined_plot:
+                if not args.dry_run:
+                    write_run_manifest(args, task, "running")
+                summary.write(
+                    f"{label}/downstream: {' '.join(task['eval_command'])}\n"
+                )
+                summary.flush()
+                if not args.verbose and not args.dry_run:
+                    report_run_status(task, "evaluating")
+                run_command(
+                    task["eval_command"],
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
+                )
+                if not args.dry_run:
+                    if not _comparison_outputs_complete(task["run_dir"]):
+                        raise RuntimeError(
+                            "Downstream evaluation completed without a "
+                            "model-comparison CSV/TXT pair in "
+                            f"{task['run_dir']}"
+                        )
+                    write_run_manifest(args, task, "complete")
+                    if not args.verbose:
+                        report_run_status(task, "complete")
+            except Exception:
+                if not args.verbose and not args.dry_run:
+                    report_run_status(task, "failed")
+                raise
+
+        if not args.skip_combined_plot:
+            for strategy in strategies:
+                strategy_dir = strategy_results_dir(args, strategy)
                 plot_strategy = strategy if len(strategies) > 1 else None
                 combined_plot_cmd = build_combined_plot_command(
                     args,
@@ -662,10 +1212,18 @@ def main(argv=None):
                     f"combined_plot[{strategy}]: {' '.join(combined_plot_cmd)}\n"
                 )
                 summary.flush()
-                run_command(combined_plot_cmd, dry_run=args.dry_run)
+                run_command(
+                    combined_plot_cmd,
+                    dry_run=args.dry_run,
+                    verbose=args.verbose,
+                )
 
-    print(f"Run summary saved to {summary_path}", flush=True)
-    print(f"Experiment manifest saved to {manifest_path}", flush=True)
+    if args.verbose:
+        print(f"Run summary saved to {summary_path}", flush=True)
+        if args.dry_run:
+            print("Dry run: experiment/run manifests were not written", flush=True)
+        else:
+            print(f"Experiment manifest saved to {manifest_path}", flush=True)
 
 
 if __name__ == "__main__":

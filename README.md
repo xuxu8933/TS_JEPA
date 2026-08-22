@@ -367,13 +367,22 @@ conda run --no-capture-output -n ts-jepa python analyze_stock_results.py \
 Each JSON or TOML file may contain `common`, `runner`, and `analysis` objects.
 Both scripts read `common`; the stock runner reads `runner`, and the analyzer
 reads `analysis`. Option names use Python/JSON underscores, such as
-`mask_strategies` and `use_sentiment`. Explicit command-line options override
-file values, so a safe command inspection is:
+`mask_strategies` and `use_sentiment`. `stocks` and `seeds` belong only to
+`common` and cannot be duplicated in `runner`/`analysis` or overridden on the
+command line when a config file is used. They define the ordered overall
+coverage. `runner.max_stocks` and `runner.max_seeds` limit the current run to
+the first N entries of those common lists; `0` selects all entries. These limits
+define the current execution scope but do not change experiment identity or the
+overall coverage recorded in the manifest. Other explicit command-line options
+override file values. `results_dir` is not a config option: the result root is
+derived from the filename, so `config/experiments/example.json` always writes
+to `results/example/`. A safe command inspection is:
 
 ```bash
 python run_top_nasdaq100_stocks.py \
   --config config/experiments/top10_with_sentiment.json \
-  --dry-run
+  --dry-run \
+  --verbose
 ```
 
 The stock runner uses one `--mask-strategies` option for both single- and
@@ -418,11 +427,90 @@ missing_or_failed_runs.csv
 strategy_comparison.png
 ```
 
+Repeated invocations are incremental. The runner compares the resolved
+result-affecting configuration with the saved manifest, excludes only coverage
+and execution/output-only values from that comparison, and checks every exact
+`(stock, seed)` tuple. Compatible completed downstream runs are skipped;
+compatible checkpoints are reused when downstream output is missing. Changing
+only `common.stocks` or `common.seeds` therefore adds only missing coverage.
+Changing another result-affecting value stops execution rather than mixing or
+overwriting incompatible runs in the same result directory. Aggregate plots
+after incremental work are restricted to the current execution scope after
+applying `max_stocks` and `max_seeds`; analysis with the config still treats the
+full common lists as the overall expected coverage. Before creating a
+filename-derived result root, the runner also compares manifests in sibling
+result folders. A renamed config with the same effective runner options is
+rejected and directed to the existing folder; coverage-only stock/seed
+differences do not bypass this duplicate check.
+
 By default, missing runs or expected models are recorded in
 `missing_or_failed_runs.csv` and partial summary statistics are refused. Use
 `--allow-incomplete` only for explicitly exploratory analysis.
 In `paired_strategy_differences.csv`, each delta is `strategy_b - strategy_a`;
 MSE and MAE are lower-is-better, while trend accuracy is higher-is-better.
+
+### Thesis result analysis
+
+After the complete stock/seed experiment has finished, build the canonical
+thesis artifacts without retraining:
+
+```bash
+conda run --no-capture-output -n ts-jepa python analyze_thesis_results.py \
+  --config config/experiments/top10_with_sentiment.json \
+  --output-dir analysis_artifacts
+```
+
+The analysis recomputes metrics from saved score rows where possible, audits
+direction accuracy for every method, preserves stock-level clustering for
+inference, and writes tidy data, paired tests, `booktabs` LaTeX tables, PDF/PNG
+figures, and a source manifest below `analysis_artifacts/`. Its default is
+strict: incomplete or incompatible runs produce the inventory and diagnostics
+but stop thesis aggregation. `--allow-incomplete` is reserved for explicitly
+exploratory partial summaries.
+
+`analysis_artifacts/` is disposable staging and is ignored by Git. After a
+strict, complete analysis succeeds, publish an immutable, shareable snapshot:
+
+```bash
+make publish-thesis
+git add thesis_results/
+```
+
+The publisher refuses analyses with validity errors or no canonical rows. It
+stores the snapshot below `thesis_results/<config>/<signature>/`, copies the
+configuration and runtime experiment manifest, and generates
+`publication_manifest.csv` plus `SHA256SUMS`. Shareable CSV/JSON/Markdown,
+LaTeX tables, and final PDF/PNG figures are tracked there. Files larger than
+10 MiB are listed as omitted and should be distributed with the complete raw
+result archive through a matching GitHub Release.
+
+After the current max-limited experiment scope is complete, build the
+deterministic raw-results ZIP and checksum without adding either to Git:
+
+```bash
+make package-results \
+  EXPERIMENT_CONFIG=config/experiments/top10_with_sentiment.json
+```
+
+The packager validates every expected strategy/stock/seed run manifest and its
+comparison files before creating `release_assets/<config>-<signature>.zip` and
+the adjacent `.sha256` file. Upload those two immutable files to the matching
+GitHub Release. `release_assets/`, raw `results/`, and analysis staging remain
+ignored by Git.
+
+The primary paired sign convention is `method - naive-last`, so negative MSE
+or MAE deltas favour the method. Relative improvement is positive when the
+method beats naive-last. Seed-level outcomes are descriptive; exact signed-rank
+tests and bootstrap intervals use equity-level seed averages as the statistical
+units.
+
+When restarting an experiment from scratch, `make clean` also removes all
+generated files below `analysis_artifacts/`, preventing stale thesis outputs
+from being mistaken for results from the new run. Use `make clean-preview` to
+inspect all affected paths first, or `make clean-analysis` to clear only the
+staging analysis outputs. It never removes published `thesis_results/`
+snapshots. Raw `results/` and staging `analysis_artifacts/` are ignored by Git;
+validated thesis snapshots remain tracked and portable between devices.
 
 ## Unified pretraining
 
@@ -815,7 +903,8 @@ least `jepa_gap_patches + jepa_target_patches = 8` patches.
 
 ### Inspect commands safely
 
-Start with a dry run. This prints commands without executing them and still writes the run summary:
+Start with a verbose dry run. This prints commands without executing them and
+still writes the run summary:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
@@ -826,7 +915,8 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --pretrain-num-epochs 3 \
   --checkpoint-to-use 2 \
   --eval-num-epochs 4 \
-  --dry-run
+  --dry-run \
+  --verbose
 ```
 
 Remove `--skip-download` from a dry run if you also want to inspect the generated download command.
@@ -851,7 +941,7 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --mae-loss mse \
   --pretrain-stride 5 \
   --normalization train_zscore \
-  --seed 42 \
+  --seeds 42 \
   --pretrain-num-epochs 2001 \
   --checkpoint-to-use 2000 \
   --eval-num-epochs 501
@@ -942,7 +1032,8 @@ The strategy, loss weights, local-window settings, and checkpoint epoch must mat
 | Option | Behavior |
 | --- | --- |
 | `--stocks NVDA MSFT ...` | Explicit ticker list. Without it, the built-in top NASDAQ-100 list is used. |
-| `--max-stocks N` | Uses only the first `N` selected tickers. The default is `5`; use `0` for all. |
+| `--max-stocks N` | Uses only the first `N` stocks from the ordered selection, including `common.stocks` for configured runs. Use `0` for all stocks. |
+| `--max-seeds N` | Uses only the first `N` seeds from the ordered selection, including `common.seeds` for configured runs. Use `0` for all seeds. |
 | `--skip-download` | Skips both price and news ingestion. Existing local CSVs are required. |
 | `--skip-news` | Downloads prices but skips news scoring and ensures zero-valued sentiment columns exist. |
 | `--download-start-date`, `--download-end-date` | Raw price/news download range in `YYYY-MM-DD` format. |
@@ -950,8 +1041,7 @@ The strategy, loss weights, local-window settings, and checkpoint epoch must mat
 | `--max-news-articles N` | Limits the news articles processed per symbol. |
 | `--news-chunk-days N` | Size of each news request window. |
 | `--request-delay SECONDS` | Delay between news requests. |
-| `--seed N` | Reproducible single-seed run; default `42`. |
-| `--seeds N ...` | Runs every stock for every listed seed and aggregates mean/std; overrides `--seed`. |
+| `--seeds N ...` | Ordered pool for standalone runs; configured experiments read seeds only from `common.seeds`. |
 | `--mask-strategies NAME ...` | Runs one or more strategies in isolated strategy subdirectories; default `random`. |
 | `--series-split-size N` | Rows per pretraining window; must be divisible by `--patch-size`. |
 | `--patch-size N` | Rows per temporal patch; local/long geometry is validated against the resulting patch count. |
@@ -963,8 +1053,9 @@ The strategy, loss weights, local-window settings, and checkpoint epoch must mat
 | `--market-data NAME` | Optionally aligns market returns, for example `NASDAQ100`. |
 | `--encoder-weights ema|online` | Chooses downstream checkpoint encoder; default `ema`. |
 | `--use-best-checkpoint` | Evaluates each run's deterministic `..._best.pt` instead of `--checkpoint-to-use`. |
-| `--results-dir PATH` | Changes the output root; per-stock subdirectories and combined files are created below it. |
+| `--results-dir PATH` | Changes the output root for standalone runs without `--config`; configured runs always use `results/<config filename>`. |
 | `--skip-combined-plot` | Runs evaluations without creating the final combined CSV and PNG. |
+| `--verbose` | Shows configuration summaries, commands, and child-process output. Off by default; quiet mode prints only `stock`, `seed`, and `status` for active runs. |
 
 To rebuild the combined image manually from existing per-stock results:
 

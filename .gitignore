@@ -164,3 +164,9 @@ cython_debug/
 logs/*
 data/MNIST/
 *.zip
+
+# Generated experiment output and disposable thesis-analysis staging.
+# Validated, shareable thesis snapshots belong under thesis_results/ instead.
+/results/
+/analysis_artifacts/
+/release_assets/

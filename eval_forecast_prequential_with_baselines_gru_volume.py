@@ -17,6 +17,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import os
 import json
+import platform
+import subprocess
 from datetime import datetime
 import imageio.v2 as imageio
 
@@ -88,6 +90,30 @@ def forecast_axis_label(config):
     if target == "relative_return":
         return "Relative return from forecast cutoff"
     return "Normalized target value"
+
+
+def runtime_provenance():
+    """Best-effort immutable environment metadata for result auditing."""
+    try:
+        git_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        git_commit = None
+    hardware = platform.platform()
+    if torch.cuda.is_available():
+        hardware += f"; GPU={torch.cuda.get_device_name(0)}"
+    return {
+        "git_commit_sha": git_commit,
+        "python_version": platform.python_version(),
+        "pytorch_version": torch.__version__,
+        "cuda_version": torch.version.cuda,
+        "hardware": hardware,
+    }
 
 
 # =========================================================
@@ -245,12 +271,16 @@ def prequential_gru_evaluate(
                     eval_stride=eval_stride,
                     horizon_step=horizon_step,
                 )
+                target_date = _maybe_get_dataset_date(
+                    dataset, sample_idx, horizon_step
+                )
 
                 forecast_rows.append({
                     "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
+                    "target_date": target_date,
                     "predicted_value": float(pred_value),
                     "locked": True,
                 })
@@ -267,12 +297,16 @@ def prequential_gru_evaluate(
                     eval_stride=eval_stride,
                     horizon_step=horizon_step,
                 )
+                target_date = _maybe_get_dataset_date(
+                    dataset, sample_idx, horizon_step
+                )
 
                 score_rows.append({
                     "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
+                    "target_date": target_date,
                     "predicted_value": float(pred_value),
                     "true_value": float(true_value),
                     "error": error,
@@ -296,6 +330,7 @@ def prequential_gru_evaluate(
                 "rolling_step",
                 "horizon_step",
                 "target_index",
+                "target_date",
                 "predicted_value",
                 "locked",
             ],
@@ -311,6 +346,7 @@ def prequential_gru_evaluate(
                 "rolling_step",
                 "horizon_step",
                 "target_index",
+                "target_date",
                 "predicted_value",
                 "true_value",
                 "error",
@@ -1055,7 +1091,35 @@ def _maybe_get_dataset_index(dataset, sample_idx, eval_stride, horizon_step):
             except Exception:
                 pass
 
+    if hasattr(dataset, "sample_starts"):
+        try:
+            context_length = int(dataset.context_size) * int(dataset.patch_size)
+            return (
+                int(dataset.sample_starts[sample_idx])
+                + context_length
+                + int(horizon_step)
+            )
+        except (AttributeError, IndexError, TypeError, ValueError):
+            pass
+
     return int(sample_idx * eval_stride + horizon_step)
+
+
+def _maybe_get_dataset_date(dataset, sample_idx, horizon_step):
+    """Return the actual target date when the evaluation dataset exposes it."""
+    if not hasattr(dataset, "dates") or not hasattr(dataset, "sample_starts"):
+        return ""
+    try:
+        context_length = int(dataset.context_size) * int(dataset.patch_size)
+        target_position = (
+            int(dataset.sample_starts[sample_idx])
+            + context_length
+            + int(horizon_step)
+        )
+        value = dataset.dates[target_position]
+        return value.isoformat() if hasattr(value, "isoformat") else str(value)
+    except (AttributeError, IndexError, TypeError, ValueError):
+        return ""
 
 
 
@@ -1122,6 +1186,9 @@ def prequential_baseline_evaluate(
                     eval_stride=eval_stride,
                     horizon_step=horizon_step,
                 )
+                target_date = _maybe_get_dataset_date(
+                    dataset, sample_idx, horizon_step
+                )
 
                 all_forecast_rows.append({
                     "model": baseline_name,
@@ -1129,6 +1196,7 @@ def prequential_baseline_evaluate(
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
+                    "target_date": target_date,
                     "predicted_value": float(pred_value),
                     "locked": True,
                 })
@@ -1144,6 +1212,9 @@ def prequential_baseline_evaluate(
                     eval_stride=eval_stride,
                     horizon_step=horizon_step,
                 )
+                target_date = _maybe_get_dataset_date(
+                    dataset, sample_idx, horizon_step
+                )
 
                 all_score_rows.append({
                     "model": baseline_name,
@@ -1151,6 +1222,7 @@ def prequential_baseline_evaluate(
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
+                    "target_date": target_date,
                     "predicted_value": float(pred_value),
                     "true_value": float(true_value),
                     "error": error,
@@ -1205,6 +1277,7 @@ def prequential_baseline_evaluate(
                 "rolling_step",
                 "horizon_step",
                 "target_index",
+                "target_date",
                 "predicted_value",
                 "locked",
             ],
@@ -1221,6 +1294,7 @@ def prequential_baseline_evaluate(
                 "rolling_step",
                 "horizon_step",
                 "target_index",
+                "target_date",
                 "predicted_value",
                 "true_value",
                 "error",
@@ -1474,12 +1548,16 @@ def prequential_rolling_evaluate(
                     eval_stride=eval_stride,
                     horizon_step=horizon_step,
                 )
+                target_date = _maybe_get_dataset_date(
+                    dataset, sample_idx, horizon_step
+                )
 
                 forecast_rows.append({
                     "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
+                    "target_date": target_date,
                     "predicted_value": float(pred_value),
                     "locked": True,
                 })
@@ -1511,12 +1589,16 @@ def prequential_rolling_evaluate(
                     eval_stride=eval_stride,
                     horizon_step=horizon_step,
                 )
+                target_date = _maybe_get_dataset_date(
+                    dataset, sample_idx, horizon_step
+                )
 
                 score_rows.append({
                     "forecast_target": config.get("forecast_target", "value"),
                     "rolling_step": sample_idx,
                     "horizon_step": horizon_step + 1,
                     "target_index": target_index,
+                    "target_date": target_date,
                     "predicted_value": float(pred_value),
                     "true_value": float(true_value),
                     "error": error,
@@ -1540,6 +1622,7 @@ def prequential_rolling_evaluate(
                 "rolling_step",
                 "horizon_step",
                 "target_index",
+                "target_date",
                 "predicted_value",
                 "locked",
             ],
@@ -1558,6 +1641,7 @@ def prequential_rolling_evaluate(
                 "rolling_step",
                 "horizon_step",
                 "target_index",
+                "target_date",
                 "predicted_value",
                 "true_value",
                 "error",
@@ -1881,21 +1965,52 @@ if __name__ == "__main__":
         "normalization_stats": normalization_stats,
         "robust_zscore_clip": robust_zscore_clip,
         "forecast_target": forecast_target,
-        "target_definition": (
-            "log(Close[t+h] / Close[t]) - log(Market[t+h] / Market[t])"
-            if forecast_target == "excess_log_return"
-            else (
-                "log(Close[t+h] / Close[t])"
-                if forecast_target == "cumulative_log_return"
-                else forecast_target
-            )
+        "target_definition": {
+            "value": "future target values in the configured normalized feature space",
+            "relative_return": "Close[t+h] / Close[t] - 1",
+            "cumulative_log_return": "log(Close[t+h] / Close[t])",
+            "excess_log_return": (
+                "log(Close[t+h] / Close[t]) - "
+                "log(Market[t+h] / Market[t])"
+            ),
+        }[forecast_target],
+        "metric_definition": (
+            "MSE and MAE over every saved rolling-step/horizon target value"
+        ),
+        "direction_accuracy_definition": (
+            "sign of consecutive forecast-horizon differences equals sign of "
+            "consecutive target differences; relative-return paths include the "
+            "known zero origin; cumulative/excess log-return targets compare "
+            "the binary indicators (forecast > 0) and (target > 0) at each horizon"
         ),
         "forecast_horizons": list(range(1, patch_size + 1)),
+        "forecast_horizon": patch_size,
         "market_data": market_data,
         "warmup_report": config["warmup_report"],
         "market_alignment_report": config["market_alignment_report"],
         "window_length": context_size * patch_size,
+        "context_size": context_size,
         "patch_size": patch_size,
+        "eval_stride": eval_stride,
+        "sampling_mode": sampling_mode,
+        "train_end": train_end_date,
+        "test_start": test_start_date,
+        "test_end": data_end_date,
+        "validation_fraction": validation_fraction,
+        "batch_size": config["batch_size"],
+        "downstream_epochs": config["num_epochs"],
+        "forecast_head_lr": config["lr"],
+        "checkpoint_path": config.get("pretrain_checkpoint_path"),
+        "checkpoint_selection": config.get("checkpoint_selection"),
+        "checkpoint_epoch": config.get("checkpoint_to_use"),
+        "encoder_weight_source": config.get("pretrain_encoder_weights"),
+        "fine_tune_encoder": bool(config.get("fine_tune_encoder", False)),
+        "encoder_finetune_lr": config.get("encoder_finetune_lr"),
+        "trend_weight": config.get("trend_weight"),
+        "trend_loss_temperature": config.get("trend_loss_temperature"),
+        "trend_loss_threshold": config.get("trend_loss_threshold"),
+        "trend_selection_weight": config.get("trend_selection_weight"),
+        **runtime_provenance(),
     }
     metadata_path = os.path.join(results_dir, "preprocessing_config.json")
     with open(metadata_path, "w") as metadata_file:
@@ -1949,6 +2064,22 @@ if __name__ == "__main__":
         test_start_date=test_start_date,
         data_end_date=data_end_date,
     )
+
+    preprocessing_metadata.update(
+        {
+            "test_sample_count": len(test_loader.dataset),
+            "test_target_start": _maybe_get_dataset_date(
+                test_loader.dataset, 0, 0
+            ),
+            "test_target_end": _maybe_get_dataset_date(
+                test_loader.dataset,
+                len(test_loader.dataset) - 1,
+                patch_size - 1,
+            ),
+        }
+    )
+    with open(metadata_path, "w") as metadata_file:
+        json.dump(preprocessing_metadata, metadata_file, indent=2, sort_keys=True)
 
     sample_context, sample_target = train_loader.dataset[0]
 

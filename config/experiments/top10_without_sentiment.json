@@ -12,11 +12,11 @@
       "GOOG",
       "WMT"
     ],
-    "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51],
-    "results_dir": "./results/top10_without_sentiment"
+    "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   },
   "runner": {
-    "max_stocks": 0,
+    "max_stocks": 10,
+    "max_seeds": 10,
     "download_start_date": "2015-01-01",
     "download_end_date": "2026-01-01",
     "skip_download": true,
@@ -47,7 +47,6 @@
     "market_features": ["Close", "Volume", "MA10", "MA50"],
     "sentiment_features": ["sentiment_mean"],
     "use_sentiment": false,
-    "seed": 42,
     "encoder_weights": "ema",
     "forecast_target": "value",
     "eval_num_epochs": 501,
@@ -59,7 +58,8 @@
     "request_delay": 0.5,
     "write_mode": "append",
     "skip_combined_plot": false,
-    "dry_run": false
+    "dry_run": false,
+    "verbose": false
   },
   "analysis": {
     "strategies": ["random", "local_long"],

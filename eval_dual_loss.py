@@ -520,6 +520,20 @@ def parse_args(default_mask_strategy=None, argv=None):
 
 def build_eval_argv(args, passthrough_args):
     checkpoint_path = resolve_dual_checkpoint_path(args)
+    if args.pretrain_checkpoint_path:
+        if checkpoint_path.endswith("_best.pt"):
+            resolved_checkpoint_selection = "best_pretraining_validation"
+        elif re.search(r"_epoch_\d+\.pt$", checkpoint_path):
+            resolved_checkpoint_selection = "fixed_pretraining_epoch"
+        else:
+            resolved_checkpoint_selection = "explicit_path"
+    else:
+        resolved_checkpoint_selection = {
+            "best": "best_pretraining_validation",
+            "last": "latest_saved_pretraining_epoch",
+            "epoch": "fixed_pretraining_epoch",
+            "path": "explicit_path",
+        }[args.checkpoint_selection]
     pretrain_config = {}
     checkpoint_epoch = args.checkpoint_to_use
     if os.path.exists(checkpoint_path):
@@ -590,6 +604,8 @@ def build_eval_argv(args, passthrough_args):
         str(checkpoint_epoch),
         "--pretrain_checkpoint_path",
         checkpoint_path,
+        "--checkpoint-selection",
+        resolved_checkpoint_selection,
         "--pretrain-encoder-weights",
         args.pretrain_encoder_weights,
         "--forecast-target",

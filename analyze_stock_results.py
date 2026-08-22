@@ -35,14 +35,15 @@ def parse_args(argv=None):
         default=None,
         help=(
             "JSON or TOML experiment option file. Reads [common] and [analysis]; "
-            "explicit command-line options take precedence."
+            "explicit command-line options except stocks/seeds take precedence."
         ),
     )
     parser.add_argument(
         "--results-dir",
         default="./results/top10_nasdaq100_mask_comparison",
         help=(
-            "Experiment root. Multi-strategy runs are expected below "
+            "Standalone analysis root. Configured analyses derive "
+            "results/<config filename>; multi-strategy runs are expected below "
             "RESULTS_DIR/STRATEGY/STOCK/seed_N."
         ),
     )
