@@ -210,7 +210,7 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             results_dir = root / "results" / "experiment"
-            output_dir = root / "analysis_artifacts"
+            output_dir = root / "analysis_artifacts" / "experiment"
             stocks = ["AAA", "BBB"]
             seeds = [1, 2]
             for strategy in ("random", "local_long"):
@@ -265,8 +265,6 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
                 [
                     "--config",
                     str(config_path),
-                    "--output-dir",
-                    str(output_dir),
                     "--bootstrap-samples",
                     "200",
                 ]
@@ -331,8 +329,6 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
                 [
                     "--config",
                     str(missing_config),
-                    "--output-dir",
-                    str(output_dir),
                     "--bootstrap-samples",
                     "20",
                     "--skip-figures",
@@ -340,10 +336,15 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
             )
             with self.assertRaisesRegex(RuntimeError, "validity error"):
                 run_analysis(strict_args)
-            self.assertFalse(
-                (output_dir / "tables" / "table_main_metrics.tex").exists()
+            missing_output_dir = (
+                root / "analysis_artifacts" / "missing_experiment"
             )
-            self.assertTrue((output_dir / "data" / "missing_runs.csv").exists())
+            self.assertFalse(
+                (missing_output_dir / "tables" / "table_main_metrics.tex").exists()
+            )
+            self.assertTrue(
+                (missing_output_dir / "data" / "missing_runs.csv").exists()
+            )
 
 
 if __name__ == "__main__":

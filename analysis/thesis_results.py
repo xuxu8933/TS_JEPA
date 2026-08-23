@@ -198,11 +198,6 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         default="config/experiments/top10_with_sentiment.json",
         help="Experiment JSON used to define expected stocks, seeds, and strategies.",
     )
-    parser.add_argument(
-        "--output-dir",
-        default="analysis_artifacts",
-        help="Analysis output root (never used as an experiment input).",
-    )
     parser.add_argument("--stocks", nargs="+", default=None)
     parser.add_argument("--seeds", nargs="+", type=int, default=None)
     parser.add_argument("--strategies", nargs="+", default=None)
@@ -3222,7 +3217,9 @@ def _console_report(
 
 def run_analysis(args: argparse.Namespace) -> int:
     scope, results_dir = load_scope(args)
-    output_dir = Path(args.output_dir)
+    output_dir = (
+        results_dir.parent.parent / "analysis_artifacts" / Path(args.config).stem
+    )
     data_dir = output_dir / "data"
     tables_dir = output_dir / "tables"
     figures_dir = output_dir / "figures"
@@ -3232,6 +3229,7 @@ def run_analysis(args: argparse.Namespace) -> int:
     _clear_stale_thesis_artifacts(output_dir)
 
     print(f"Result root: {results_dir}")
+    print(f"Analysis output: {output_dir}")
     print(f"Expected stocks ({len(scope['stocks'])}): {', '.join(scope['stocks'])}")
     print(f"Expected seeds ({len(scope['seeds'])}): {', '.join(map(str, scope['seeds']))}")
     print(f"Strategies: {', '.join(scope['strategies'])}")
@@ -3422,7 +3420,6 @@ def run_analysis(args: argparse.Namespace) -> int:
     command_parts = [
         "conda run --no-capture-output -n ts-jepa python analyze_thesis_results.py",
         f"--config {shlex.quote(str(args.config))}",
-        f"--output-dir {shlex.quote(str(output_dir))}",
         f"--reference-strategy {shlex.quote(scope['reference_strategy'])}",
         f"--bootstrap-samples {args.bootstrap_samples}",
         f"--analysis-seed {args.analysis_seed}",

@@ -129,6 +129,23 @@ class PublishThesisResultsTest(unittest.TestCase):
                     root / "thesis_results",
                 )
 
+    def test_allows_clearly_marked_incomplete_test_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            analysis_dir = self._write_valid_analysis(root, error_issues=2)
+
+            destination = publish_thesis_results(
+                analysis_dir,
+                root / "test_publications",
+                allow_incomplete=True,
+            )
+
+            self.assertTrue(destination.name.startswith("incomplete-aaaaaaaaaaaa-"))
+            readme = (destination / "README.md").read_text(encoding="utf-8")
+            self.assertIn("INCOMPLETE TEST SNAPSHOT", readme)
+            self.assertIn("2 validity error(s)", readme)
+            self.assertIn("not a validated thesis result", readme)
+
 
 if __name__ == "__main__":
     unittest.main()

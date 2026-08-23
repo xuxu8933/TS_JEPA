@@ -479,23 +479,25 @@ thesis artifacts without retraining:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python analyze_thesis_results.py \
-  --config config/experiments/top10_with_sentiment.json \
-  --output-dir analysis_artifacts
+  --config config/experiments/top10_with_sentiment.json
 ```
 
 The analysis recomputes metrics from saved score rows where possible, audits
 direction accuracy for every method, preserves stock-level clustering for
 inference, and writes tidy data, paired tests, `booktabs` LaTeX tables, PDF/PNG
-figures, and a source manifest below `analysis_artifacts/`. Its default is
-strict: incomplete or incompatible runs produce the inventory and diagnostics
-but stop thesis aggregation. `--allow-incomplete` is reserved for explicitly
-exploratory partial summaries.
+figures, and a source manifest below `analysis_artifacts/<config-name>/`. The
+output name is derived from the config filename, matching the corresponding
+`results/<config-name>/` directory. Its default is strict: incomplete or
+incompatible runs produce the inventory and diagnostics but stop thesis
+aggregation. `--allow-incomplete` is reserved for explicitly exploratory
+partial summaries.
 
 `analysis_artifacts/` is disposable staging and is ignored by Git. After a
 strict, complete analysis succeeds, publish an immutable, shareable snapshot:
 
 ```bash
-make publish-thesis
+make publish-thesis \
+  ANALYSIS_DIR=analysis_artifacts/top10_with_sentiment
 git add thesis_results/
 ```
 
@@ -506,6 +508,12 @@ configuration and runtime experiment manifest, and generates
 LaTeX tables, and final PDF/PNG figures are tracked there. Files larger than
 10 MiB are listed as omitted and should be distributed with the complete raw
 result archive through a matching GitHub Release.
+
+For publication-pipeline testing only, `publish_thesis_results.py
+--allow-incomplete` permits an analysis with recorded validity errors. Such a
+snapshot is prefixed with `incomplete-` and carries a prominent warning in its
+README. Write these tests outside `thesis_results/`; they are not validated
+thesis results.
 
 After the current max-limited experiment scope is complete, build the
 deterministic raw-results ZIP and checksum without adding either to Git:

@@ -136,10 +136,19 @@ def _append_publication_note(
     *,
     snapshot_name: str,
     omitted_count: int,
+    validity_error_count: int,
 ) -> None:
     existing = readme_path.read_text(encoding="utf-8") if readme_path.exists() else ""
+    validity_note = ""
+    if validity_error_count:
+        validity_note = (
+            "\n> **INCOMPLETE TEST SNAPSHOT:** This analysis contains "
+            f"{validity_error_count} validity error(s) and is not a validated "
+            "thesis result.\n"
+        )
     note = (
         "\n## Git publication\n\n"
+        f"{validity_note}"
         f"- Immutable snapshot: `{snapshot_name}`\n"
         "- Full raw experiment outputs are intentionally excluded from Git.\n"
         "- `SHA256SUMS` verifies every published file.\n"
@@ -156,6 +165,7 @@ def publish_thesis_results(
     publish_root: Path | str = "thesis_results",
     *,
     max_file_bytes: int = DEFAULT_MAX_FILE_BYTES,
+    allow_incomplete: bool = False,
 ) -> Path:
     analysis_dir = Path(analysis_dir).resolve()
     publish_root = Path(publish_root).resolve()
@@ -185,7 +195,7 @@ def publish_thesis_results(
         raise ValueError(
             "Analysis metadata must record integer error_issues and canonical_rows"
         ) from exc
-    if error_issues:
+    if error_issues and not allow_incomplete:
         raise RuntimeError(
             f"Refusing to publish analysis with {error_issues} validity error(s)"
         )
@@ -196,6 +206,8 @@ def publish_thesis_results(
         analysis_dir,
         metadata,
     )
+    if error_issues:
+        snapshot_name = f"incomplete-{snapshot_name}"
     destination = publish_root / config_name / snapshot_name
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -272,6 +284,7 @@ def publish_thesis_results(
             temporary / "README.md",
             snapshot_name=snapshot_name,
             omitted_count=omitted_count,
+            validity_error_count=error_issues,
         )
 
         publication_manifest = temporary / "publication_manifest.csv"
@@ -322,6 +335,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--analysis-dir", default="analysis_artifacts")
     parser.add_argument("--publish-root", default="thesis_results")
+    parser.add_argument(
+        "--allow-incomplete",
+        action="store_true",
+        help=(
+            "Publish despite recorded validity errors as a clearly marked "
+            "incomplete test snapshot."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -330,7 +351,13 @@ def main() -> int:
     destination = publish_thesis_results(
         args.analysis_dir,
         args.publish_root,
+        allow_incomplete=args.allow_incomplete,
     )
+    if args.allow_incomplete:
+        print(
+            "WARNING: --allow-incomplete is enabled; this snapshot is for "
+            "testing and is not a validated thesis result."
+        )
     print(f"Published thesis snapshot: {destination}")
     return 0
 

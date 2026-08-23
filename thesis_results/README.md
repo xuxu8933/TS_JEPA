@@ -7,7 +7,8 @@ Generate disposable analysis output under `analysis_artifacts/`, then publish a
 validated snapshot with:
 
 ```bash
-python publish_thesis_results.py
+python publish_thesis_results.py \
+  --analysis-dir analysis_artifacts/<config-name>
 ```
 
 Snapshots are stored below `<config-name>/<experiment-and-analysis-signature>/`.

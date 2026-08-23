@@ -1,28 +1,28 @@
 {
   "common": {
     "stocks": [
-      "NVDA",
+      "COST",
       "AAPL",
       "MSFT",
       "AMZN",
-      "GOOGL",
+      "NVDA",
       "AVGO",
       "META",
       "TSLA",
-      "GOOG",
+      "GOOGL",
       "WMT"
     ],
     "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
   },
   "runner": {
     "execution": {
-      "max_stocks": 2,
-      "max_seeds": 2,
+      "max_stocks": 10,
+      "max_seeds": 10,
       "dry_run": false,
       "verbose": false
     },
     "download": {
-      "skip": true,
+      "skip": false,
       "start_date": "2015-01-01",
       "end_date": "2026-01-01",
       "write_mode": "append",
@@ -70,7 +70,7 @@
       "skip": false,
       "epochs": 2001,
       "windows": {
-        "series_size": 120,
+        "series_size": 60,
         "patch_size": 5,
         "stride": 5,
         "sampling_mode": "sliding_window"
