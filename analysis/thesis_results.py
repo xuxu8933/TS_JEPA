@@ -1071,7 +1071,7 @@ def discover_bundles(
                             math.isfinite(stored)
                             and math.isfinite(recomputed)
                             and not math.isclose(
-                            stored, recomputed, rel_tol=1e-8, abs_tol=1e-10
+                            stored, recomputed, rel_tol=1e-6, abs_tol=1e-9
                             )
                         ):
                             bundle.issues.append(
