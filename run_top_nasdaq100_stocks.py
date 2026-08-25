@@ -30,6 +30,7 @@ NON_RESULT_CONFIG_KEYS = frozenset(
         "skip_pretrain",
         "skip_combined_plot",
         "dry_run",
+        "max_parallel_jobs",
         "request_delay",
         "verbose",
     )
@@ -577,6 +578,15 @@ def parse_args(argv=None):
         default=0,
         help="Limit how many configured seeds to run. Use 0 to run all seeds.",
     )
+    parser.add_argument(
+        "--max-parallel-jobs",
+        type=int,
+        default=1,
+        help=(
+            "Maximum independent pretrain/evaluation task chains to run "
+            "concurrently."
+        ),
+    )
     parser.add_argument("--download-start-date", default="2015-01-01")
     parser.add_argument("--download-end-date", default=date.today().isoformat())
     parser.add_argument(
@@ -746,7 +756,10 @@ def parse_args(argv=None):
             "By default, show only per-run stock/seed status."
         ),
     )
-    return parse_args_with_config(parser, argv, section="runner")
+    args = parse_args_with_config(parser, argv, section="runner")
+    if args.max_parallel_jobs <= 0:
+        parser.error("--max-parallel-jobs must be positive")
+    return args
 
 
 def resolve_mask_strategies(args):

@@ -169,6 +169,7 @@ def flatten_runner_options(runner, config_path):
         mappings = {
             "max_stocks": "max_stocks",
             "max_seeds": "max_seeds",
+            "max_parallel_jobs": "max_parallel_jobs",
             "dry_run": "dry_run",
             "verbose": "verbose",
         }
