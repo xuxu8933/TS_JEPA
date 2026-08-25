@@ -318,15 +318,14 @@ class StockMaskComparisonTest(unittest.TestCase):
                 with redirect_stdout(output):
                     run_stock_main(["--config", str(config_path)])
 
-            self.assertEqual(
-                output.getvalue().splitlines(),
-                [
-                    "stock=NVDA seed=42 status=random:dry-run",
-                    "stock=NVDA seed=43 status=random:dry-run",
-                    "stock=AAPL seed=42 status=random:dry-run",
-                    "stock=AAPL seed=43 status=random:dry-run",
-                ],
-            )
+            marker, payload = output.getvalue().split("\n", 1)
+            self.assertEqual(marker, "DRY_RUN_VALIDATION")
+            dry_run_report = json.loads(payload)
+            self.assertEqual(dry_run_report["stocks"], ["NVDA", "AAPL"])
+            self.assertEqual(dry_run_report["seeds"], [42, 43])
+            self.assertEqual(dry_run_report["stock_count"], 2)
+            self.assertEqual(dry_run_report["seed_count"], 2)
+            self.assertTrue(dry_run_report["training_disabled"])
             args = parse_stock_runner_args(["--config", str(config_path)])
             manifest = build_experiment_manifest(
                 args,

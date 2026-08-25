@@ -11,6 +11,7 @@ from pathlib import Path
 
 from download_indices_and_news import TOP_NASDAQ100_STOCKS
 from config.config_pretrain import config as pretrain_defaults
+from config.experiment import effective_feature_columns, resolve_forecast_horizon
 from config.file_options import parse_args_with_config
 from config.preprocessing_presets import PREPROCESSING_PRESETS
 from pretrain_dual_loss import (
@@ -1199,6 +1200,87 @@ def build_combined_plot_command(
     ]
 
 
+def current_git_branch(repo_root=None):
+    """Read the current branch without launching a subprocess."""
+    repo_root = Path(repo_root or Path(__file__).resolve().parent)
+    git_path = repo_root / ".git"
+    if git_path.is_file():
+        pointer = git_path.read_text(encoding="utf-8").strip()
+        if not pointer.startswith("gitdir:"):
+            return "unknown"
+        git_path = (git_path.parent / pointer.split(":", 1)[1].strip()).resolve()
+    head = (git_path / "HEAD").read_text(encoding="utf-8").strip()
+    prefix = "ref: refs/heads/"
+    return head[len(prefix):] if head.startswith(prefix) else head[:12]
+
+
+def build_dry_run_report(args, stocks, seeds, strategies):
+    """Validate inputs and describe a run without creating or executing anything."""
+    preprocessing = resolve_preprocessing_settings(args)
+    market_features = list(
+        preprocessing.get("market_features")
+        or ["Close", "Volume", "MA10", "MA50"]
+    )
+    sentiment_features = list(preprocessing.get("sentiment_features") or [])
+    feature_names = effective_feature_columns(
+        market_features,
+        sentiment_features or ["sentiment_mean"],
+        preprocessing["use_sentiment"],
+    )
+    forecast_horizon = resolve_forecast_horizon(
+        getattr(args, "forecast_horizon", None),
+        args.patch_size,
+    )
+
+    repo_root = Path(__file__).resolve().parent
+    missing_paths = []
+    for stock in stocks:
+        price_path = repo_root / "data" / stock / f"{stock}.csv"
+        if not price_path.is_file():
+            missing_paths.append(price_path)
+        if preprocessing["use_sentiment"]:
+            sentiment_path = (
+                repo_root / "data" / stock / f"{stock}_daily_sentiment.csv"
+            )
+            if not sentiment_path.is_file():
+                missing_paths.append(sentiment_path)
+    if missing_paths:
+        rendered = "\n  ".join(str(path) for path in missing_paths)
+        raise FileNotFoundError(
+            "Dry-run validation missing required input files:\n  " + rendered
+        )
+
+    if not preprocessing["use_sentiment"]:
+        sentiment_handling = "disabled"
+    elif preprocessing["sentiment_normalization"] == "train_zscore":
+        sentiment_handling = "same-date merge with per-stock train-only z-score"
+    else:
+        sentiment_handling = "same-date raw sentiment/news features"
+
+    return {
+        "experiment_name": (
+            Path(args.config).stem if args.config else "standalone"
+        ),
+        "git_branch": current_git_branch(repo_root),
+        "stock_count": len(stocks),
+        "stocks": list(stocks),
+        "seed_count": len(seeds),
+        "seeds": list(seeds),
+        "mask_strategies": list(strategies),
+        "forecast_horizon": forecast_horizon,
+        "feature_names": feature_names,
+        "feature_count": len(feature_names),
+        "patch_size": int(args.patch_size),
+        "flattened_patch_input_dimension": int(args.patch_size)
+        * len(feature_names),
+        "sentiment_handling": sentiment_handling,
+        "sentiment_normalization": preprocessing["sentiment_normalization"],
+        "normalization_mode": preprocessing["normalization"],
+        "output_directory": str(Path(args.results_dir)),
+        "training_disabled": True,
+    }
+
+
 def main(argv=None):
     args = parse_args(argv)
     preprocessing = resolve_preprocessing_settings(args)
@@ -1231,6 +1313,12 @@ def main(argv=None):
         print(f"Requested coverage: {requested_count} runs.", flush=True)
         print(f"Completed compatible runs: {completed_count}.", flush=True)
         print(f"Missing runs: {missing_count}.", flush=True)
+
+    if args.dry_run:
+        report = build_dry_run_report(args, stocks, seeds, strategies)
+        print("DRY_RUN_VALIDATION")
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return
 
     if not execution_plan["tasks"]:
         if not args.dry_run:

@@ -4,8 +4,9 @@ import json
 import math
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
@@ -13,6 +14,7 @@ import torch
 import config.experiment as experiment_config
 import src.data_loaders.data_class_roll_volume as roll_volume
 import src.data_loaders.financial_preprocessing as financial_preprocessing
+import run_top_nasdaq100_stocks as stock_runner
 from eval_dual_loss import build_eval_argv, parse_args as parse_eval_args
 from config.config_pretrain import config as pretrain_config
 from pretrain_dual_loss import parse_args as parse_pretrain_args
@@ -469,6 +471,107 @@ class ConfigIsolationTest(unittest.TestCase):
         self.assertTrue(report["valid"], report)
         self.assertTrue(report["published_controls_verified"])
         self.assertEqual(set(report["configs"]), set(self.EXPECTED))
+
+
+class DryRunSafetyTest(unittest.TestCase):
+    def test_reports_exact_structured_values_for_all_configs(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        expected = ConfigIsolationTest.EXPECTED
+        for filename, (horizon, features, dimension) in expected.items():
+            with self.subTest(config=filename):
+                config_path = repo_root / "config" / "experiments" / filename
+                args = stock_runner.parse_args(
+                    ["--config", str(config_path), "--dry-run"]
+                )
+                report_builder = getattr(
+                    stock_runner,
+                    "build_dry_run_report",
+                    None,
+                )
+                self.assertIsNotNone(report_builder)
+                report = report_builder(
+                    args,
+                    stock_runner.resolve_stocks(args),
+                    stock_runner.resolve_seeds(args),
+                    stock_runner.resolve_mask_strategies(args),
+                )
+                self.assertEqual(report["experiment_name"], Path(filename).stem)
+                self.assertEqual(report["git_branch"], "single-dim")
+                self.assertEqual(report["stock_count"], 10)
+                self.assertEqual(report["stocks"], ConfigIsolationTest.EXPECTED_STOCKS)
+                self.assertEqual(report["seed_count"], 10)
+                self.assertEqual(report["seeds"], list(range(42, 52)))
+                self.assertEqual(report["forecast_horizon"], horizon)
+                self.assertEqual(report["feature_names"], features)
+                self.assertEqual(report["feature_count"], len(features))
+                self.assertEqual(report["patch_size"], 5)
+                self.assertEqual(
+                    report["flattened_patch_input_dimension"],
+                    dimension,
+                )
+                self.assertTrue(report["training_disabled"])
+
+    def test_dry_run_returns_before_writes_or_execution(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        config_path = (
+            repo_root
+            / "config/experiments/top10_h1_with_sentiment.json"
+        )
+        fake_plan = {
+            "requested_runs": [("NVDA", 42)],
+            "completed_runs": set(),
+            "missing_runs": [("NVDA", 42)],
+            "tasks": [{"would": "train"}],
+        }
+        real_path_open = Path.open
+
+        def reject_writes(path, mode="r", *args, **kwargs):
+            if any(marker in mode for marker in ("w", "a", "+", "x")):
+                raise AssertionError("file write reached")
+            return real_path_open(path, mode, *args, **kwargs)
+
+        output = io.StringIO()
+        with (
+            patch.object(
+                stock_runner,
+                "validate_existing_experiment",
+                return_value=False,
+            ),
+            patch.object(stock_runner, "reject_duplicate_experiment_config"),
+            patch.object(
+                stock_runner,
+                "plan_incremental_execution",
+                return_value=fake_plan,
+            ),
+            patch.object(
+                stock_runner,
+                "run_command",
+                side_effect=AssertionError("execution reached"),
+            ),
+            patch.object(
+                stock_runner,
+                "execute_tasks",
+                side_effect=AssertionError("training reached"),
+            ),
+            patch.object(
+                stock_runner,
+                "_write_json",
+                side_effect=AssertionError("write reached"),
+            ),
+            patch.object(
+                Path,
+                "mkdir",
+                side_effect=AssertionError("directory creation reached"),
+            ),
+            patch.object(Path, "open", new=reject_writes),
+            redirect_stdout(output),
+        ):
+            stock_runner.main(
+                ["--config", str(config_path), "--dry-run"]
+            )
+        rendered = output.getvalue()
+        self.assertIn("DRY_RUN_VALIDATION", rendered)
+        self.assertIn('"training_disabled": true', rendered)
 
 
 if __name__ == "__main__":
