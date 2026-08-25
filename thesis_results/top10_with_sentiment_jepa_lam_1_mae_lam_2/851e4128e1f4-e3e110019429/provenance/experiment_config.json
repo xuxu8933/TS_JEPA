@@ -52,11 +52,11 @@
     },
     "objectives": {
       "jepa": {
-        "weight": 2.0,
+        "weight": 1.5,
         "loss": "mse"
       },
       "mae": {
-        "weight": 0.0,
+        "weight": 0.5,
         "loss": "mse"
       }
     },
