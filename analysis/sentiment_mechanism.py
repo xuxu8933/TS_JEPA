@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
+import shutil
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
 
 from config.experiment import effective_feature_columns, resolve_forecast_horizon
 from run_top_nasdaq100_stocks import (
+    current_git_branch,
     effective_experiment_config,
     experiment_config_signature,
     parse_args as parse_runner_args,
@@ -725,5 +730,455 @@ def paired_stock_statistics(
     result = pd.DataFrame(rows).sort_values(
         ["hypothesis", "model", "metric"], kind="mergesort"
     ).reset_index(drop=True)
-    result["p_holm"] = holm_adjust(result["p_value"].tolist())
+    result["p_holm"] = np.nan
+    for hypothesis, group in result[
+        result["metric"].isin(("mse", "mae"))
+    ].groupby("hypothesis", sort=True):
+        indices = group.index.tolist()
+        adjusted = holm_adjust(group["p_value"].tolist())
+        result.loc[indices, "p_holm"] = adjusted
     return result
+
+
+SUMMARY_COLUMNS = [
+    "hypothesis",
+    "intervention",
+    "control",
+    "model",
+    "metric",
+    "control_mean",
+    "intervention_mean",
+    "absolute_delta",
+    "percent_delta",
+    "stock_win_count",
+    "stock_total",
+    "seed_pair_win_rate",
+    "paired_t",
+    "paired_p",
+    "paired_p_holm",
+    "cohens_dz",
+    "ci95_low",
+    "ci95_high",
+    "verdict",
+]
+
+
+def _parse_analysis_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    repo_root = Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser(
+        description="Build the deferred sentiment-mechanism analysis package."
+    )
+    parser.add_argument(
+        "--output-root",
+        default=str(repo_root / "thesis_results/sentiment_mechanism_ablation"),
+    )
+    parser.add_argument("--run-id", default=None)
+    parser.add_argument(
+        "--h1-without-results",
+        default=str(repo_root / "results/top10_h1_without_sentiment"),
+    )
+    parser.add_argument(
+        "--h1-with-results",
+        default=str(repo_root / "results/top10_h1_with_sentiment"),
+    )
+    parser.add_argument(
+        "--has-news-results",
+        default=str(repo_root / "results/top10_sentiment_has_news"),
+    )
+    parser.add_argument(
+        "--zscore-results",
+        default=str(repo_root / "results/top10_sentiment_zscore"),
+    )
+    parser.add_argument(
+        "--with-control",
+        default=str(
+            repo_root
+            / "thesis_results/top10_with_sentiment/5b8f3897bf23-02add88f32d5/data/all_runs_tidy.csv"
+        ),
+    )
+    parser.add_argument(
+        "--without-control",
+        default=str(
+            repo_root
+            / "thesis_results/top10_without_sentiment/2fab810c1e1d-d0fb2944255b/data/all_runs_tidy.csv"
+        ),
+    )
+    parser.add_argument(
+        "--validate-configs",
+        action="store_true",
+        help="Print config-isolation JSON without reading experiment results.",
+    )
+    return parser.parse_args(argv)
+
+
+def _analysis_input_paths(args: argparse.Namespace) -> dict[str, Path]:
+    return {
+        "h1_without": Path(args.h1_without_results),
+        "h1_with": Path(args.h1_with_results),
+        "has_news": Path(args.has_news_results),
+        "zscore": Path(args.zscore_results),
+        "with_control": Path(args.with_control),
+        "without_control": Path(args.without_control),
+    }
+
+
+def _preflight_inputs(paths: Mapping[str, Path]) -> None:
+    missing = [str(path) for path in paths.values() if not path.exists()]
+    if missing:
+        raise FileNotFoundError("Missing experiment inputs: " + ", ".join(missing))
+
+
+def _collect_h3_normalization_stats(
+    results_dir: Path,
+    stocks=EXPECTED_STOCKS,
+    seeds=EXPECTED_SEEDS,
+) -> dict[str, Any]:
+    per_stock = {}
+    for stock in stocks:
+        states = []
+        for seed in seeds:
+            for strategy in ("random", "local_long"):
+                metadata_path = (
+                    Path(results_dir)
+                    / strategy
+                    / stock
+                    / f"seed_{seed}"
+                    / "preprocessing_config.json"
+                )
+                if not metadata_path.is_file():
+                    raise FileNotFoundError(
+                        f"Missing H3 preprocessing metadata: {metadata_path}"
+                    )
+                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                state = metadata.get("sentiment_normalization_stats")
+                if not isinstance(state, dict):
+                    raise ValueError(
+                        f"H3 metadata has no sentiment normalization state: {metadata_path}"
+                    )
+                states.append(state)
+        canonical = states[0]
+        if any(state != canonical for state in states[1:]):
+            raise ValueError(
+                f"H3 train-only sentiment statistics disagree across runs for {stock}"
+            )
+        if canonical.get("fit_split") != "train":
+            raise ValueError(f"H3 sentiment state was not fit on train for {stock}")
+        per_stock[stock] = canonical
+    return per_stock
+
+
+def _git_commit(repo_root: Path) -> str:
+    git_path = repo_root / ".git"
+    if git_path.is_file():
+        pointer = git_path.read_text(encoding="utf-8").strip()
+        git_path = (git_path.parent / pointer.split(":", 1)[1].strip()).resolve()
+    head = (git_path / "HEAD").read_text(encoding="utf-8").strip()
+    if not head.startswith("ref: "):
+        return head
+    reference = head.split(" ", 1)[1]
+    ref_path = git_path / reference
+    if ref_path.is_file():
+        return ref_path.read_text(encoding="utf-8").strip()
+    packed_refs = git_path / "packed-refs"
+    if packed_refs.is_file():
+        for line in packed_refs.read_text(encoding="utf-8").splitlines():
+            if line and not line.startswith(("#", "^")):
+                commit, name = line.split(" ", 1)
+                if name == reference:
+                    return commit
+    return "unknown"
+
+
+def _aggregate_pair_tables(pairs: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    per_seed = pairs.copy()
+    per_seed = per_seed.rename(
+        columns={"forecast_horizon_control": "forecast_horizon"}
+    )
+    per_stock = (
+        pairs.groupby(
+            ["hypothesis", "stock", "model", "metric"],
+            sort=True,
+            as_index=False,
+        )
+        .agg(
+            control=("control", "mean"),
+            intervention=("intervention", "mean"),
+            delta=("delta", "mean"),
+            seeds=("seed", "nunique"),
+        )
+    )
+    if (per_stock["control"] == 0).any():
+        raise ValueError("Cannot compute stock percent delta from zero control")
+    per_stock["percent_delta"] = (
+        100.0 * per_stock["delta"] / per_stock["control"].abs()
+    )
+    return per_seed, per_stock
+
+
+def _model_verdicts(
+    statistics: pd.DataFrame,
+    per_stock: pd.DataFrame,
+) -> tuple[dict[tuple[str, str], str], dict[str, str]]:
+    model_verdicts = {}
+    for (hypothesis, model), group in statistics.groupby(
+        ["hypothesis", "model"], sort=True
+    ):
+        errors = group.set_index("metric").loc[["mse", "mae"]]
+        stock_group = per_stock[
+            (per_stock["hypothesis"] == hypothesis)
+            & (per_stock["model"] == model)
+            & per_stock["metric"].isin(("mse", "mae"))
+        ].copy()
+        wins = stock_group.assign(won=stock_group["delta"] < 0).groupby(
+            "metric"
+        )["won"].sum()
+        favorable = bool((errors["mean_delta"] < 0).all())
+        unfavorable = bool((errors["mean_delta"] > 0).all())
+        consistent = all(int(wins.get(metric, 0)) >= 6 for metric in ("mse", "mae"))
+        significant = bool((errors["p_holm"] < 0.05).any())
+        if favorable and consistent and significant:
+            verdict = "supported"
+        elif unfavorable:
+            verdict = "not supported"
+        else:
+            verdict = "inconclusive"
+        model_verdicts[(hypothesis, model)] = verdict
+
+    hypothesis_verdicts = {}
+    primary_models = ("TS-JEPA/random", "TS-JEPA/local_long")
+    for hypothesis in sorted(statistics["hypothesis"].unique()):
+        verdicts = [
+            model_verdicts[(hypothesis, model)] for model in primary_models
+        ]
+        if "supported" in verdicts and "not supported" not in verdicts:
+            hypothesis_verdicts[hypothesis] = "supported"
+        elif "supported" not in verdicts and "not supported" in verdicts:
+            hypothesis_verdicts[hypothesis] = "not supported"
+        else:
+            hypothesis_verdicts[hypothesis] = "inconclusive"
+    return model_verdicts, hypothesis_verdicts
+
+
+def _mechanism_summary(
+    pairs: pd.DataFrame,
+    per_stock: pd.DataFrame,
+    statistics: pd.DataFrame,
+) -> tuple[pd.DataFrame, dict[str, str]]:
+    labels = {
+        "H1": ("h1_with", "h1_without"),
+        "H2": ("has_news", "with_control"),
+        "H3": ("zscore", "with_control"),
+    }
+    model_verdicts, hypothesis_verdicts = _model_verdicts(statistics, per_stock)
+    rows = []
+    for _, stat in statistics.iterrows():
+        selection = pairs[
+            (pairs["hypothesis"] == stat["hypothesis"])
+            & (pairs["model"] == stat["model"])
+            & (pairs["metric"] == stat["metric"])
+        ]
+        stocks = per_stock[
+            (per_stock["hypothesis"] == stat["hypothesis"])
+            & (per_stock["model"] == stat["model"])
+            & (per_stock["metric"] == stat["metric"])
+        ]
+        error_metric = stat["metric"] in ("mse", "mae")
+        stock_wins = int(
+            ((stocks["delta"] < 0) if error_metric else (stocks["delta"] > 0)).sum()
+        )
+        seed_wins = (
+            (selection["delta"] < 0)
+            if error_metric
+            else (selection["delta"] > 0)
+        )
+        intervention, control = labels[stat["hypothesis"]]
+        rows.append(
+            {
+                "hypothesis": stat["hypothesis"],
+                "intervention": intervention,
+                "control": control,
+                "model": stat["model"],
+                "metric": stat["metric"],
+                "control_mean": selection["control"].mean(),
+                "intervention_mean": selection["intervention"].mean(),
+                "absolute_delta": selection["delta"].mean(),
+                "percent_delta": selection["percent_delta"].mean(),
+                "stock_win_count": stock_wins,
+                "stock_total": len(stocks),
+                "seed_pair_win_rate": float(seed_wins.mean()),
+                "paired_t": stat["t_stat"],
+                "paired_p": stat["p_value"],
+                "paired_p_holm": stat["p_holm"],
+                "cohens_dz": stat["dz"],
+                "ci95_low": stat["ci_low"],
+                "ci95_high": stat["ci_high"],
+                "verdict": model_verdicts[(stat["hypothesis"], stat["model"])],
+            }
+        )
+    return pd.DataFrame(rows, columns=SUMMARY_COLUMNS), hypothesis_verdicts
+
+
+def _render_report(summary: pd.DataFrame, verdicts: Mapping[str, str]) -> str:
+    executive_rows = [
+        f"| {hypothesis} | {verdicts[hypothesis]} |"
+        for hypothesis in ("H1", "H2", "H3")
+    ]
+    error_rows = summary[summary["metric"].isin(("mse", "mae"))]
+    return "\n".join(
+        [
+            "# Sentiment Mechanism Ablation Report",
+            "",
+            "## Executive summary",
+            "",
+            "| Hypothesis | Verdict |",
+            "|---|---|",
+            *executive_rows,
+            "",
+            "## Baseline verification",
+            "",
+            "The immutable published with- and without-sentiment controls were loaded "
+            "with exact stock, seed, model, metric, and horizon identifiers.",
+            "",
+            "## H1 — Short-horizon sentiment value",
+            "",
+            f"Verdict: **{verdicts['H1']}**. The target width is one step while the "
+            "five-row input patch geometry is unchanged.",
+            "",
+            "## H2 — News observability",
+            "",
+            f"Verdict: **{verdicts['H2']}**. `has_news` distinguishes observed neutral "
+            "news from a date with no matched article.",
+            "",
+            "## H3 — Sentiment scale",
+            "",
+            f"Verdict: **{verdicts['H3']}**. `sentiment_mean_z` uses per-stock "
+            "training-only statistics reused on validation and test.",
+            "",
+            "## Statistical summary",
+            "",
+            f"Primary inference uses {int(error_rows['stock_total'].max())} paired stock "
+            "means. Stock×seed rows are descriptive only. Holm correction is applied "
+            "within each hypothesis across JEPA/GRU MSE and MAE comparisons; direction "
+            "accuracy is secondary.",
+            "",
+            "## Overall conclusion",
+            "",
+            "The verdict rules require favorable error means, cross-stock consistency, "
+            "and corrected paired inference. Direction accuracy cannot establish support "
+            "by itself.",
+            "",
+            "## Thesis-ready interpretation",
+            "",
+            "Observations, inferential statistics, and proposed mechanisms are reported "
+            "separately. These controlled comparisons do not alter the published controls.",
+            "",
+        ]
+    )
+
+
+def run_mechanism_analysis(args: argparse.Namespace) -> Path:
+    """Preflight all inputs, compute paired tables, and atomically publish a package."""
+    paths = _analysis_input_paths(args)
+    _preflight_inputs(paths)
+    repo_root = Path(__file__).resolve().parents[1]
+    config_validation = validate_ablation_configs(repo_root)
+    if not config_validation["valid"]:
+        raise ValueError("Ablation configuration isolation validation failed")
+
+    raw = {
+        name: load_raw_experiment_results(
+            paths[name], name, EXPECTED_STOCKS, EXPECTED_SEEDS
+        )
+        for name in ("h1_without", "h1_with", "has_news", "zscore")
+    }
+    controls = {
+        name: load_published_results(paths[name], name)
+        for name in ("with_control", "without_control")
+    }
+    paired = pd.concat(
+        [
+            pair_condition_results(raw["h1_without"], raw["h1_with"], "H1"),
+            pair_condition_results(controls["with_control"], raw["has_news"], "H2"),
+            pair_condition_results(controls["with_control"], raw["zscore"], "H3"),
+        ],
+        ignore_index=True,
+    )
+    per_seed, per_stock = _aggregate_pair_tables(paired)
+    statistics = paired_stock_statistics(paired)
+    summary, hypothesis_verdicts = _mechanism_summary(
+        paired, per_stock, statistics
+    )
+    h1_results = pd.concat([raw["h1_without"], raw["h1_with"]], ignore_index=True)
+    h1_results = h1_results.sort_values(
+        ["condition", "stock", "seed", "model", "metric"], kind="mergesort"
+    )
+    h3_stats = _collect_h3_normalization_stats(paths["zscore"])
+
+    run_id = args.run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    output_root = Path(args.output_root)
+    target = output_root / run_id
+    if target.exists():
+        raise ValueError(f"Analysis package already exists: {target}")
+    output_root.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=f".{run_id}.", dir=output_root))
+    try:
+        (staging / "data").mkdir()
+        (staging / "provenance").mkdir()
+        summary.to_csv(staging / "data/mechanism_summary.csv", index=False)
+        per_stock.to_csv(staging / "data/per_stock_deltas.csv", index=False)
+        per_seed.to_csv(staging / "data/per_seed_deltas.csv", index=False)
+        h1_results.to_csv(
+            staging / "data/h1_short_horizon_results.csv", index=False
+        )
+        provenance = {
+            "run_id": run_id,
+            "generated_utc": datetime.now(timezone.utc).isoformat(),
+            "git_branch": current_git_branch(repo_root),
+            "git_commit": _git_commit(repo_root),
+            "configs": {
+                name: details["snapshot"]
+                for name, details in config_validation["configs"].items()
+            },
+            "coverage": {
+                "stocks": EXPECTED_STOCKS,
+                "seeds": EXPECTED_SEEDS,
+                "models": list(CANONICAL_MODELS),
+                "metrics": list(CANONICAL_METRICS),
+                "inferential_unit": "stock mean across seeds",
+                "descriptive_stock_seed_pairs_per_condition": 100,
+            },
+            "approved_changes": config_validation["comparisons"],
+            "published_controls": config_validation["published_controls"],
+            "input_paths": {name: str(path.resolve()) for name, path in paths.items()},
+            "h3_sentiment_normalization_stats": h3_stats,
+            "hypothesis_verdicts": hypothesis_verdicts,
+        }
+        (staging / "provenance/experiment_manifest.json").write_text(
+            json.dumps(provenance, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+        (staging / "sentiment_mechanism_report.md").write_text(
+            _render_report(summary, hypothesis_verdicts),
+            encoding="utf-8",
+        )
+        staging.rename(target)
+    except Exception:
+        if staging.exists():
+            shutil.rmtree(staging)
+        raise
+    return target
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_analysis_args(argv)
+    repo_root = Path(__file__).resolve().parents[1]
+    if args.validate_configs:
+        print(json.dumps(validate_ablation_configs(repo_root), indent=2, sort_keys=True))
+        return 0
+    try:
+        package = run_mechanism_analysis(args)
+    except (FileNotFoundError, ValueError):
+        print("Experiment results not found; run the corresponding experiment first.")
+        return 0
+    print(f"Sentiment mechanism analysis saved to: {package}")
+    return 0

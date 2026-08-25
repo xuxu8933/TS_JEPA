@@ -659,5 +659,195 @@ class PairedAnalysisTest(unittest.TestCase):
         self.assertEqual(holm_adjust([0.01, 0.04, 0.03]), [0.03, 0.06, 0.06])
 
 
+class MechanismReportTest(unittest.TestCase):
+    @staticmethod
+    def _complete_results(condition: str, horizon: int, offset: float = 0.0):
+        rows = []
+        for stock in ConfigIsolationTest.EXPECTED_STOCKS:
+            for seed in range(42, 52):
+                for model in (
+                    "TS-JEPA/random",
+                    "TS-JEPA/local_long",
+                    "GRU/random",
+                ):
+                    for metric in ("mse", "mae", "direction_accuracy"):
+                        base = 1.0 if metric != "direction_accuracy" else 0.5
+                        rows.append(
+                            {
+                                "condition": condition,
+                                "stock": stock,
+                                "seed": seed,
+                                "model": model,
+                                "metric": metric,
+                                "value": base + offset,
+                                "forecast_horizon": horizon,
+                                "source_file": f"{condition}.csv",
+                            }
+                        )
+        return pd.DataFrame(rows)
+
+    def test_missing_results_exit_cleanly_without_package(self):
+        from analysis.sentiment_mechanism import main as analysis_main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            output_root = Path(tmp) / "not-created"
+            output = io.StringIO()
+            with redirect_stdout(output):
+                status = analysis_main(["--output-root", str(output_root)])
+            self.assertEqual(status, 0)
+            self.assertEqual(
+                output.getvalue().strip(),
+                "Experiment results not found; run the corresponding experiment first.",
+            )
+            self.assertFalse(output_root.exists())
+
+    def test_complete_inputs_create_exact_deferred_package(self):
+        from analysis.sentiment_mechanism import main as analysis_main
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            input_paths = {
+                "h1_without": root / "h1_without",
+                "h1_with": root / "h1_with",
+                "has_news": root / "has_news",
+                "zscore": root / "zscore",
+                "with_control": root / "with_control.csv",
+                "without_control": root / "without_control.csv",
+            }
+            for name, path in input_paths.items():
+                if name.endswith("control"):
+                    path.touch()
+                else:
+                    path.mkdir()
+            output_root = root / "packages"
+            datasets = {
+                "h1_without": self._complete_results("h1_without", 1),
+                "h1_with": self._complete_results("h1_with", 1, -0.1),
+                "has_news": self._complete_results("has_news", 5, -0.1),
+                "zscore": self._complete_results("zscore", 5, -0.05),
+                "with_control": self._complete_results("with_control", 5),
+                "without_control": self._complete_results("without_control", 5),
+            }
+
+            def raw_loader(path, condition, stocks, seeds):
+                return datasets[condition].copy()
+
+            def published_loader(path, condition):
+                return datasets[condition].copy()
+
+            h3_stats = {
+                stock: {
+                    "mode": "train_zscore",
+                    "fit_split": "train",
+                    "features": {
+                        "sentiment_mean_z": {
+                            "source": "sentiment_mean",
+                            "mean": 0.0,
+                            "std": 1.0,
+                            "eps": 1e-6,
+                        }
+                    },
+                }
+                for stock in ConfigIsolationTest.EXPECTED_STOCKS
+            }
+            argv = [
+                "--output-root",
+                str(output_root),
+                "--run-id",
+                "test_run",
+                "--h1-without-results",
+                str(input_paths["h1_without"]),
+                "--h1-with-results",
+                str(input_paths["h1_with"]),
+                "--has-news-results",
+                str(input_paths["has_news"]),
+                "--zscore-results",
+                str(input_paths["zscore"]),
+                "--with-control",
+                str(input_paths["with_control"]),
+                "--without-control",
+                str(input_paths["without_control"]),
+            ]
+            with (
+                patch(
+                    "analysis.sentiment_mechanism.load_raw_experiment_results",
+                    side_effect=raw_loader,
+                ),
+                patch(
+                    "analysis.sentiment_mechanism.load_published_results",
+                    side_effect=published_loader,
+                ),
+                patch(
+                    "analysis.sentiment_mechanism._collect_h3_normalization_stats",
+                    return_value=h3_stats,
+                ),
+            ):
+                status = analysis_main(argv)
+            self.assertEqual(status, 0)
+            package = output_root / "test_run"
+            expected_files = {
+                "data/mechanism_summary.csv",
+                "data/per_stock_deltas.csv",
+                "data/per_seed_deltas.csv",
+                "data/h1_short_horizon_results.csv",
+                "provenance/experiment_manifest.json",
+                "sentiment_mechanism_report.md",
+            }
+            self.assertEqual(
+                {
+                    str(path.relative_to(package))
+                    for path in package.rglob("*")
+                    if path.is_file()
+                },
+                expected_files,
+            )
+            summary = pd.read_csv(package / "data/mechanism_summary.csv")
+            self.assertEqual(
+                summary.columns.tolist(),
+                [
+                    "hypothesis",
+                    "intervention",
+                    "control",
+                    "model",
+                    "metric",
+                    "control_mean",
+                    "intervention_mean",
+                    "absolute_delta",
+                    "percent_delta",
+                    "stock_win_count",
+                    "stock_total",
+                    "seed_pair_win_rate",
+                    "paired_t",
+                    "paired_p",
+                    "paired_p_holm",
+                    "cohens_dz",
+                    "ci95_low",
+                    "ci95_high",
+                    "verdict",
+                ],
+            )
+            h1 = pd.read_csv(package / "data/h1_short_horizon_results.csv")
+            self.assertEqual(set(h1["forecast_horizon"]), {1})
+            report = (package / "sentiment_mechanism_report.md").read_text()
+            self.assertTrue(report.startswith("# Sentiment Mechanism Ablation Report"))
+            self.assertIn("## Executive summary", report)
+            provenance = json.loads(
+                (package / "provenance/experiment_manifest.json").read_text()
+            )
+            for key in (
+                "git_branch",
+                "git_commit",
+                "configs",
+                "coverage",
+                "approved_changes",
+                "input_paths",
+                "h3_sentiment_normalization_stats",
+            ):
+                self.assertIn(key, provenance)
+            self.assertEqual(
+                provenance["h3_sentiment_normalization_stats"], h3_stats
+            )
+
+
 if __name__ == "__main__":
     unittest.main()
