@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import sys
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import date
 from pathlib import Path
 
@@ -542,6 +543,96 @@ def report_run_status(task, status):
         f"status={task['strategy']}:{status}",
         flush=True,
     )
+
+
+def execute_task(args, task):
+    if args.dry_run and not args.verbose:
+        report_run_status(task, "dry-run")
+    try:
+        if task["pretrain_command"] is not None:
+            if not args.verbose and not args.dry_run:
+                report_run_status(task, "pretraining")
+            run_command(
+                task["pretrain_command"],
+                dry_run=args.dry_run,
+                verbose=args.verbose,
+            )
+            if (
+                not args.dry_run
+                and task["checkpoint_path"] is not None
+                and not task["checkpoint_path"].is_file()
+            ):
+                raise RuntimeError(
+                    "Pretraining completed without creating the requested "
+                    f"checkpoint: {task['checkpoint_path']}"
+                )
+
+        if not args.dry_run:
+            write_run_manifest(args, task, "running")
+        if not args.verbose and not args.dry_run:
+            report_run_status(task, "evaluating")
+        run_command(
+            task["eval_command"],
+            dry_run=args.dry_run,
+            verbose=args.verbose,
+        )
+        if not args.dry_run:
+            if not _comparison_outputs_complete(task["run_dir"]):
+                raise RuntimeError(
+                    "Downstream evaluation completed without a "
+                    "model-comparison CSV/TXT pair in "
+                    f"{task['run_dir']}"
+                )
+            write_run_manifest(args, task, "complete")
+            if not args.verbose:
+                report_run_status(task, "complete")
+    except Exception:
+        if not args.verbose and not args.dry_run:
+            report_run_status(task, "failed")
+        raise
+
+
+def execute_tasks(args, tasks):
+    tasks = list(tasks)
+    if args.max_parallel_jobs == 1 or len(tasks) <= 1:
+        for task in tasks:
+            execute_task(args, task)
+        return
+
+    task_iterator = iter(tasks)
+    with ThreadPoolExecutor(max_workers=args.max_parallel_jobs) as executor:
+        running = set()
+        for _ in range(min(args.max_parallel_jobs, len(tasks))):
+            running.add(executor.submit(execute_task, args, next(task_iterator)))
+
+        while running:
+            completed, running = wait(running, return_when=FIRST_COMPLETED)
+            first_error = None
+            for future in completed:
+                try:
+                    future.result()
+                except BaseException as error:
+                    if first_error is None:
+                        first_error = error
+            if first_error is not None:
+                raise first_error
+            for _ in completed:
+                try:
+                    task = next(task_iterator)
+                except StopIteration:
+                    break
+                running.add(executor.submit(execute_task, args, task))
+
+
+def write_task_commands(summary, task):
+    label = f"{task['strategy']}/{task['stock']}[seed={task['seed']}]"
+    if task["pretrain_command"] is None:
+        summary.write(f"{label}/pretrain: reused or explicitly skipped\n")
+    else:
+        summary.write(
+            f"{label}/pretrain: {' '.join(task['pretrain_command'])}\n"
+        )
+    summary.write(f"{label}/downstream: {' '.join(task['eval_command'])}\n")
 
 
 def parse_args(argv=None):
@@ -1206,65 +1297,9 @@ def main(argv=None):
         summary.write(f"eval_num_epochs={args.eval_num_epochs}\n\n")
 
         for task in execution_plan["tasks"]:
-            label = (
-                f"{task['strategy']}/{task['stock']}[seed={task['seed']}]"
-            )
-            if args.dry_run and not args.verbose:
-                report_run_status(task, "dry-run")
-            try:
-                if task["pretrain_command"] is not None:
-                    summary.write(
-                        f"{label}/pretrain: {' '.join(task['pretrain_command'])}\n"
-                    )
-                    summary.flush()
-                    if not args.verbose and not args.dry_run:
-                        report_run_status(task, "pretraining")
-                    run_command(
-                        task["pretrain_command"],
-                        dry_run=args.dry_run,
-                        verbose=args.verbose,
-                    )
-                    if (
-                        not args.dry_run
-                        and task["checkpoint_path"] is not None
-                        and not task["checkpoint_path"].is_file()
-                    ):
-                        raise RuntimeError(
-                            "Pretraining completed without creating the requested "
-                            f"checkpoint: {task['checkpoint_path']}"
-                        )
-                else:
-                    summary.write(
-                        f"{label}/pretrain: reused or explicitly skipped\n"
-                    )
-
-                if not args.dry_run:
-                    write_run_manifest(args, task, "running")
-                summary.write(
-                    f"{label}/downstream: {' '.join(task['eval_command'])}\n"
-                )
-                summary.flush()
-                if not args.verbose and not args.dry_run:
-                    report_run_status(task, "evaluating")
-                run_command(
-                    task["eval_command"],
-                    dry_run=args.dry_run,
-                    verbose=args.verbose,
-                )
-                if not args.dry_run:
-                    if not _comparison_outputs_complete(task["run_dir"]):
-                        raise RuntimeError(
-                            "Downstream evaluation completed without a "
-                            "model-comparison CSV/TXT pair in "
-                            f"{task['run_dir']}"
-                        )
-                    write_run_manifest(args, task, "complete")
-                    if not args.verbose:
-                        report_run_status(task, "complete")
-            except Exception:
-                if not args.verbose and not args.dry_run:
-                    report_run_status(task, "failed")
-                raise
+            write_task_commands(summary, task)
+        summary.flush()
+        execute_tasks(args, execution_plan["tasks"])
 
         if not args.skip_combined_plot:
             for strategy in strategies:
