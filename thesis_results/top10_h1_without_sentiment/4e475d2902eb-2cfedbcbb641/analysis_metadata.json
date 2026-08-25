@@ -1,0 +1,27 @@
+{
+  "analysis_git_branch": "single-dim",
+  "analysis_git_commit": "0f7a78ded86b8ccb80ba3452a34892259c75548c",
+  "analysis_numpy": "2.4.3",
+  "analysis_pandas": "3.0.1",
+  "analysis_python": "3.11.15",
+  "analysis_seed": 20260822,
+  "bootstrap_samples": 20000,
+  "canonical_rows": 6,
+  "error_issues": 0,
+  "results_dir": "results/top10_h1_without_sentiment",
+  "scope": {
+    "config_path": "config/experiments/top10_h1_without_sentiment.json",
+    "reference_strategy": "random",
+    "seeds": [
+      42
+    ],
+    "stocks": [
+      "NVDA"
+    ],
+    "strategies": [
+      "random",
+      "local_long"
+    ]
+  },
+  "warning_issues": 2
+}

@@ -1,0 +1,3 @@
+severity,status,stock,seed,method,strategy,source_file,details
+warning,unsupported_model_row,NVDA,42,,local_long,results/top10_h1_with_sentiment/local_long/NVDA/seed_42/last_model_comparison_20260825_214538.csv,Model 'previous_patch' is not part of the thesis method set
+warning,unsupported_model_row,NVDA,42,,random,results/top10_h1_with_sentiment/random/NVDA/seed_42/last_model_comparison_20260825_214453.csv,Model 'previous_patch' is not part of the thesis method set
