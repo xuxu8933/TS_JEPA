@@ -71,7 +71,12 @@ def effective_experiment_config(args_or_options):
     # did not affect results, so omit it when comparing old and new manifests.
     if effective.get("feature_cols") is None:
         effective.pop("feature_cols", None)
-    if effective.get("forecast_horizon") is None:
+    forecast_horizon = effective.get("forecast_horizon")
+    patch_size = effective.get("patch_size")
+    if forecast_horizon is None or (
+        patch_size is not None
+        and int(forecast_horizon) == int(patch_size)
+    ):
         effective.pop("forecast_horizon", None)
     if effective.get("sentiment_normalization") in (None, "none"):
         effective.pop("sentiment_normalization", None)

@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import shutil
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,7 +15,11 @@ from typing import Any, Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from config.experiment import effective_feature_columns, resolve_forecast_horizon
+from config.experiment import (
+    COMMON_DATA_DEFAULTS,
+    effective_feature_columns,
+    resolve_forecast_horizon,
+)
 from run_top_nasdaq100_stocks import (
     current_git_branch,
     effective_experiment_config,
@@ -101,6 +106,10 @@ CANONICAL_MODELS = (
 CANONICAL_METRICS = ("mse", "mae", "direction_accuracy")
 
 
+class ExperimentResultsNotFound(FileNotFoundError):
+    """Raised only when an expected experiment result is absent or incomplete."""
+
+
 def _semantic_options(args) -> dict[str, Any]:
     effective = effective_experiment_config(args)
     preprocessing = resolve_preprocessing_settings(args)
@@ -176,7 +185,15 @@ def semantic_experiment_config(config_path: Path) -> dict[str, Any]:
         "feature_count": len(feature_cols),
         "input_dimension": int(args.patch_size) * len(feature_cols),
         "mask_strategies": list(args.mask_strategies),
+        "forecast_target": preprocessing["forecast_target"],
+        "normalization": preprocessing["normalization"],
         "sentiment_normalization": preprocessing["sentiment_normalization"],
+        "data_protocol": {
+            "train_end": COMMON_DATA_DEFAULTS["train_end_date"],
+            "test_start": COMMON_DATA_DEFAULTS["test_start_date"],
+            "test_end": COMMON_DATA_DEFAULTS["data_end_date"],
+            "validation_fraction": COMMON_DATA_DEFAULTS["validation_fraction"],
+        },
         "results_dir": str(Path(args.results_dir).resolve()),
         "effective_config": effective_experiment_config(args),
         "semantic_options": _semantic_options(args),
@@ -382,7 +399,9 @@ def load_published_results(path: Path, condition: str) -> pd.DataFrame:
     path = Path(path)
     source = path / "data" / "all_runs_tidy.csv" if path.is_dir() else path
     if not source.is_file():
-        raise FileNotFoundError(f"Published result table not found: {source}")
+        raise ExperimentResultsNotFound(
+            f"Published result table not found: {source}"
+        )
     table = pd.read_csv(source)
     required = {
         "stock",
@@ -418,9 +437,51 @@ def load_raw_experiment_results(
     condition: str,
     stocks,
     seeds,
+    expected_semantics: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Load completed runner outputs with exact stock/seed/strategy coverage."""
     results_dir = Path(results_dir)
+    expected_effective = None
+    expected_signature = None
+    if expected_semantics is not None:
+        expected_effective = effective_experiment_config(
+            expected_semantics["effective_config"]
+        )
+        expected_signature = experiment_config_signature(expected_effective)
+        root_manifest_path = results_dir / "experiment_manifest.json"
+        if not root_manifest_path.is_file():
+            raise ExperimentResultsNotFound(
+                f"Experiment manifest not found: {root_manifest_path}"
+            )
+        try:
+            root_manifest = json.loads(
+                root_manifest_path.read_text(encoding="utf-8")
+            )
+        except (OSError, json.JSONDecodeError) as exc:
+            raise ValueError(
+                f"Invalid experiment manifest {root_manifest_path}: {exc}"
+            ) from exc
+        root_effective = root_manifest.get("effective_config")
+        if (
+            not isinstance(root_effective, dict)
+            or effective_experiment_config(root_effective) != expected_effective
+            or root_manifest.get("config_signature") != expected_signature
+        ):
+            raise ValueError(
+                f"Experiment manifest config mismatch: {root_manifest_path}"
+            )
+        expected_root_identity = {
+            "stocks": [str(stock).upper() for stock in stocks],
+            "seeds": [int(seed) for seed in seeds],
+            "mask_strategies": ["random", "local_long"],
+        }
+        for key, expected_value in expected_root_identity.items():
+            if root_manifest.get(key) != expected_value:
+                raise ValueError(
+                    f"Experiment manifest identity mismatch for {key}: "
+                    f"expected={expected_value!r}, "
+                    f"recorded={root_manifest.get(key)!r}"
+                )
     rows = []
     missing_runs = []
     for stock in stocks:
@@ -432,7 +493,68 @@ def load_raw_experiment_results(
                 if not manifest_path.is_file() or not metadata_path.is_file():
                     missing_runs.append(str(run_dir))
                     continue
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                try:
+                    manifest = json.loads(
+                        manifest_path.read_text(encoding="utf-8")
+                    )
+                    metadata = json.loads(
+                        metadata_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError) as exc:
+                    raise ValueError(
+                        f"Invalid run metadata under {run_dir}: {exc}"
+                    ) from exc
+                if expected_semantics is not None:
+                    identity = {
+                        "strategy": strategy,
+                        "stock": str(stock).upper(),
+                        "seed": int(seed),
+                    }
+                    if any(
+                        manifest.get(key) != expected_value
+                        for key, expected_value in identity.items()
+                    ):
+                        raise ValueError(
+                            f"Run manifest identity mismatch: {manifest_path}"
+                        )
+                    run_effective = manifest.get("effective_config")
+                    if (
+                        not isinstance(run_effective, dict)
+                        or effective_experiment_config(run_effective)
+                        != expected_effective
+                        or manifest.get("config_signature")
+                        != expected_signature
+                    ):
+                        raise ValueError(
+                            f"Run manifest config mismatch: {manifest_path}"
+                        )
+                    expected_metadata = {
+                        **expected_semantics["data_protocol"],
+                        "forecast_horizon": expected_semantics[
+                            "forecast_horizon"
+                        ],
+                        "forecast_target": expected_semantics[
+                            "forecast_target"
+                        ],
+                        "feature_names": expected_semantics["feature_cols"],
+                        "normalization": expected_semantics["normalization"],
+                        "sentiment_normalization": expected_semantics[
+                            "sentiment_normalization"
+                        ],
+                    }
+                    mismatched_metadata = {
+                        key: {
+                            "expected": expected_value,
+                            "recorded": metadata.get(key),
+                        }
+                        for key, expected_value in expected_metadata.items()
+                        if metadata.get(key) != expected_value
+                    }
+                    if mismatched_metadata:
+                        raise ValueError(
+                            f"Run preprocessing metadata mismatch at {metadata_path}: "
+                            f"{mismatched_metadata}"
+                        )
                 comparison_names = [
                     name
                     for name in manifest.get("comparison_files", [])
@@ -445,7 +567,6 @@ def load_raw_experiment_results(
                 if not comparison_path.is_file():
                     missing_runs.append(str(comparison_path))
                     continue
-                metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 horizon = int(metadata["forecast_horizon"])
                 table = pd.read_csv(comparison_path)
                 direction_column = (
@@ -481,7 +602,7 @@ def load_raw_experiment_results(
                             }
                         )
     if missing_runs:
-        raise FileNotFoundError(
+        raise ExperimentResultsNotFound(
             "Missing completed experiment results:\n  "
             + "\n  ".join(sorted(missing_runs))
         )
@@ -493,7 +614,7 @@ def load_raw_experiment_results(
         CANONICAL_METRICS
     )
     if len(result) != expected:
-        raise ValueError(
+        raise ExperimentResultsNotFound(
             f"Raw results have wrong coverage: expected {expected}, got {len(result)}"
         )
     return result
@@ -825,7 +946,9 @@ def _analysis_input_paths(args: argparse.Namespace) -> dict[str, Path]:
 def _preflight_inputs(paths: Mapping[str, Path]) -> None:
     missing = [str(path) for path in paths.values() if not path.exists()]
     if missing:
-        raise FileNotFoundError("Missing experiment inputs: " + ", ".join(missing))
+        raise ExperimentResultsNotFound(
+            "Missing experiment inputs: " + ", ".join(missing)
+        )
 
 
 def _collect_h3_normalization_stats(
@@ -846,7 +969,7 @@ def _collect_h3_normalization_stats(
                     / "preprocessing_config.json"
                 )
                 if not metadata_path.is_file():
-                    raise FileNotFoundError(
+                    raise ExperimentResultsNotFound(
                         f"Missing H3 preprocessing metadata: {metadata_path}"
                     )
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -1085,11 +1208,23 @@ def run_mechanism_analysis(args: argparse.Namespace) -> Path:
     if not config_validation["valid"]:
         raise ValueError("Ablation configuration isolation validation failed")
 
+    raw_configs = {
+        "h1_without": "top10_h1_without_sentiment.json",
+        "h1_with": "top10_h1_with_sentiment.json",
+        "has_news": "top10_sentiment_has_news.json",
+        "zscore": "top10_sentiment_zscore.json",
+    }
     raw = {
         name: load_raw_experiment_results(
-            paths[name], name, EXPECTED_STOCKS, EXPECTED_SEEDS
+            paths[name],
+            name,
+            EXPECTED_STOCKS,
+            EXPECTED_SEEDS,
+            expected_semantics=config_validation["configs"][filename][
+                "snapshot"
+            ],
         )
-        for name in ("h1_without", "h1_with", "has_news", "zscore")
+        for name, filename in raw_configs.items()
     }
     controls = {
         name: load_published_results(paths[name], name)
@@ -1177,8 +1312,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
     try:
         package = run_mechanism_analysis(args)
-    except (FileNotFoundError, ValueError):
+    except ExperimentResultsNotFound:
         print("Experiment results not found; run the corresponding experiment first.")
         return 0
+    except (ValueError, RuntimeError) as exc:
+        print(f"Sentiment mechanism analysis failed: {exc}", file=sys.stderr)
+        return 1
     print(f"Sentiment mechanism analysis saved to: {package}")
     return 0

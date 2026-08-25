@@ -16,6 +16,11 @@ import src.data_loaders.data_class_roll_volume as roll_volume
 import src.data_loaders.financial_preprocessing as financial_preprocessing
 import run_top_nasdaq100_stocks as stock_runner
 from eval_dual_loss import build_eval_argv, parse_args as parse_eval_args
+from eval_forecast_prequential_with_baselines_gru_volume import (
+    compute_trend_accuracy,
+    directional_auxiliary_loss,
+    prequential_baseline_evaluate,
+)
 from config.config_pretrain import config as pretrain_config
 from pretrain_dual_loss import parse_args as parse_pretrain_args
 from src.data_loaders.data_class_roll_volume import EvaluationDataLoader
@@ -144,6 +149,84 @@ class ForecastHorizonTest(unittest.TestCase):
     def test_omitted_horizon_does_not_change_legacy_fingerprint(self):
         args = parse_runner_args([])
         self.assertNotIn("forecast_horizon", effective_experiment_config(args))
+
+    def test_explicit_patch_sized_horizon_keeps_legacy_fingerprint(self):
+        implicit = parse_runner_args([])
+        explicit = parse_runner_args(["--forecast-horizon", "5"])
+        self.assertEqual(
+            effective_experiment_config(explicit),
+            effective_experiment_config(implicit),
+        )
+
+    def test_h1_value_direction_uses_last_observed_context(self):
+        predictions = np.array([[0.60], [0.40]], dtype=np.float32)
+        targets = np.array([[0.55], [0.45]], dtype=np.float32)
+        origins = np.array([0.50, 0.50], dtype=np.float32)
+        accuracy = compute_trend_accuracy(
+            predictions,
+            targets,
+            origins=origins,
+        )
+        self.assertTrue(math.isfinite(accuracy))
+        self.assertEqual(accuracy, 1.0)
+
+    def test_h1_value_direction_requires_an_observed_origin(self):
+        with self.assertRaisesRegex(ValueError, "forecast origin"):
+            compute_trend_accuracy(
+                np.array([[0.60]], dtype=np.float32),
+                np.array([[0.55]], dtype=np.float32),
+            )
+
+    def test_h1_directional_loss_uses_observed_origin(self):
+        target = torch.tensor([[0.55]], dtype=torch.float32)
+        origin = torch.tensor([0.50], dtype=torch.float32)
+        aligned = directional_auxiliary_loss(
+            torch.tensor([[0.60]], dtype=torch.float32),
+            target,
+            origin=origin,
+        )
+        opposed = directional_auxiliary_loss(
+            torch.tensor([[0.40]], dtype=torch.float32),
+            target,
+            origin=origin,
+        )
+        self.assertTrue(torch.isfinite(aligned))
+        self.assertLess(aligned.item(), opposed.item())
+
+    def test_h1_multifeature_baseline_scores_finite_direction(self):
+        class TinyDataset:
+            def __len__(self):
+                return 2
+
+            def __getitem__(self, index):
+                context = torch.tensor(
+                    [
+                        [0.1, 1.0, 0.2, 1.0, 0.3, 1.0, 0.4, 1.0, 0.5, 1.0],
+                        [0.6, 1.0, 0.7, 1.0, 0.8, 1.0, 0.9, 1.0, 1.0, 1.0],
+                    ],
+                    dtype=torch.float32,
+                )
+                target = torch.tensor([1.1 - 0.2 * index], dtype=torch.float32)
+                return context, target
+
+        config = {
+            "patch_size": 5,
+            "forecast_horizon": 1,
+            "feature_dim": 2,
+            "target_feature_index": 0,
+            "forecast_target": "value",
+            "normalization": "none",
+            "feature_transform": "raw",
+            "eval_type": "last",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            summary, *_ = prequential_baseline_evaluate(
+                TinyDataset(),
+                config,
+                baseline_names=["naive_last"],
+                save_dir=tmp,
+            )
+        self.assertTrue(math.isfinite(summary[0]["trend_accuracy"]))
 
 
 class SentimentFeatureTest(unittest.TestCase):
@@ -658,6 +741,120 @@ class PairedAnalysisTest(unittest.TestCase):
         self.assertAlmostEqual(row["ci_high"], 3.0 + half_width, places=6)
         self.assertEqual(holm_adjust([0.01, 0.04, 0.03]), [0.03, 0.06, 0.06])
 
+    def test_raw_loader_rejects_run_manifest_identity_mismatch(self):
+        from analysis.sentiment_mechanism import (
+            load_raw_experiment_results,
+            semantic_experiment_config,
+        )
+        from run_top_nasdaq100_stocks import experiment_config_signature
+
+        repo_root = Path(__file__).resolve().parents[1]
+        expected = semantic_experiment_config(
+            repo_root / "config/experiments/top10_sentiment_has_news.json"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            results_dir = Path(tmp)
+            root_manifest = {
+                "effective_config": expected["effective_config"],
+                "config_signature": experiment_config_signature(
+                    expected["effective_config"]
+                ),
+                "stocks": ["NVDA"],
+                "seeds": [42],
+                "mask_strategies": ["random", "local_long"],
+            }
+            (results_dir / "experiment_manifest.json").write_text(
+                json.dumps(root_manifest), encoding="utf-8"
+            )
+            for strategy in ("random", "local_long"):
+                run_dir = results_dir / strategy / "NVDA" / "seed_42"
+                run_dir.mkdir(parents=True)
+                rows = [
+                    {
+                        "model": "TS-JEPA",
+                        "mse": 0.1,
+                        "mae": 0.2,
+                        "direction_accuracy": 0.6,
+                    }
+                ]
+                if strategy == "random":
+                    rows.append(
+                        {
+                            "model": "GRU",
+                            "mse": 0.2,
+                            "mae": 0.3,
+                            "direction_accuracy": 0.5,
+                        }
+                    )
+                comparison = "last_model_comparison_fixture.csv"
+                pd.DataFrame(rows).to_csv(run_dir / comparison, index=False)
+                metadata = {
+                    **expected["data_protocol"],
+                    "forecast_horizon": expected["forecast_horizon"],
+                    "forecast_target": expected["forecast_target"],
+                    "feature_names": expected["feature_cols"],
+                    "normalization": expected["normalization"],
+                    "sentiment_normalization": expected[
+                        "sentiment_normalization"
+                    ],
+                }
+                (run_dir / "preprocessing_config.json").write_text(
+                    json.dumps(metadata), encoding="utf-8"
+                )
+                run_manifest = {
+                    "status": "complete",
+                    "config_signature": root_manifest["config_signature"],
+                    "effective_config": expected["effective_config"],
+                    "strategy": strategy,
+                    "stock": "NVDA",
+                    "seed": 42,
+                    "comparison_files": [comparison],
+                }
+                (run_dir / "run_manifest.json").write_text(
+                    json.dumps(run_manifest), encoding="utf-8"
+                )
+
+            loaded = load_raw_experiment_results(
+                results_dir,
+                "has_news",
+                ["NVDA"],
+                [42],
+                expected_semantics=expected,
+            )
+            self.assertEqual(len(loaded), 9)
+
+            bad_manifest_path = (
+                results_dir / "local_long/NVDA/seed_42/run_manifest.json"
+            )
+            bad_manifest = json.loads(bad_manifest_path.read_text())
+            bad_manifest["seed"] = 999
+            bad_manifest_path.write_text(json.dumps(bad_manifest))
+            with self.assertRaisesRegex(ValueError, "manifest identity"):
+                load_raw_experiment_results(
+                    results_dir,
+                    "has_news",
+                    ["NVDA"],
+                    [42],
+                    expected_semantics=expected,
+                )
+
+            bad_manifest["seed"] = 42
+            bad_manifest_path.write_text(json.dumps(bad_manifest))
+            metadata_path = (
+                results_dir / "local_long/NVDA/seed_42/preprocessing_config.json"
+            )
+            bad_metadata = json.loads(metadata_path.read_text())
+            bad_metadata["test_start"] = "2099-01-01"
+            metadata_path.write_text(json.dumps(bad_metadata))
+            with self.assertRaisesRegex(ValueError, "preprocessing metadata"):
+                load_raw_experiment_results(
+                    results_dir,
+                    "has_news",
+                    ["NVDA"],
+                    [42],
+                    expected_semantics=expected,
+                )
+
 
 class MechanismReportTest(unittest.TestCase):
     @staticmethod
@@ -701,6 +898,24 @@ class MechanismReportTest(unittest.TestCase):
             )
             self.assertFalse(output_root.exists())
 
+    def test_integrity_error_exits_nonzero_instead_of_claiming_missing_results(self):
+        from analysis.sentiment_mechanism import main as analysis_main
+
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with (
+            patch(
+                "analysis.sentiment_mechanism.run_mechanism_analysis",
+                side_effect=ValueError("corrupt manifest"),
+            ),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            status = analysis_main([])
+        self.assertEqual(status, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        self.assertIn("corrupt manifest", stderr.getvalue())
+
     def test_complete_inputs_create_exact_deferred_package(self):
         from analysis.sentiment_mechanism import main as analysis_main
 
@@ -729,7 +944,7 @@ class MechanismReportTest(unittest.TestCase):
                 "without_control": self._complete_results("without_control", 5),
             }
 
-            def raw_loader(path, condition, stocks, seeds):
+            def raw_loader(path, condition, stocks, seeds, expected_semantics=None):
                 return datasets[condition].copy()
 
             def published_loader(path, condition):

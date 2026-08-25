@@ -156,6 +156,46 @@ def select_context_feature_numpy(context_patches, patch_size, feature_dim=1, tar
 
     raise ValueError(f"Unexpected context patch shape: {context_np.shape}")
 
+
+def last_context_target_numpy(context_patches, config):
+    """Return the last observed target value for one sample or a batch."""
+    values = select_context_feature_numpy(
+        context_patches,
+        patch_size=int(config.get("patch_size", 5)),
+        feature_dim=int(config.get("feature_dim", 1)),
+        target_feature_index=int(config.get("target_feature_index", 0)),
+    )
+    return values[-1] if values.ndim == 1 else values[:, -1]
+
+
+def last_context_target_tensor(
+    context_patches,
+    feature_dim=1,
+    target_feature_index=0,
+):
+    """Return the final observed target feature without changing its device."""
+    if context_patches.dim() == 2:
+        values = context_patches.reshape(-1, feature_dim)
+        return values[-1, target_feature_index]
+    if context_patches.dim() == 3:
+        values = context_patches.reshape(context_patches.shape[0], -1, feature_dim)
+        return values[:, -1, target_feature_index]
+    raise ValueError(
+        f"Unexpected context patch shape: {tuple(context_patches.shape)}"
+    )
+
+
+def dataset_value_forecast_origins(dataset, config):
+    """Collect known cutoff values for H=1 value-direction scoring."""
+    return np.asarray(
+        [
+            last_context_target_numpy(dataset[index][0], config)
+            for index in range(len(dataset))
+        ],
+        dtype=np.float64,
+    )
+
+
 def evaluate_gru_model(
     model,
     loader,
@@ -1156,13 +1196,16 @@ def prequential_baseline_evaluate(
     for baseline_name in baseline_names:
         baseline_preds = []
         baseline_targets = []
+        baseline_origins = []
 
         for sample_idx in range(len(dataset)):
             context_patches, target_patch = dataset[sample_idx]
 
             target_patch = select_target_feature_tensor(
                 target_patch,
-                patch_size=int(config.get("patch_size", 5)),
+                patch_size=int(
+                    config.get("forecast_horizon", config.get("patch_size", 5))
+                ),
                 feature_dim=int(config.get("feature_dim", 1)),
                 target_feature_index=int(config.get("target_feature_index", 0)),
             )
@@ -1231,6 +1274,9 @@ def prequential_baseline_evaluate(
 
             baseline_preds.append(pred_np[None, :])
             baseline_targets.append(true_np[None, :])
+            baseline_origins.append(
+                last_context_target_numpy(context_patches, config)
+            )
 
         baseline_preds = np.concatenate(baseline_preds, axis=0)
         baseline_targets = np.concatenate(baseline_targets, axis=0)
@@ -1249,6 +1295,7 @@ def prequential_baseline_evaluate(
                 include_origin=config.get("forecast_target") == "relative_return",
                 direct_return=config.get("forecast_target")
                 in ("cumulative_log_return", "excess_log_return"),
+                origins=np.asarray(baseline_origins),
             ),
         })
 
@@ -1666,6 +1713,7 @@ def evaluate_model(
     loader,
     device,
     eval_type,
+    model_config,
 ):
     encoder.eval()
     decoder.eval()
@@ -1675,6 +1723,7 @@ def evaluate_model(
 
     all_preds = []
     all_targets = []
+    all_origins = []
 
     with torch.no_grad():
         for context_patches, target_patch in loader:
@@ -1693,8 +1742,10 @@ def evaluate_model(
             target_patch = select_target_feature_tensor(
                 target_patch,
                 patch_size=predicted_next_patch.shape[-1],
-                feature_dim=int(config.get("feature_dim", 1)) if "config" in globals() else 1,
-                target_feature_index=int(config.get("target_feature_index", 0)) if "config" in globals() else 0,
+                feature_dim=int(model_config.get("feature_dim", 1)),
+                target_feature_index=int(
+                    model_config.get("target_feature_index", 0)
+                ),
             )
 
             pred_np = predicted_next_patch.detach().cpu().numpy()
@@ -1702,6 +1753,11 @@ def evaluate_model(
 
             all_preds.append(pred_np)
             all_targets.append(target_np)
+            all_origins.append(
+                np.asarray(
+                    last_context_target_numpy(context_patches, model_config)
+                ).reshape(-1)
+            )
 
             batch_mse = mse(
                 pred_np.reshape(-1),
@@ -1718,11 +1774,12 @@ def evaluate_model(
 
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
+    all_origins = np.concatenate(all_origins, axis=0)
 
     mean_mse = float(np.mean(l_mse))
     mean_mae = float(np.mean(l_mae))
 
-    return mean_mse, mean_mae, all_preds, all_targets
+    return mean_mse, mean_mae, all_preds, all_targets, all_origins
 
 
 def compute_trend_accuracy(
@@ -1730,6 +1787,7 @@ def compute_trend_accuracy(
     all_targets,
     include_origin=False,
     direct_return=False,
+    origins=None,
 ):
     """
     Trend accuracy based on within-patch direction.
@@ -1741,7 +1799,9 @@ def compute_trend_accuracy(
 
     Accuracy checks whether predicted direction matches true direction. For a
     cutoff-relative return path, include_origin=True also scores the first move
-    from the known zero-return origin.
+    from the known zero-return origin. A one-step value forecast has no
+    within-horizon difference, so it is scored from the last observed context
+    value supplied in ``origins``.
     """
     if direct_return:
         return float(((all_preds > 0) == (all_targets > 0)).mean())
@@ -1752,6 +1812,19 @@ def compute_trend_accuracy(
         origin = np.zeros((all_preds.shape[0], 1), dtype=all_preds.dtype)
         all_preds = np.concatenate([origin, all_preds], axis=1)
         all_targets = np.concatenate([origin, all_targets], axis=1)
+
+    if all_preds.shape[1] < 2:
+        if origins is None:
+            raise ValueError(
+                "One-step value direction accuracy requires the observed forecast origin"
+            )
+        origins = np.asarray(origins).reshape(-1, 1)
+        if origins.shape[0] != all_preds.shape[0]:
+            raise ValueError(
+                "Forecast origin count must equal the number of prediction rows"
+            )
+        all_preds = np.concatenate([origins, all_preds], axis=1)
+        all_targets = np.concatenate([origins, all_targets], axis=1)
 
     pred_diff = all_preds[:, 1:] - all_preds[:, :-1]
     true_diff = all_targets[:, 1:] - all_targets[:, :-1]
@@ -1771,6 +1844,7 @@ def directional_auxiliary_loss(
     threshold=0.0,
     include_origin=False,
     direct_return=False,
+    origin=None,
 ):
     """
     Differentiable direction loss for within-patch trend.
@@ -1789,6 +1863,14 @@ def directional_auxiliary_loss(
 
     if include_origin:
         origin = torch.zeros_like(predicted_patch[:, :1])
+        predicted_patch = torch.cat([origin, predicted_patch], dim=1)
+        target_patch = torch.cat([origin, target_patch], dim=1)
+
+    if predicted_patch.shape[1] < 2 and origin is not None:
+        origin = origin.reshape(-1, 1).to(
+            device=predicted_patch.device,
+            dtype=predicted_patch.dtype,
+        )
         predicted_patch = torch.cat([origin, predicted_patch], dim=1)
         target_patch = torch.cat([origin, target_patch], dim=1)
 
@@ -1996,7 +2078,9 @@ if __name__ == "__main__":
         "direction_accuracy_definition": (
             "sign of consecutive forecast-horizon differences equals sign of "
             "consecutive target differences; relative-return paths include the "
-            "known zero origin; cumulative/excess log-return targets compare "
+            "known zero origin; one-step value forecasts compare movement from "
+            "the final observed context value; cumulative/excess log-return "
+            "targets compare "
             "the binary indicators (forecast > 0) and (target > 0) at each horizon"
         ),
         "forecast_horizons": list(range(1, forecast_horizon + 1)),
@@ -2315,6 +2399,15 @@ if __name__ == "__main__":
                 include_origin=forecast_target == "relative_return",
                 direct_return=forecast_target
                 in ("cumulative_log_return", "excess_log_return"),
+                origin=(
+                    last_context_target_tensor(
+                        context_patches,
+                        feature_dim=feature_dim,
+                        target_feature_index=target_feature_index,
+                    )
+                    if forecast_target == "value" and forecast_horizon == 1
+                    else None
+                ),
             )
 
             loss = mse_loss + trend_weight * trend_loss
@@ -2337,12 +2430,13 @@ if __name__ == "__main__":
         # Validation
         # =========================
 
-        val_mse, val_mae, val_preds, val_targets = evaluate_model(
+        val_mse, val_mae, val_preds, val_targets, val_origins = evaluate_model(
             encoder=encoder,
             decoder=decoder,
             loader=val_loader,
             device=device,
             eval_type=config["eval_type"],
+            model_config=config,
         )
         val_trend_acc = compute_trend_accuracy(
             all_preds=val_preds,
@@ -2350,6 +2444,7 @@ if __name__ == "__main__":
             include_origin=forecast_target == "relative_return",
             direct_return=forecast_target
             in ("cumulative_log_return", "excess_log_return"),
+            origins=val_origins,
         )
         val_score = val_mse + trend_selection_weight * (1.0 - val_trend_acc)
 
@@ -2506,6 +2601,7 @@ if __name__ == "__main__":
         include_origin=forecast_target == "relative_return",
         direct_return=forecast_target
         in ("cumulative_log_return", "excess_log_return"),
+        origins=dataset_value_forecast_origins(test_loader.dataset, config),
     )
 
     print(f"========== Final Test ({data_title(config)}) ==========")
@@ -2529,6 +2625,7 @@ if __name__ == "__main__":
         include_origin=forecast_target == "relative_return",
         direct_return=forecast_target
         in ("cumulative_log_return", "excess_log_return"),
+        origins=dataset_value_forecast_origins(test_loader.dataset, config),
     )
 
     print(f"========== GRU Final Test ({data_title(config)}) ==========")
