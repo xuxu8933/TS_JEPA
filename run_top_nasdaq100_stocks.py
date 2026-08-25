@@ -72,6 +72,8 @@ def effective_experiment_config(args_or_options):
         effective.pop("feature_cols", None)
     if effective.get("forecast_horizon") is None:
         effective.pop("forecast_horizon", None)
+    if effective.get("sentiment_normalization") in (None, "none"):
+        effective.pop("sentiment_normalization", None)
 
     if effective.get("skip_download") is True:
         for key in (
@@ -765,6 +767,12 @@ def parse_args(argv=None):
     parser.add_argument("--robust-zscore-clip", type=float, default=None)
     parser.add_argument("--market-features", nargs="+", default=None)
     parser.add_argument("--sentiment-features", nargs="+", default=None)
+    parser.add_argument(
+        "--sentiment-normalization",
+        choices=("none", "train_zscore"),
+        default="none",
+        help="Optional train-only transform applied only to derived sentiment channels.",
+    )
     sentiment_group = parser.add_mutually_exclusive_group()
     sentiment_group.add_argument(
         "--use-sentiment",
@@ -969,6 +977,11 @@ def resolve_preprocessing_settings(args):
     settings["robust_zscore_clip"] = getattr(args, "robust_zscore_clip", None)
     settings["market_features"] = getattr(args, "market_features", None)
     settings["sentiment_features"] = getattr(args, "sentiment_features", None)
+    settings["sentiment_normalization"] = getattr(
+        args,
+        "sentiment_normalization",
+        "none",
+    )
     settings["use_sentiment"] = bool(
         getattr(args, "use_sentiment", pretrain_defaults["use_sentiment"])
     )
@@ -1002,6 +1015,8 @@ def build_stock_commands(args, stock, seed=None, strategy=None, results_dir=None
         preprocessing["normalization"],
         "--market-data",
         str(preprocessing["market_data"] or "none"),
+        "--sentiment-normalization",
+        preprocessing["sentiment_normalization"],
     ]
     preprocessing_args.append(
         "--use-sentiment"

@@ -1846,6 +1846,10 @@ if __name__ == "__main__":
     forecast_target = config.get("forecast_target", "value")
     sampling_mode = config.get("sampling_mode", "sliding_window")
     normalization_stats = config.get("normalization_stats", None)
+    sentiment_normalization = config.get("sentiment_normalization", "none")
+    sentiment_normalization_stats = config.get(
+        "sentiment_normalization_stats", None
+    )
     feature_transform = config.get("feature_transform", "raw")
     market_data = config.get("market_data", None)
     robust_zscore_clip = config.get("robust_zscore_clip", None)
@@ -1879,6 +1883,7 @@ if __name__ == "__main__":
     print("forecast_horizon =", forecast_horizon)
     print("feature_transform =", feature_transform)
     print("normalization =", normalization)
+    print("sentiment_normalization =", sentiment_normalization)
     print("robust_zscore_clip =", robust_zscore_clip)
     print("market_data =", market_data)
     print("sampling_mode =", sampling_mode)
@@ -1913,6 +1918,8 @@ if __name__ == "__main__":
         sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
+        sentiment_normalization=sentiment_normalization,
+        sentiment_normalization_stats=sentiment_normalization_stats,
         feature_transform=feature_transform,
         market_data=market_data,
         robust_zscore_clip=robust_zscore_clip,
@@ -1932,10 +1939,14 @@ if __name__ == "__main__":
     feature_cols = list(train_loader.dataset.feature_cols)
     feature_dim = len(feature_cols)
     normalization_stats = train_loader.dataset.normalization_stats
+    sentiment_normalization_stats = (
+        train_loader.dataset.sentiment_normalization_stats
+    )
     config["feature_cols"] = feature_cols
     config["feature_names"] = list(feature_cols)
     config["feature_dim"] = feature_dim
     config["normalization_stats"] = normalization_stats
+    config["sentiment_normalization_stats"] = sentiment_normalization_stats
     config["warmup_report"] = train_loader.dataset.warmup_report
     config["market_alignment_report"] = train_loader.dataset.market_alignment_report
     if not 0 <= target_feature_index < feature_dim:
@@ -1966,6 +1977,8 @@ if __name__ == "__main__":
         "normalization": normalization,
         "normalization_fit_split": "train",
         "normalization_stats": normalization_stats,
+        "sentiment_normalization": sentiment_normalization,
+        "sentiment_normalization_stats": sentiment_normalization_stats,
         "robust_zscore_clip": robust_zscore_clip,
         "forecast_target": forecast_target,
         "target_definition": {
@@ -2031,6 +2044,8 @@ if __name__ == "__main__":
         sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
+        sentiment_normalization=sentiment_normalization,
+        sentiment_normalization_stats=sentiment_normalization_stats,
         feature_transform=feature_transform,
         market_data=market_data,
         robust_zscore_clip=robust_zscore_clip,
@@ -2056,6 +2071,8 @@ if __name__ == "__main__":
         sampling_mode=sampling_mode,
         normalization=normalization,
         normalization_stats=normalization_stats,
+        sentiment_normalization=sentiment_normalization,
+        sentiment_normalization_stats=sentiment_normalization_stats,
         feature_transform=feature_transform,
         market_data=market_data,
         robust_zscore_clip=robust_zscore_clip,

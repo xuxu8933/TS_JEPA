@@ -415,7 +415,7 @@ def flatten_runner_options(runner, config_path):
             )
             _validate_keys(
                 sentiment,
-                {"enabled", "columns"},
+                {"enabled", "columns", "normalization"},
                 sentiment_path,
                 config_path,
                 required=("enabled",),
@@ -437,6 +437,8 @@ def flatten_runner_options(runner, config_path):
                 )
             if sentiment_enabled:
                 flattened["sentiment_features"] = sentiment["columns"]
+            if "normalization" in sentiment:
+                flattened["sentiment_normalization"] = sentiment["normalization"]
 
             forecast_path = f"{custom_path}.forecast"
             forecast = _config_object(custom["forecast"], forecast_path, config_path)

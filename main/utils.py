@@ -165,6 +165,11 @@ def prepare_args(config):
         default=config.get("feature_transform", "raw"),
     )
     parser.add_argument(
+        "--sentiment-normalization",
+        choices=("none", "train_zscore"),
+        default=config.get("sentiment_normalization", "none"),
+    )
+    parser.add_argument(
         "--market_data",
         "--market-data",
         dest="market_data",
@@ -191,6 +196,11 @@ def prepare_args(config):
         dest="normalization_stats_json",
         default=None,
         help="Serialized train-only normalization state stored by pretraining.",
+    )
+    parser.add_argument(
+        "--sentiment-normalization-stats-json",
+        default=None,
+        help="Serialized train-only state for derived sentiment channels.",
     )
     parser.add_argument(
         "--feature_cols",
@@ -376,6 +386,7 @@ def prepare_args(config):
     config["forecast_target"] = args.forecast_target
     config["normalization"] = args.normalization
     config["feature_transform"] = args.feature_transform
+    config["sentiment_normalization"] = args.sentiment_normalization
     config["market_data"] = none_if_requested(args.market_data)
     config["robust_zscore_clip"] = args.robust_zscore_clip
     config["sampling_mode"] = args.sampling_mode
@@ -383,6 +394,11 @@ def prepare_args(config):
         json.loads(args.normalization_stats_json)
         if args.normalization_stats_json is not None
         else config.get("normalization_stats")
+    )
+    config["sentiment_normalization_stats"] = (
+        json.loads(args.sentiment_normalization_stats_json)
+        if args.sentiment_normalization_stats_json is not None
+        else config.get("sentiment_normalization_stats")
     )
     config.update(
         resolve_feature_selection(

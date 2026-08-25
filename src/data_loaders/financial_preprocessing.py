@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any, Mapping, Sequence
 
 import numpy as np
 import pandas as pd
@@ -32,6 +33,13 @@ MARKET_FEATURE_COLS = (
 
 FEATURE_TRANSFORMS = ("raw", "return")
 
+DERIVED_SENTIMENT_FEATURE_SOURCES = {
+    "has_news": "news_count",
+    "sentiment_mean_z": "sentiment_mean",
+}
+
+SENTIMENT_NORMALIZATION_MODES = ("none", "train_zscore")
+
 
 @dataclass
 class PreparedFinancialFrame:
@@ -40,6 +48,96 @@ class PreparedFinancialFrame:
     warmup_report: dict[str, int]
     market_data: str | None
     market_alignment_report: dict[str, int] | None
+
+
+def fit_transform_sentiment_features(
+    frame_splits: tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame],
+    feature_cols: Sequence[str],
+    mode: str,
+    state: Mapping[str, Any] | None = None,
+    eps: float = 1e-6,
+) -> tuple[tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame], dict[str, Any] | None]:
+    """Fit selected sentiment transforms on the chronological train split."""
+    if mode not in SENTIMENT_NORMALIZATION_MODES:
+        raise ValueError(
+            f"Unknown sentiment_normalization={mode!r}; expected one of "
+            f"{SENTIMENT_NORMALIZATION_MODES}"
+        )
+    z_features = [
+        feature
+        for feature in feature_cols
+        if feature in DERIVED_SENTIMENT_FEATURE_SOURCES and feature.endswith("_z")
+    ]
+    if mode == "none":
+        if z_features:
+            raise ValueError(
+                "Derived z-score sentiment features require "
+                "sentiment_normalization='train_zscore'"
+            )
+        if state is not None:
+            raise ValueError(
+                "sentiment_normalization_stats must be omitted when mode='none'"
+            )
+        return tuple(frame.copy() for frame in frame_splits), None
+    if not z_features:
+        raise ValueError(
+            "sentiment_normalization='train_zscore' requires a configured "
+            "derived *_z sentiment feature"
+        )
+
+    train = frame_splits[0]
+    if train.empty:
+        raise ValueError("Cannot fit sentiment normalization on an empty train split")
+    if state is None:
+        features = {}
+        for feature in z_features:
+            source = DERIVED_SENTIMENT_FEATURE_SOURCES[feature]
+            values = pd.to_numeric(train[feature], errors="raise").astype("float64")
+            mean = float(values.mean())
+            fitted_std = float(values.std(ddof=0))
+            scale = fitted_std if fitted_std >= eps else 1.0
+            features[feature] = {
+                "source": source,
+                "mean": mean,
+                "std": scale,
+                "eps": float(eps),
+            }
+        resolved_state = {
+            "mode": "train_zscore",
+            "fit_split": "train",
+            "features": features,
+        }
+    else:
+        resolved_state = dict(state)
+        if resolved_state.get("mode") != "train_zscore":
+            raise ValueError("Sentiment normalization state mode mismatch")
+        if resolved_state.get("fit_split") != "train":
+            raise ValueError("Sentiment normalization state must be fit on train")
+        state_features = resolved_state.get("features", {})
+        if set(state_features) != set(z_features):
+            raise ValueError(
+                "Sentiment normalization feature order/state mismatch: "
+                f"state={sorted(state_features)}, loader={sorted(z_features)}"
+            )
+        for feature in z_features:
+            expected_source = DERIVED_SENTIMENT_FEATURE_SOURCES[feature]
+            if state_features[feature].get("source") != expected_source:
+                raise ValueError(
+                    f"Sentiment source mismatch for {feature!r}: expected "
+                    f"{expected_source!r}"
+                )
+
+    transformed = []
+    for frame in frame_splits:
+        output = frame.copy()
+        for feature in z_features:
+            feature_state = resolved_state["features"][feature]
+            output[feature] = (
+                pd.to_numeric(output[feature], errors="raise").astype("float64")
+                - float(feature_state["mean"])
+            ) / float(feature_state["std"])
+        transformed.append(output)
+    return tuple(transformed), resolved_state
 
 
 def _numeric_column(frame, column, source):

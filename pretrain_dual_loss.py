@@ -61,6 +61,7 @@ EXPERIMENT_ID_KEYS = (
     "sampling_mode",
     "feature_transform",
     "normalization",
+    "sentiment_normalization",
     "robust_zscore_clip",
     "market_data",
     "feature_cols",
@@ -114,6 +115,8 @@ def experiment_fingerprint(config):
         identity.pop("market_data", None)
     if identity.get("robust_zscore_clip") is None:
         identity.pop("robust_zscore_clip", None)
+    if identity.get("sentiment_normalization") in (None, "none"):
+        identity.pop("sentiment_normalization", None)
     encoded = json.dumps(identity, sort_keys=True, separators=(",", ":"), default=str)
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:12]
 
@@ -401,6 +404,11 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         dest="sentiment_path",
         type=str,
         default=config.get("sentiment_path", None),
+    )
+    parser.add_argument(
+        "--sentiment-normalization",
+        choices=("none", "train_zscore"),
+        default=config.get("sentiment_normalization", "none"),
     )
     parser.add_argument(
         "--train_end_date",
@@ -1451,6 +1459,10 @@ def run_downstream_evaluation(config):
         str(config.get("sampling_mode", "sliding_window")),
         "--normalization_stats_json",
         json.dumps(config.get("normalization_stats")),
+        "--sentiment-normalization",
+        str(config.get("sentiment_normalization", "none")),
+        "--sentiment-normalization-stats-json",
+        json.dumps(config.get("sentiment_normalization_stats")),
         "--feature_cols",
         *[str(column) for column in config["feature_cols"]],
         "--market-features",
@@ -1553,6 +1565,7 @@ def main(default_mask_strategy=None, argv=None):
             shuffle=False,
         )
         config["normalization_stats"] = None
+        config["sentiment_normalization_stats"] = None
     else:
         loader = get_jepa_loaders(
             path=config["path_data"],
@@ -1565,6 +1578,7 @@ def main(default_mask_strategy=None, argv=None):
             normalization=config["normalization"],
             feature_transform=config.get("feature_transform", "raw"),
             market_data=config.get("market_data"),
+            sentiment_normalization=config.get("sentiment_normalization", "none"),
             robust_zscore_clip=config.get("robust_zscore_clip"),
             feature_cols=config["feature_cols"],
             timestamp_col=config["timestamp_col"],
@@ -1576,6 +1590,9 @@ def main(default_mask_strategy=None, argv=None):
         )
         config["normalization_stats"] = copy.deepcopy(
             loader.dataset.normalization_stats
+        )
+        config["sentiment_normalization_stats"] = copy.deepcopy(
+            loader.dataset.sentiment_normalization_stats
         )
         config["feature_cols"] = list(loader.dataset.feature_cols)
         config["feature_names"] = list(loader.dataset.feature_names)
@@ -1599,6 +1616,12 @@ def main(default_mask_strategy=None, argv=None):
                     normalization_stats=config["normalization_stats"],
                     feature_transform=config.get("feature_transform", "raw"),
                     market_data=config.get("market_data"),
+                    sentiment_normalization=config.get(
+                        "sentiment_normalization", "none"
+                    ),
+                    sentiment_normalization_stats=config.get(
+                        "sentiment_normalization_stats"
+                    ),
                     robust_zscore_clip=config.get("robust_zscore_clip"),
                     split="val",
                     mask_seed=config["seed"] + 10_000,

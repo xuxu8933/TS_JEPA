@@ -302,6 +302,11 @@ def parse_args(default_mask_strategy=None, argv=None):
     )
     parser.add_argument("--market-features", nargs="+", default=None)
     parser.add_argument("--sentiment-features", nargs="+", default=None)
+    parser.add_argument(
+        "--sentiment-normalization",
+        choices=("none", "train_zscore"),
+        default=downstream_config.get("sentiment_normalization", "none"),
+    )
     sentiment_group = parser.add_mutually_exclusive_group()
     sentiment_group.add_argument(
         "--use-sentiment",
@@ -625,6 +630,13 @@ def build_eval_argv(args, passthrough_args):
         ),
         "--feature-transform",
         str(checkpoint_value("feature_transform", args.feature_transform)),
+        "--sentiment-normalization",
+        str(
+            checkpoint_value(
+                "sentiment_normalization",
+                args.sentiment_normalization,
+            )
+        ),
         "--market-features",
         *[str(feature) for feature in resolved_market_features],
         "--sentiment-features",
@@ -678,6 +690,10 @@ def build_eval_argv(args, passthrough_args):
                 str(checkpoint_value("normalization", "window_return")),
                 "--normalization_stats_json",
                 json.dumps(checkpoint_value("normalization_stats", None)),
+                "--sentiment-normalization-stats-json",
+                json.dumps(
+                    checkpoint_value("sentiment_normalization_stats", None)
+                ),
                 "--feature_cols",
                 *[
                     str(column)

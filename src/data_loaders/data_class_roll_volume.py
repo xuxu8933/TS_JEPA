@@ -6,7 +6,9 @@ from torch.utils.data import Dataset
 
 from config.experiment import resolve_forecast_horizon
 from .financial_preprocessing import (
+    DERIVED_SENTIMENT_FEATURE_SOURCES,
     FEATURE_TRANSFORMS,
+    fit_transform_sentiment_features,
     prepare_financial_frame,
 )
 
@@ -18,6 +20,7 @@ DEFAULT_SENTIMENT_COLS = (
     "sentiment_min",
     "sentiment_std",
     "news_count",
+    *DERIVED_SENTIMENT_FEATURE_SOURCES,
 )
 
 NORMALIZATION_MODES = (
@@ -281,62 +284,69 @@ def _merge_daily_sentiment(
     feature_cols = _as_list(feature_cols)
     sentiment_cols = _as_list(sentiment_cols)
     requested_sentiment_cols = [c for c in feature_cols if c in sentiment_cols]
-    existing_sentiment_cols = [c for c in requested_sentiment_cols if c in df.columns]
-    missing_requested_sentiment_cols = [
-        c for c in requested_sentiment_cols
-        if c not in df.columns
-    ]
-
-    if existing_sentiment_cols:
-        df = df.copy()
-        for col in existing_sentiment_cols:
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
-
-    if not missing_requested_sentiment_cols:
-        return df
-
-    sentiment_path = sentiment_path or _infer_sentiment_path(path_data)
-
-    if sentiment_path is None or not os.path.exists(sentiment_path):
-        raise FileNotFoundError(
-            "Sentiment features were requested, but no daily sentiment CSV was found. "
-            f"Looked for a ticker-level file next to {path_data!r} and in the project root. "
-            "Pass sentiment_path explicitly or remove sentiment columns from feature_cols."
+    raw_dependencies = list(
+        dict.fromkeys(
+            DERIVED_SENTIMENT_FEATURE_SOURCES.get(column, column)
+            for column in requested_sentiment_cols
         )
-
-    sentiment_df = pd.read_csv(sentiment_path, parse_dates=["date"], low_memory=False)
-    missing = [
-        c for c in missing_requested_sentiment_cols
-        if c not in sentiment_df.columns
-    ]
-    if missing:
-        raise ValueError(
-            f"Missing sentiment columns in {sentiment_path}: {missing}. "
-            f"Available columns: {list(sentiment_df.columns)}"
-        )
-
-    keep_cols = ["date"] + [c for c in sentiment_cols if c in sentiment_df.columns]
-    sentiment_df = sentiment_df[keep_cols].copy()
-    sentiment_df["date"] = sentiment_df["date"].dt.normalize()
+    )
+    existing_raw_cols = [column for column in raw_dependencies if column in df.columns]
+    missing_raw_cols = [column for column in raw_dependencies if column not in df.columns]
 
     df = df.copy()
-    df["_sentiment_date"] = df[timestamp_col].dt.normalize()
-    df = df.merge(
-        sentiment_df,
-        how="left",
-        left_on="_sentiment_date",
-        right_on="date",
-    )
-    df.drop(columns=["_sentiment_date", "date"], inplace=True)
+    for column in existing_raw_cols:
+        df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
 
-    for col in sentiment_cols:
-        if col in df.columns:
-            df[col] = df[col].fillna(0.0)
+    if missing_raw_cols:
+        sentiment_path = sentiment_path or _infer_sentiment_path(path_data)
 
-    print(
-        f"[load_price_series] merged sentiment from {sentiment_path}; "
-        f"requested={missing_requested_sentiment_cols}"
-    )
+        if sentiment_path is None or not os.path.exists(sentiment_path):
+            raise FileNotFoundError(
+                "Sentiment features were requested, but no daily sentiment CSV was found. "
+                f"Looked for a ticker-level file next to {path_data!r} and in the project root. "
+                "Pass sentiment_path explicitly or remove sentiment columns from feature_cols."
+            )
+
+        sentiment_df = pd.read_csv(
+            sentiment_path, parse_dates=["date"], low_memory=False
+        )
+        missing = [column for column in missing_raw_cols if column not in sentiment_df]
+        if missing:
+            raise ValueError(
+                f"Missing sentiment columns in {sentiment_path}: {missing}. "
+                f"Available columns: {list(sentiment_df.columns)}"
+            )
+
+        sentiment_df = sentiment_df[["date", *missing_raw_cols]].copy()
+        sentiment_df["date"] = sentiment_df["date"].dt.normalize()
+        if sentiment_df["date"].duplicated().any():
+            raise ValueError(
+                f"Daily sentiment file contains duplicate dates: {sentiment_path}"
+            )
+
+        df["_sentiment_date"] = df[timestamp_col].dt.normalize()
+        df = df.merge(
+            sentiment_df,
+            how="left",
+            left_on="_sentiment_date",
+            right_on="date",
+            validate="many_to_one",
+        )
+        df.drop(columns=["_sentiment_date", "date"], inplace=True)
+        for column in missing_raw_cols:
+            df[column] = pd.to_numeric(df[column], errors="coerce").fillna(0.0)
+
+        print(
+            f"[load_price_series] merged sentiment from {sentiment_path}; "
+            f"requested={missing_raw_cols}"
+        )
+
+    if "has_news" in requested_sentiment_cols:
+        df["has_news"] = (df["news_count"] > 0).astype("float64")
+    if "sentiment_mean_z" in requested_sentiment_cols:
+        df["sentiment_mean_z"] = pd.to_numeric(
+            df["sentiment_mean"], errors="raise"
+        ).astype("float64")
 
     return df
 
@@ -354,6 +364,8 @@ def load_price_series(
     data_end_date=None,
     feature_transform="raw",
     market_data=None,
+    sentiment_normalization="none",
+    sentiment_normalization_stats=None,
     return_metadata=False,
 ):
     """
@@ -389,6 +401,14 @@ def load_price_series(
         train_end_date=train_end_date,
         test_start_date=test_start_date,
         data_end_date=data_end_date,
+    )
+    frame_splits, sentiment_normalization_stats = (
+        fit_transform_sentiment_features(
+            frame_splits,
+            prepared.feature_cols,
+            sentiment_normalization,
+            state=sentiment_normalization_stats,
+        )
     )
     feature_splits = tuple(
         torch.tensor(
@@ -426,6 +446,8 @@ def load_price_series(
         "warmup_report": dict(prepared.warmup_report),
         "market_data": prepared.market_data,
         "market_alignment_report": prepared.market_alignment_report,
+        "sentiment_normalization": sentiment_normalization,
+        "sentiment_normalization_stats": sentiment_normalization_stats,
     }
 
 
@@ -462,6 +484,8 @@ class CSVDataLoader(Dataset):
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
         feature_transform="raw",
         market_data=None,
+        sentiment_normalization="none",
+        sentiment_normalization_stats=None,
         robust_zscore_clip=None,
         train_end_date=None,
         test_start_date=None,
@@ -505,6 +529,8 @@ class CSVDataLoader(Dataset):
             sentiment_cols=sentiment_cols,
             feature_transform=feature_transform,
             market_data=market_data,
+            sentiment_normalization=sentiment_normalization,
+            sentiment_normalization_stats=sentiment_normalization_stats,
             train_end_date=train_end_date,
             test_start_date=test_start_date,
             data_end_date=data_end_date,
@@ -516,6 +542,10 @@ class CSVDataLoader(Dataset):
         self.feature_dim = len(self.feature_cols)
         self.warmup_report = prepared["warmup_report"]
         self.market_alignment_report = prepared["market_alignment_report"]
+        self.sentiment_normalization = sentiment_normalization
+        self.sentiment_normalization_stats = prepared[
+            "sentiment_normalization_stats"
+        ]
         self.passthrough_indices = [
             idx for idx, col in enumerate(self.feature_cols) if col in set(sentiment_cols)
         ]
@@ -678,6 +708,8 @@ class EvaluationDataLoader(Dataset):
         sentiment_cols=DEFAULT_SENTIMENT_COLS,
         feature_transform="raw",
         market_data=None,
+        sentiment_normalization="none",
+        sentiment_normalization_stats=None,
         robust_zscore_clip=None,
         train_end_date=None,
         test_start_date=None,
@@ -715,6 +747,8 @@ class EvaluationDataLoader(Dataset):
             sentiment_cols=sentiment_cols,
             feature_transform=feature_transform,
             market_data=market_data,
+            sentiment_normalization=sentiment_normalization,
+            sentiment_normalization_stats=sentiment_normalization_stats,
             train_end_date=train_end_date,
             test_start_date=test_start_date,
             data_end_date=data_end_date,
@@ -733,6 +767,10 @@ class EvaluationDataLoader(Dataset):
         self.feature_dim = len(self.feature_cols)
         self.warmup_report = prepared["warmup_report"]
         self.market_alignment_report = prepared["market_alignment_report"]
+        self.sentiment_normalization = sentiment_normalization
+        self.sentiment_normalization_stats = prepared[
+            "sentiment_normalization_stats"
+        ]
         self.passthrough_indices = [
             idx for idx, col in enumerate(self.feature_cols) if col in set(sentiment_cols)
         ]

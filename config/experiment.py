@@ -21,6 +21,8 @@ KNOWN_SENTIMENT_FEATURES = (
     "sentiment_min",
     "sentiment_std",
     "news_count",
+    "has_news",
+    "sentiment_mean_z",
 )
 
 
@@ -44,6 +46,8 @@ COMMON_PREPROCESSING_DEFAULTS = {
     "feature_transform": "raw",
     "robust_zscore_clip": None,
     "market_data": None,
+    "sentiment_normalization": "none",
+    "sentiment_normalization_stats": None,
 }
 
 COMMON_DECODER_DEFAULTS = {
@@ -382,6 +386,21 @@ def validate_data_config(config: Mapping[str, Any], *, stage: str) -> None:
         raise ValueError(
             "use_sentiment=False is inconsistent with sentiment columns in "
             f"feature_cols: {sorted(selected_sentiment)}"
+        )
+    sentiment_normalization = config.get("sentiment_normalization", "none")
+    if sentiment_normalization not in ("none", "train_zscore"):
+        raise ValueError(
+            "sentiment_normalization must be 'none' or 'train_zscore', got "
+            f"{sentiment_normalization!r}"
+        )
+    has_zscore_feature = "sentiment_mean_z" in feature_cols
+    if sentiment_normalization == "train_zscore" and not has_zscore_feature:
+        raise ValueError(
+            "sentiment_normalization='train_zscore' requires sentiment_mean_z"
+        )
+    if sentiment_normalization == "none" and has_zscore_feature:
+        raise ValueError(
+            "sentiment_mean_z requires sentiment_normalization='train_zscore'"
         )
 
     validation_fraction = float(config["validation_fraction"])

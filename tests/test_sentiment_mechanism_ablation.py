@@ -1,5 +1,7 @@
 import inspect
 import io
+import json
+import math
 import tempfile
 import unittest
 from contextlib import redirect_stderr
@@ -7,7 +9,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 import config.experiment as experiment_config
+import src.data_loaders.data_class_roll_volume as roll_volume
+import src.data_loaders.financial_preprocessing as financial_preprocessing
 from eval_dual_loss import build_eval_argv, parse_args as parse_eval_args
 from config.config_pretrain import config as pretrain_config
 from pretrain_dual_loss import parse_args as parse_pretrain_args
@@ -28,6 +33,10 @@ def write_price_csv(path: Path, rows: int = 180) -> None:
             "Volume": np.linspace(1_000.0, 2_000.0, rows),
         }
     ).to_csv(path, index=False)
+
+
+def write_sentiment_csv(path: Path, rows: list[dict]) -> None:
+    pd.DataFrame(rows).to_csv(path, index=False)
 
 
 class ForecastHorizonTest(unittest.TestCase):
@@ -133,6 +142,259 @@ class ForecastHorizonTest(unittest.TestCase):
     def test_omitted_horizon_does_not_change_legacy_fingerprint(self):
         args = parse_runner_args([])
         self.assertNotIn("forecast_horizon", effective_experiment_config(args))
+
+
+class SentimentFeatureTest(unittest.TestCase):
+    @staticmethod
+    def _write_dense_sentiment(path: Path, rows: int) -> None:
+        values = np.linspace(-2.0, 3.0, rows)
+        write_sentiment_csv(
+            path,
+            [
+                {
+                    "date": date.strftime("%Y-%m-%d"),
+                    "sentiment_mean": float(value),
+                    "news_count": int(index % 3 == 0),
+                }
+                for index, (date, value) in enumerate(
+                    zip(pd.date_range("2020-01-01", periods=rows), values)
+                )
+            ],
+        )
+
+    def test_has_news_distinguishes_missing_neutral_and_signed_news_causally(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            price_path = root / "NVDA.csv"
+            sentiment_path = root / "NVDA_daily_sentiment.csv"
+            write_price_csv(price_path, rows=90)
+            write_sentiment_csv(
+                sentiment_path,
+                [
+                    {"date": "2020-02-20", "sentiment_mean": 0.0, "news_count": 1},
+                    {"date": "2020-02-21", "sentiment_mean": 0.4, "news_count": 2},
+                    {"date": "2020-02-22", "sentiment_mean": -0.3, "news_count": 1},
+                    {"date": "2020-02-24", "sentiment_mean": 0.8, "news_count": 1},
+                ],
+            )
+            prepared = roll_volume.load_price_series(
+                path_data=str(price_path),
+                feature_cols=("sentiment_mean", "has_news"),
+                sentiment_path=str(sentiment_path),
+                validation_fraction=0.1,
+                test_start_date="2020-03-20",
+                return_metadata=True,
+            )
+            rows = {}
+            for dates, values in zip(prepared["dates"], prepared["features"]):
+                rows.update(
+                    {
+                        pd.Timestamp(date).strftime("%Y-%m-%d"): tuple(value.tolist())
+                        for date, value in zip(dates, values)
+                    }
+                )
+
+            self.assertEqual(rows["2020-02-23"], (0.0, 0.0))
+            self.assertEqual(rows["2020-02-20"], (0.0, 1.0))
+            self.assertEqual(rows["2020-02-21"][1], 1.0)
+            self.assertEqual(rows["2020-02-22"][1], 1.0)
+            self.assertEqual(
+                {row[1] for row in rows.values()},
+                {0.0, 1.0},
+            )
+            self.assertEqual(rows["2020-02-23"], (0.0, 0.0))
+
+    def test_selective_zscore_fits_train_only_and_reuses_state(self):
+        transform = getattr(
+            financial_preprocessing,
+            "fit_transform_sentiment_features",
+            None,
+        )
+        self.assertIsNotNone(transform)
+        splits = (
+            pd.DataFrame(
+                {
+                    "sentiment_mean": [-1.0, 0.0, 1.0],
+                    "sentiment_mean_z": [-1.0, 0.0, 1.0],
+                }
+            ),
+            pd.DataFrame(
+                {"sentiment_mean": [1000.0], "sentiment_mean_z": [1000.0]}
+            ),
+            pd.DataFrame(
+                {"sentiment_mean": [-1000.0], "sentiment_mean_z": [-1000.0]}
+            ),
+        )
+        transformed, state = transform(
+            splits,
+            ["sentiment_mean_z"],
+            "train_zscore",
+        )
+        feature_state = state["features"]["sentiment_mean_z"]
+        self.assertEqual(state["fit_split"], "train")
+        self.assertAlmostEqual(feature_state["mean"], 0.0)
+        self.assertAlmostEqual(feature_state["std"], math.sqrt(2.0 / 3.0))
+        self.assertEqual(transformed[0]["sentiment_mean_z"].mean(), 0.0)
+
+        changed_holdout = (splits[0], splits[1] * 7.0, splits[2] * 11.0)
+        _, changed_state = transform(
+            changed_holdout,
+            ["sentiment_mean_z"],
+            "train_zscore",
+        )
+        self.assertEqual(changed_state, state)
+
+        reused, reused_state = transform(
+            splits,
+            ["sentiment_mean_z"],
+            "train_zscore",
+            state=state,
+        )
+        self.assertEqual(reused_state, state)
+        for first, second in zip(transformed, reused):
+            self.assertTrue(first.equals(second))
+
+    def test_loader_persists_train_only_selective_zscore_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            price_path = root / "NVDA.csv"
+            sentiment_path = root / "NVDA_daily_sentiment.csv"
+            write_price_csv(price_path, rows=180)
+            self._write_dense_sentiment(sentiment_path, rows=180)
+            common = {
+                "path_data": str(price_path),
+                "feature_cols": (
+                    "Close",
+                    "Volume",
+                    "MA10",
+                    "MA50",
+                    "sentiment_mean_z",
+                ),
+                "sentiment_path": str(sentiment_path),
+                "sentiment_normalization": "train_zscore",
+                "validation_fraction": 0.1,
+                "test_start_date": "2020-05-25",
+                "series_split_size": 5,
+                "patch_size": 5,
+            }
+            train = roll_volume.CSVDataLoader(split="train", **common)
+            validation = roll_volume.CSVDataLoader(
+                split="val",
+                sentiment_normalization_stats=train.sentiment_normalization_stats,
+                **common,
+            )
+            self.assertEqual(train.passthrough_indices, [4])
+            self.assertEqual(
+                train.sentiment_normalization_stats["fit_split"],
+                "train",
+            )
+            self.assertEqual(
+                validation.sentiment_normalization_stats,
+                train.sentiment_normalization_stats,
+            )
+            self.assertAlmostEqual(float(train.train_df[:, 4].mean()), 0.0, places=6)
+
+    def test_explicit_none_preserves_legacy_loader_behavior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            price_path = root / "NVDA.csv"
+            sentiment_path = root / "NVDA_daily_sentiment.csv"
+            write_price_csv(price_path, rows=180)
+            self._write_dense_sentiment(sentiment_path, rows=180)
+            common = {
+                "path_data": str(price_path),
+                "feature_cols": ("Close", "Volume", "sentiment_mean"),
+                "sentiment_path": str(sentiment_path),
+                "validation_fraction": 0.1,
+                "test_start_date": "2020-05-25",
+                "series_split_size": 20,
+                "patch_size": 5,
+            }
+            legacy = roll_volume.CSVDataLoader(split="train", **common)
+            explicit = roll_volume.CSVDataLoader(
+                split="train",
+                sentiment_normalization="none",
+                **common,
+            )
+            self.assertEqual(legacy.feature_cols, explicit.feature_cols)
+            self.assertEqual(legacy.passthrough_indices, explicit.passthrough_indices)
+            self.assertEqual(legacy.normalization_stats, explicit.normalization_stats)
+            self.assertTrue(torch.equal(legacy.train_df, explicit.train_df))
+
+    def test_runner_forwards_selective_sentiment_mode_to_both_stages(self):
+        args = parse_runner_args(
+            [
+                "--sentiment-features",
+                "sentiment_mean_z",
+                "--sentiment-normalization",
+                "train_zscore",
+                "--stocks",
+                "NVDA",
+                "--max-stocks",
+                "1",
+                "--results-dir",
+                "/tmp/ts-jepa-sentiment-test",
+            ]
+        )
+        commands = build_stock_commands(
+            args,
+            "NVDA",
+            seed=42,
+            strategy="random",
+        )
+        for command in commands:
+            mode_index = command.index("--sentiment-normalization")
+            self.assertEqual(command[mode_index + 1], "train_zscore")
+
+    def test_unified_evaluator_forwards_checkpoint_sentiment_state(self):
+        state = {
+            "mode": "train_zscore",
+            "fit_split": "train",
+            "features": {
+                "sentiment_mean_z": {
+                    "source": "sentiment_mean",
+                    "mean": 0.25,
+                    "std": 0.5,
+                    "eps": 1e-6,
+                }
+            },
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            checkpoint = Path(tmp) / "checkpoint.pt"
+            torch.save(
+                {
+                    "epoch": 10,
+                    "config": {
+                        "feature_cols": [
+                            "Close",
+                            "Volume",
+                            "MA10",
+                            "MA50",
+                            "sentiment_mean_z",
+                        ],
+                        "sentiment_features": ["sentiment_mean_z"],
+                        "use_sentiment": True,
+                        "sentiment_normalization": "train_zscore",
+                        "sentiment_normalization_stats": state,
+                    },
+                },
+                checkpoint,
+            )
+            args, passthrough = parse_eval_args(
+                argv=[
+                    "--data",
+                    "NVDA",
+                    "--pretrain-checkpoint-path",
+                    str(checkpoint),
+                    "--sentiment-normalization",
+                    "train_zscore",
+                ]
+            )
+            eval_argv, _ = build_eval_argv(args, passthrough)
+            state_index = eval_argv.index(
+                "--sentiment-normalization-stats-json"
+            )
+            self.assertEqual(json.loads(eval_argv[state_index + 1]), state)
 
 
 if __name__ == "__main__":
