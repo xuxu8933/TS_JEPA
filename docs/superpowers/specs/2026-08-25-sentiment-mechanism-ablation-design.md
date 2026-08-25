@@ -1,7 +1,8 @@
 # Sentiment Mechanism Ablation Design
 
-**Date:** 2026-08-25  
-**Branch:** `single-dim`  
+**Date:** 2026-08-25
+
+**Branch:** `single-dim`
 **Execution policy:** implementation, tests, configuration validation, and dry-run only. Full training is explicitly excluded.
 
 ## Goal
