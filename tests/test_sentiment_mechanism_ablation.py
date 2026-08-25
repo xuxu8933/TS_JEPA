@@ -574,5 +574,90 @@ class DryRunSafetyTest(unittest.TestCase):
         self.assertIn('"training_disabled": true', rendered)
 
 
+class PairedAnalysisTest(unittest.TestCase):
+    @staticmethod
+    def _canonical_fixture(condition: str, offset: float = 0.0) -> pd.DataFrame:
+        rows = []
+        for stock in ("AAPL", "NVDA"):
+            for seed in (42, 43):
+                for model in (
+                    "TS-JEPA/random",
+                    "TS-JEPA/local_long",
+                    "GRU/random",
+                ):
+                    for metric in ("mse", "mae", "direction_accuracy"):
+                        rows.append(
+                            {
+                                "condition": condition,
+                                "stock": stock,
+                                "seed": seed,
+                                "model": model,
+                                "metric": metric,
+                                "value": 1.0 + offset,
+                                "forecast_horizon": 5,
+                                "source_file": f"{condition}.csv",
+                            }
+                        )
+        return pd.DataFrame(rows).sample(frac=1.0, random_state=7).reset_index(drop=True)
+
+    def test_pairing_is_deterministic_and_strict(self):
+        from analysis.sentiment_mechanism import pair_condition_results
+
+        control = self._canonical_fixture("control")
+        intervention = self._canonical_fixture("intervention", offset=0.25)
+        pairs = pair_condition_results(control, intervention, "H2")
+        identifiers = list(
+            pairs[["stock", "seed"]].drop_duplicates().itertuples(
+                index=False, name=None
+            )
+        )
+        self.assertEqual(identifiers, sorted(identifiers))
+        self.assertEqual(len(pairs), 2 * 2 * 3 * 3)
+        self.assertTrue(np.allclose(pairs["delta"], 0.25))
+
+        duplicate = pd.concat([control, control.iloc[[0]]], ignore_index=True)
+        with self.assertRaisesRegex(ValueError, "duplicate"):
+            pair_condition_results(duplicate, intervention, "H2")
+        with self.assertRaisesRegex(ValueError, "missing paired"):
+            pair_condition_results(control.iloc[:-1], intervention, "H2")
+        wrong_horizon = intervention.copy()
+        wrong_horizon["forecast_horizon"] = 1
+        with self.assertRaisesRegex(ValueError, "forecast horizon"):
+            pair_condition_results(control, wrong_horizon, "H2")
+        non_finite = intervention.copy()
+        non_finite.loc[0, "value"] = np.inf
+        with self.assertRaisesRegex(ValueError, "finite"):
+            pair_condition_results(control, non_finite, "H2")
+
+    def test_known_student_t_statistics_and_holm_adjustment(self):
+        from analysis.sentiment_mechanism import (
+            holm_adjust,
+            paired_stock_statistics,
+        )
+
+        deltas = [1.0, 2.0, 3.0, 4.0, 5.0]
+        pairs = pd.DataFrame(
+            {
+                "hypothesis": ["H2"] * 5,
+                "stock": [f"S{index}" for index in range(5)],
+                "seed": [42] * 5,
+                "model": ["TS-JEPA/random"] * 5,
+                "metric": ["mse"] * 5,
+                "delta": deltas,
+            }
+        )
+        row = paired_stock_statistics(pairs, expected_stock_count=5).iloc[0]
+        sample_std = math.sqrt(2.5)
+        expected_t = 3.0 / (sample_std / math.sqrt(5.0))
+        half_width = 2.7764451051977987 * sample_std / math.sqrt(5.0)
+        self.assertAlmostEqual(row["mean_delta"], 3.0)
+        self.assertAlmostEqual(row["std_delta"], sample_std)
+        self.assertAlmostEqual(row["t_stat"], expected_t)
+        self.assertAlmostEqual(row["dz"], 3.0 / sample_std)
+        self.assertAlmostEqual(row["ci_low"], 3.0 - half_width, places=6)
+        self.assertAlmostEqual(row["ci_high"], 3.0 + half_width, places=6)
+        self.assertEqual(holm_adjust([0.01, 0.04, 0.03]), [0.03, 0.06, 0.06])
+
+
 if __name__ == "__main__":
     unittest.main()
