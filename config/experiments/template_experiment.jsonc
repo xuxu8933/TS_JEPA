@@ -10,6 +10,7 @@
     "execution": {
       "max_stocks": 0,
       "max_seeds": 0,
+      "max_parallel_jobs": 1,
       "dry_run": true,
       "verbose": false
     },

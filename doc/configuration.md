@@ -60,6 +60,13 @@ Boolean runner/analyzer switches also have explicit negative forms. For
 example, `--no-skip-download` overrides `"skip_download": true`, and
 `--no-skip-plot` overrides `"skip_plot": true`.
 
+`runner.execution.max_parallel_jobs` (or `--max-parallel-jobs`) controls how
+many independent stock/seed/strategy task chains the runner may execute at
+once. It defaults to `1`, preserving sequential execution. On a single GPU,
+`2` can overlap two complete task chains when memory permits. This option is
+runtime-only: it is recorded in runner provenance but excluded from experiment
+identity and is not forwarded to pretraining or downstream model commands.
+
 Complete configurations are available at:
 
 - `config/experiments/top10_with_sentiment.json`

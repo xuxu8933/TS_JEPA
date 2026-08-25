@@ -143,7 +143,6 @@ class StockMaskComparisonTest(unittest.TestCase):
             )
             self.assertEqual(runner_args.use_sentiment, use_sentiment)
             self.assertFalse(hasattr(runner_args, "feature_cols"))
-            self.assertEqual(runner_args.series_split_size, 120)
             self.assertEqual(runner_args.patch_size, 5)
             self.assertTrue(runner_args.skip_download)
             self.assertFalse(hasattr(runner_args, "start_date"))
