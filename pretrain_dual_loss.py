@@ -35,7 +35,7 @@ from config.experiment import (
     resolve_feature_selection,
     validate_data_config,
 )
-from main.utils import init_weights, set_seed
+from main.utils import init_weights, ordered_scalar_mean, set_seed
 from src.data_loaders.data_loader_mnist_rows import get_mnist_row_loader
 from src.data_loaders.data_loader_roll_volume import get_jepa_loaders
 from src.models.decoder import ResidualMLPDecoder, build_reconstruction_decoder
@@ -1766,9 +1766,9 @@ def main(default_mask_strategy=None, argv=None):
         predictor.train()
         decoder.train()
 
-        total_loss = 0.0
-        total_jepa_loss = 0.0
-        total_mae_loss = 0.0
+        epoch_losses = []
+        epoch_jepa_losses = []
+        epoch_mae_losses = []
         total_anchor = 0.0
         num_batches = 0
 
@@ -1865,9 +1865,9 @@ def main(default_mask_strategy=None, argv=None):
                     )
             global_step += 1
 
-            total_loss += loss.item()
-            total_jepa_loss += jepa_loss.item()
-            total_mae_loss += mae_loss.item()
+            epoch_losses.append(loss.detach())
+            epoch_jepa_losses.append(jepa_loss.detach())
+            epoch_mae_losses.append(mae_loss.detach())
             if objective_masks["anchor"] is not None:
                 total_anchor += float(objective_masks["anchor"])
             num_batches += 1
@@ -1879,9 +1879,9 @@ def main(default_mask_strategy=None, argv=None):
             )
         scheduler.step()
 
-        total_loss /= num_batches
-        total_jepa_loss /= num_batches
-        total_mae_loss /= num_batches
+        total_loss = ordered_scalar_mean(epoch_losses)
+        total_jepa_loss = ordered_scalar_mean(epoch_jepa_losses)
+        total_mae_loss = ordered_scalar_mean(epoch_mae_losses)
 
         if epoch % config["checkpoint_print"] == 0:
             message = (

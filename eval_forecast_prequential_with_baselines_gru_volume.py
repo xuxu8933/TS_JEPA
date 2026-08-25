@@ -22,8 +22,7 @@ import subprocess
 from datetime import datetime
 import imageio.v2 as imageio
 
-from main.utils import prepare_args
-from main.utils import mse, mae
+from main.utils import mae, mse, ordered_scalar_mean, prepare_args
 
 from src.data_loaders.data_loader_roll_volume import get_evaluation_loaders
 from src.models.encoder import Encoder
@@ -2250,9 +2249,9 @@ if __name__ == "__main__":
             encoder.eval()
         decoder.train()
 
-        total_loss = 0.0
-        total_mse_loss = 0.0
-        total_trend_loss = 0.0
+        epoch_losses = []
+        epoch_mse_losses = []
+        epoch_trend_losses = []
 
         for context_patches, target_patch in train_loader:
             optimizer.zero_grad()
@@ -2300,13 +2299,13 @@ if __name__ == "__main__":
             loss.backward()
             optimizer.step()
 
-            total_loss += loss.item()
-            total_mse_loss += mse_loss.item()
-            total_trend_loss += trend_loss.item()
+            epoch_losses.append(loss.detach())
+            epoch_mse_losses.append(mse_loss.detach())
+            epoch_trend_losses.append(trend_loss.detach())
 
-        avg_train_loss = total_loss / len(train_loader)
-        avg_train_mse_loss = total_mse_loss / len(train_loader)
-        avg_train_trend_loss = total_trend_loss / len(train_loader)
+        avg_train_loss = ordered_scalar_mean(epoch_losses)
+        avg_train_mse_loss = ordered_scalar_mean(epoch_mse_losses)
+        avg_train_trend_loss = ordered_scalar_mean(epoch_trend_losses)
         loss_history.append(avg_train_loss)
         mse_loss_history.append(avg_train_mse_loss)
         trend_loss_history.append(avg_train_trend_loss)
@@ -2407,7 +2406,7 @@ if __name__ == "__main__":
     for epoch in range(config.get("gru_num_epochs", config["num_epochs"])):
         gru_model.train()
 
-        total_gru_loss = 0.0
+        epoch_gru_losses = []
 
         for context_patches, target_patch in train_loader:
             context_patches = context_patches.to(device)
@@ -2431,9 +2430,9 @@ if __name__ == "__main__":
             loss.backward()
             gru_optimizer.step()
 
-            total_gru_loss += loss.item()
+            epoch_gru_losses.append(loss.detach())
 
-        avg_gru_loss = total_gru_loss / len(train_loader)
+        avg_gru_loss = ordered_scalar_mean(epoch_gru_losses)
 
         gru_val_mse, gru_val_mae, _, _ = evaluate_gru_model(
             model=gru_model,
