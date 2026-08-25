@@ -170,3 +170,4 @@ data/MNIST/
 /results/
 /analysis_artifacts/
 /release_assets/
+/.worktrees/
