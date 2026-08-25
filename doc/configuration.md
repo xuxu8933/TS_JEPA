@@ -71,6 +71,10 @@ Complete configurations are available at:
 
 - `config/experiments/top10_with_sentiment.json`
 - `config/experiments/top10_without_sentiment.json`
+- `config/experiments/top10_h1_without_sentiment.json`
+- `config/experiments/top10_h1_with_sentiment.json`
+- `config/experiments/top10_sentiment_has_news.json`
+- `config/experiments/top10_sentiment_zscore.json`
 
 Use the selected file for both stages:
 
@@ -82,6 +86,60 @@ python analyze_stock_results.py --config CONFIG.json
 The runner records the supplied filename and all resolved arguments in
 `experiment_manifest.json`. The analyzer records its selected filename and
 resolved analysis scope in `analysis_manifest.json`.
+
+## Sentiment-mechanism options
+
+The downstream forecast width is independent of the encoder patch geometry.
+`forecast_horizon` controls the number of future target values and downstream
+head outputs; `patch_size` continues to control how historical rows are grouped
+for the encoder. When omitted, `forecast_horizon` defaults to `patch_size`, so
+existing configs and checkpoints keep their five-step behavior.
+
+For example, H1 keeps five-row input patches and requests a one-step target:
+
+```json
+{
+  "runner": {
+    "downstream": {
+      "epochs": 501,
+      "forecast_horizon": 1
+    }
+  }
+}
+```
+
+`has_news` is derived from the same trading-date merge as `news_count`:
+`1.0` means at least one matched article and `0.0` means none. It is not shifted,
+forward-filled, or nearest-date matched, so observed neutral sentiment remains
+distinguishable from missing news without changing the available information
+set.
+
+Selective sentiment scaling is configured inside the sentiment feature group:
+
+```json
+{
+  "runner": {
+    "preprocessing": {
+      "preset": null,
+      "custom": {
+        "features": {
+          "sentiment": {
+            "enabled": true,
+            "columns": ["sentiment_mean_z"],
+            "normalization": "train_zscore"
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+The raw `sentiment_mean` source is merged before chronological splitting. Mean
+and population standard deviation are then fitted on the training split separately for each stock. That state is stored in the checkpoint and reused
+unchanged for validation, test, and downstream evaluation. Market features
+retain the configured global mode (for these ablations, `window_return`), while
+the transformed sentiment channel passes through the window transform.
 
 ## Canonical experiment
 
@@ -152,7 +210,7 @@ does not apply to that stage. Defaults below are the repository values in
 | `data_end_date` | Data | ISO date/null | `2026-01-01` | Same | Inclusive maximum timestamp loaded | Methodological |
 | `validation_fraction` | Data | float | `0.05` | `0.05` | Trailing fraction of the pre-test period reserved for validation | Methodological |
 | `series_split_size` | Data | int | `20` | — | Time steps in each SSL pretraining window | Methodological |
-| `patch_size` | Data/Model | int | `5` | `5` | Time steps per patch and downstream forecast horizon | Methodological |
+| `patch_size` | Data/Model | int | `5` | `5` | Time steps per historical input patch | Methodological |
 | `pretrain_stride` | Data | int | `5` | — | Start-index stride between pretraining windows | Methodological |
 | `sampling_mode` | Data | str | `sliding_window` | `sliding_window` | Sliding windows or non-overlapping temporal segments | Methodological |
 | `context_size` | Data | int | — | `12` | Historical patches used downstream (`60` time steps) | Methodological |
@@ -162,6 +220,8 @@ does not apply to that stage. Defaults below are the repository values in
 | `feature_transform` | Preprocessing | str | `raw` | `raw` | `raw` or causal `return` representation | Methodological |
 | `normalization` | Preprocessing | str | `train_zscore` | `window_return` | Input normalization mode | Methodological |
 | `normalization_stats` | Preprocessing | dict/null | Derived | `null`/checkpoint | Train-only fitted state reused by validation/test | Derived |
+| `sentiment_normalization` | Preprocessing | str | `none` | `none` | `none` or selective `train_zscore` for derived sentiment channels | Methodological |
+| `sentiment_normalization_stats` | Preprocessing | dict/null | Derived | `null`/checkpoint | Per-stock training-only sentiment state | Derived |
 | `robust_zscore_clip` | Preprocessing | float/null | `null` | `null` | Optional symmetric clip after robust scaling | Methodological |
 | `market_data` | Preprocessing | str/path/null | `null` | `null` | Optional aligned market series for market/excess features | Methodological |
 | `mask_strategy` | Masking | str | `random` | `random` | `random`, `local_long`, `future_block`, or `causal_multiblock` | Methodological |
@@ -208,6 +268,7 @@ does not apply to that stage. Defaults below are the repository values in
 | `encoder_finetune_lr` | Training | float | — | `1e-5` | Encoder parameter-group learning rate | Training |
 | `trend_weight` | Training | float | — | `0.001` | Directional auxiliary loss weight | Methodological |
 | `forecast_target` | Evaluation | str | — | `value` | Downstream label definition | Methodological |
+| `forecast_horizon` | Evaluation | int/null | — | `null` → `patch_size` | Independent downstream target/output width | Methodological |
 | `eval_forecast_target` | Evaluation | str | `relative_return` | — | Target used by automatic post-pretrain evaluation | Methodological |
 | `eval_type` | Evaluation | str | — | `last` | Context pooling rule | Methodological |
 | `run_eval` | Evaluation | bool | `true` | — | Run downstream evaluation after pretraining | Runtime |
@@ -227,8 +288,8 @@ does not apply to that stage. Defaults below are the repository values in
 
 - `series_split_size % patch_size == 0`; therefore pretraining
   `num_patches = series_split_size / patch_size`.
-- Downstream historical length is `context_size * patch_size`; the current
-  forecast horizon is also `patch_size`.
+- Downstream historical length is `context_size * patch_size`.
+  `forecast_horizon` must be positive and defaults to `patch_size` when omitted.
 - `0 < mask_ratio < 1`, all lengths and batch sizes are positive, and attention
   embedding widths must be divisible by their head counts.
 - `train_end_date < test_start_date <= data_end_date` when the optional dates

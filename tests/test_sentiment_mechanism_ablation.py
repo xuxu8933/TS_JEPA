@@ -849,5 +849,27 @@ class MechanismReportTest(unittest.TestCase):
             )
 
 
+class SentimentMechanismDocumentationTest(unittest.TestCase):
+    def test_workflow_and_new_config_keys_are_documented(self):
+        repo_root = Path(__file__).resolve().parents[1]
+        readme = (repo_root / "README.md").read_text(encoding="utf-8")
+        configuration = (repo_root / "doc/configuration.md").read_text(
+            encoding="utf-8"
+        )
+        for config_name in (
+            "top10_h1_without_sentiment.json",
+            "top10_h1_with_sentiment.json",
+            "top10_sentiment_has_news.json",
+            "top10_sentiment_zscore.json",
+        ):
+            self.assertIn(config_name, readme)
+        self.assertIn("analyze_sentiment_mechanisms.py", readme)
+        self.assertIn("no directories, files, or subprocesses", readme)
+        self.assertIn('"forecast_horizon": 1', configuration)
+        self.assertIn('"normalization": "train_zscore"', configuration)
+        self.assertIn("defaults to `patch_size`", configuration)
+        self.assertIn("training split separately for each stock", configuration)
+
+
 if __name__ == "__main__":
     unittest.main()

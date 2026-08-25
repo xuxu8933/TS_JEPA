@@ -408,6 +408,57 @@ python run_top_nasdaq100_stocks.py \
   --verbose
 ```
 
+### Controlled sentiment-mechanism ablations
+
+Four configs isolate forecast horizon, news observability, and sentiment scale
+without changing the published controls:
+
+- `config/experiments/top10_h1_without_sentiment.json` — one-step target,
+  market features only;
+- `config/experiments/top10_h1_with_sentiment.json` — the same one-step target
+  with raw `sentiment_mean`;
+- `config/experiments/top10_sentiment_has_news.json` — the five-step raw
+  sentiment control plus a causal same-date `has_news` indicator;
+- `config/experiments/top10_sentiment_zscore.json` — replaces raw sentiment
+  with `sentiment_mean_z`, fitted on the training split separately for each
+  stock.
+
+Validate all four configurations without starting work:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_h1_without_sentiment.json --dry-run
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_h1_with_sentiment.json --dry-run
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_sentiment_has_news.json --dry-run
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_sentiment_zscore.json --dry-run
+```
+
+This dry-run parses the complete configuration, validates masking geometry,
+checks every required price/sentiment input, and builds the incremental command
+plan. It creates no directories, files, or subprocesses and emits a
+`DRY_RUN_VALIDATION` JSON object with `training_disabled: true`.
+
+The full experiments are user-triggered by removing `--dry-run`:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_h1_without_sentiment.json
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_h1_with_sentiment.json
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_sentiment_has_news.json
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py --config config/experiments/top10_sentiment_zscore.json
+```
+
+They write to matching roots below `results/`. Once every stock/seed/strategy
+run is complete, build the paired stock-level analysis package with:
+
+```bash
+conda run --no-capture-output -n ts-jepa python analyze_sentiment_mechanisms.py --run-id top10_seeds42_51
+```
+
+The analyzer never launches training. If any input is absent or incomplete, it
+prints `Experiment results not found; run the corresponding experiment first.`
+and creates no package. Primary inference averages seeds within each stock,
+uses the ten stocks as paired units, and applies Holm correction within each
+hypothesis; the 100 stock×seed pairs remain descriptive.
+
 The stock runner uses one `--mask-strategies` option for both single- and
 multi-strategy runs. It always stores each method under its own strategy
 directory, preventing result files from different masking methods from being
