@@ -397,5 +397,79 @@ class SentimentFeatureTest(unittest.TestCase):
             self.assertEqual(json.loads(eval_argv[state_index + 1]), state)
 
 
+class ConfigIsolationTest(unittest.TestCase):
+    EXPECTED_STOCKS = [
+        "NVDA",
+        "AAPL",
+        "MSFT",
+        "AMZN",
+        "GOOGL",
+        "AVGO",
+        "META",
+        "TSLA",
+        "COST",
+        "WMT",
+    ]
+    EXPECTED = {
+        "top10_h1_without_sentiment.json": (
+            1,
+            ["Close", "Volume", "MA10", "MA50"],
+            20,
+        ),
+        "top10_h1_with_sentiment.json": (
+            1,
+            ["Close", "Volume", "MA10", "MA50", "sentiment_mean"],
+            25,
+        ),
+        "top10_sentiment_has_news.json": (
+            5,
+            [
+                "Close",
+                "Volume",
+                "MA10",
+                "MA50",
+                "sentiment_mean",
+                "has_news",
+            ],
+            30,
+        ),
+        "top10_sentiment_zscore.json": (
+            5,
+            ["Close", "Volume", "MA10", "MA50", "sentiment_mean_z"],
+            25,
+        ),
+    }
+
+    def test_new_configs_resolve_exact_semantics(self):
+        from analysis.sentiment_mechanism import semantic_experiment_config
+
+        repo_root = Path(__file__).resolve().parents[1]
+        for filename, (horizon, features, dimension) in self.EXPECTED.items():
+            with self.subTest(config=filename):
+                snapshot = semantic_experiment_config(
+                    repo_root / "config" / "experiments" / filename
+                )
+                self.assertEqual(snapshot["stocks"], self.EXPECTED_STOCKS)
+                self.assertEqual(snapshot["seeds"], list(range(42, 52)))
+                self.assertEqual(snapshot["patch_size"], 5)
+                self.assertEqual(snapshot["forecast_horizon"], horizon)
+                self.assertEqual(snapshot["feature_cols"], features)
+                self.assertEqual(snapshot["input_dimension"], dimension)
+                self.assertEqual(snapshot["mask_strategies"], ["random", "local_long"])
+                self.assertEqual(
+                    snapshot["results_dir"],
+                    str(repo_root / "results" / Path(filename).stem),
+                )
+
+    def test_only_approved_semantic_differences_are_present(self):
+        from analysis.sentiment_mechanism import validate_ablation_configs
+
+        repo_root = Path(__file__).resolve().parents[1]
+        report = validate_ablation_configs(repo_root)
+        self.assertTrue(report["valid"], report)
+        self.assertTrue(report["published_controls_verified"])
+        self.assertEqual(set(report["configs"]), set(self.EXPECTED))
+
+
 if __name__ == "__main__":
     unittest.main()

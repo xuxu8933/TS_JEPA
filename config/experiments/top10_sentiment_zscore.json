@@ -1,0 +1,53 @@
+{
+  "common": {
+    "stocks": ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "AVGO", "META", "TSLA", "COST", "WMT"],
+    "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+  },
+  "runner": {
+    "execution": {"max_stocks": 10, "max_seeds": 10, "dry_run": false, "verbose": false},
+    "download": {
+      "skip": true,
+      "start_date": "2015-01-01",
+      "end_date": "2026-01-01",
+      "write_mode": "append",
+      "news": {"skip": false, "max_articles": null, "chunk_days": 7, "request_delay": 0.5}
+    },
+    "masking": {
+      "strategies": {
+        "random": {"enabled": true},
+        "local_long": {"enabled": true, "mae_window_patches": 1, "jepa_gap_patches": 4, "jepa_target_patches": 4},
+        "future_block": {"enabled": false, "target_patches": 4},
+        "causal_multiblock": {"enabled": false, "num_blocks": 2, "block_patches": 2, "block_gap_patches": 1}
+      }
+    },
+    "objectives": {
+      "jepa": {"weight": 1.0, "loss": "mse"},
+      "mae": {"weight": 0.5, "loss": "mse"}
+    },
+    "pretraining": {
+      "skip": false,
+      "epochs": 2001,
+      "windows": {"series_size": 60, "patch_size": 5, "stride": 5, "sampling_mode": "sliding_window"}
+    },
+    "preprocessing": {
+      "preset": null,
+      "custom": {
+        "feature_transform": "raw",
+        "normalization": {"method": "window_return", "robust_zscore": {"clip": 5.0}},
+        "features": {
+          "market": ["Close", "Volume", "MA10", "MA50"],
+          "sentiment": {"enabled": true, "columns": ["sentiment_mean_z"], "normalization": "train_zscore"}
+        },
+        "forecast": {"target": "value", "market_data": {"enabled": false, "name": "NASDAQ100"}}
+      }
+    },
+    "checkpoint": {"selection": {"mode": "epoch", "epoch": 2000}, "encoder_weights": "ema"},
+    "downstream": {"epochs": 501, "forecast_horizon": 5},
+    "output": {"skip_combined_plot": false}
+  },
+  "analysis": {
+    "models": ["TS-JEPA", "GRU", "naive_last", "drift", "mean_context", "previous_patch"],
+    "allow_incomplete": false,
+    "skip_plot": false
+  }
+}
