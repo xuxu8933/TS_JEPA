@@ -1,5 +1,7 @@
 """Shared CLI, reproducibility, initialization, and metric utilities."""
 
+from collections.abc import Sequence
+
 import torch
 import argparse
 import json
@@ -13,6 +15,18 @@ from config.experiment import (
     resolve_feature_selection,
     validate_data_config,
 )
+
+
+def ordered_scalar_mean(values: Sequence[torch.Tensor]) -> float:
+    """Average detached scalars with one device-to-host transfer."""
+    if not values:
+        raise ValueError("ordered_scalar_mean requires at least one scalar")
+    if any(value.numel() != 1 for value in values):
+        raise ValueError("ordered_scalar_mean accepts only scalar tensors")
+    host_values = torch.stack(
+        [value.detach().reshape(()) for value in values]
+    ).cpu().tolist()
+    return sum(host_values) / len(host_values)
 
 
 def set_seed(seed, deterministic=None):
