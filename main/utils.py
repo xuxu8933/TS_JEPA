@@ -12,6 +12,7 @@ import numpy as np
 
 from config.experiment import (
     none_if_requested,
+    resolve_forecast_horizon,
     resolve_feature_selection,
     validate_data_config,
 )
@@ -138,6 +139,17 @@ def prepare_args(config):
         help=(
             "Predict normalized target values or the future cumulative simple-return "
             "path P[t+h] / P[t] - 1."
+        ),
+    )
+    parser.add_argument(
+        "--forecast_horizon",
+        "--forecast-horizon",
+        dest="forecast_horizon",
+        type=int,
+        default=config.get("forecast_horizon"),
+        help=(
+            "Number of downstream target steps. Defaults to patch_size for "
+            "backward compatibility."
         ),
     )
     parser.add_argument(
@@ -353,6 +365,10 @@ def prepare_args(config):
     config["ratio_supervision"] = args.ratio_supervision
     config["pooling"] = args.pooling
     config["patch_size"] = args.patch_size
+    config["forecast_horizon"] = resolve_forecast_horizon(
+        args.forecast_horizon,
+        args.patch_size,
+    )
     config["context_size"] = args.context_size
     config["eval_stride"] = args.eval_stride
     config["target_feature_index"] = args.target_feature_index

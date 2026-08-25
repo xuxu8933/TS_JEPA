@@ -4,6 +4,7 @@ import torch
 import random
 from torch.utils.data import Dataset
 
+from config.experiment import resolve_forecast_horizon
 from .financial_preprocessing import (
     FEATURE_TRANSFORMS,
     prepare_financial_frame,
@@ -659,6 +660,7 @@ class EvaluationDataLoader(Dataset):
         self,
         path_data,
         patch_size=5,
+        forecast_horizon=None,
         context_size=10,
         stride=1,
         sampling_mode="sliding_window",
@@ -682,6 +684,10 @@ class EvaluationDataLoader(Dataset):
         data_end_date=None,
     ):
         self.patch_size = patch_size
+        self.forecast_horizon = resolve_forecast_horizon(
+            forecast_horizon,
+            patch_size,
+        )
         self.context_size = context_size
         self.sampling_mode = _resolve_sampling_mode(sampling_mode)
         self.split = split
@@ -815,7 +821,7 @@ class EvaluationDataLoader(Dataset):
             raise ValueError(f"Unknown split: {split}. Use 'train', 'val', 'test', or 'all'.")
 
         context_length = self.context_size * self.patch_size
-        sample_length = context_length + self.patch_size
+        sample_length = context_length + self.forecast_horizon
         self.sample_starts, self.stride = _sample_starts(
             series_length=len(self.series),
             sample_length=sample_length,
@@ -833,6 +839,7 @@ class EvaluationDataLoader(Dataset):
             f"num_samples={len(self.samples)}, "
             f"context_size={context_size}, "
             f"patch_size={patch_size}, "
+            f"forecast_horizon={self.forecast_horizon}, "
             f"feature_dim={self.feature_dim}, "
             f"target_col={target_col}, "
             f"forecast_target={self.forecast_target}, "
@@ -842,14 +849,14 @@ class EvaluationDataLoader(Dataset):
 
     def _make_samples(self, series):
         context_len = self.context_size * self.patch_size
-        target_len = self.patch_size
+        target_len = self.forecast_horizon
         total_len = context_len + target_len
 
         samples = []
         for start in self.sample_starts:
             full_window = series[start:start + total_len]
             context_flat = full_window[:context_len]   # [context_len, C]
-            target_flat = full_window[context_len:]    # [patch_size, C]
+            target_flat = full_window[context_len:]    # [forecast_horizon, C]
             samples.append((context_flat, target_flat))
 
         if len(samples) == 0:
@@ -858,6 +865,7 @@ class EvaluationDataLoader(Dataset):
                 f"len(series)={len(series)}, "
                 f"context_size={self.context_size}, "
                 f"patch_size={self.patch_size}, "
+                f"forecast_horizon={self.forecast_horizon}, "
                 f"stride={self.stride}, "
                 f"sampling_mode={self.sampling_mode!r}"
             )
@@ -872,7 +880,10 @@ class EvaluationDataLoader(Dataset):
         context_len = self.context_size * self.patch_size
         start = self.sample_starts[idx]
         cutoff_index = start + context_len - 1
-        future_slice = slice(cutoff_index + 1, cutoff_index + 1 + self.patch_size)
+        future_slice = slice(
+            cutoff_index + 1,
+            cutoff_index + 1 + self.forecast_horizon,
+        )
 
         if self.forecast_target == "relative_return":
             # Build the label before input normalization. The denominator is
@@ -888,7 +899,7 @@ class EvaluationDataLoader(Dataset):
             target_patch = cumulative_return_normalize_with_base(
                 future_values,
                 base=cutoff_value,
-            ).reshape(self.patch_size)
+            ).reshape(self.forecast_horizon)
         elif self.forecast_target in (
             "cumulative_log_return",
             "excess_log_return",
@@ -941,6 +952,8 @@ class EvaluationDataLoader(Dataset):
         # Forecast only target_col, usually Close. Relative-return labels were
         # already computed from raw values above.
         if self.forecast_target == "value":
-            target_patch = target_flat[:, self.target_idx].reshape(self.patch_size)
+            target_patch = target_flat[:, self.target_idx].reshape(
+                self.forecast_horizon
+            )
 
         return context_patches, target_patch

@@ -529,12 +529,14 @@ def flatten_runner_options(runner, config_path):
         )
         _validate_keys(
             downstream,
-            {"epochs"},
+            {"epochs", "forecast_horizon"},
             "[runner].downstream",
             config_path,
             required=("epochs",),
         )
         flattened["eval_num_epochs"] = downstream["epochs"]
+        if "forecast_horizon" in downstream:
+            flattened["forecast_horizon"] = downstream["forecast_horizon"]
 
     if "output" in runner:
         output = _config_object(runner["output"], "[runner].output", config_path)

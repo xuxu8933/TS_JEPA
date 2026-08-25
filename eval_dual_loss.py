@@ -288,6 +288,14 @@ def parse_args(default_mask_strategy=None, argv=None):
         ),
     )
     parser.add_argument(
+        "--forecast_horizon",
+        "--forecast-horizon",
+        dest="forecast_horizon",
+        type=int,
+        default=downstream_config.get("forecast_horizon"),
+        help="Number of downstream target steps; defaults to the patch size.",
+    )
+    parser.add_argument(
         "--feature-transform",
         choices=("raw", "return"),
         default=downstream_config.get("feature_transform", "raw"),
@@ -610,6 +618,11 @@ def build_eval_argv(args, passthrough_args):
         args.pretrain_encoder_weights,
         "--forecast-target",
         args.forecast_target,
+        *(
+            ["--forecast-horizon", str(args.forecast_horizon)]
+            if args.forecast_horizon is not None
+            else []
+        ),
         "--feature-transform",
         str(checkpoint_value("feature_transform", args.feature_transform)),
         "--market-features",

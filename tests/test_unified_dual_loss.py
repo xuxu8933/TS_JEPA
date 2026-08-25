@@ -538,22 +538,26 @@ class UnifiedDualLossTest(unittest.TestCase):
         )
 
     def test_unified_evaluator_forwards_relative_return_target(self):
-        args, passthrough = parse_eval_args(
-            argv=[
-                "--data",
-                "NVDA",
-                "--forecast-target",
-                "relative_return",
-                "--data-end-date",
-                "2026-01-01",
-            ]
-        )
-        eval_argv, _ = build_eval_argv(args, passthrough)
+        with tempfile.TemporaryDirectory() as tmp:
+            explicit_checkpoint = Path(tmp) / "not-created.pt"
+            args, passthrough = parse_eval_args(
+                argv=[
+                    "--data",
+                    "NVDA",
+                    "--pretrain-checkpoint-path",
+                    str(explicit_checkpoint),
+                    "--forecast-target",
+                    "relative_return",
+                    "--data-end-date",
+                    "2026-01-01",
+                ]
+            )
+            eval_argv, _ = build_eval_argv(args, passthrough)
 
-        target_arg = eval_argv.index("--forecast-target")
-        self.assertEqual(eval_argv[target_arg + 1], "relative_return")
-        cutoff_arg = eval_argv.index("--data_end_date")
-        self.assertEqual(eval_argv[cutoff_arg + 1], "2026-01-01")
+            target_arg = eval_argv.index("--forecast-target")
+            self.assertEqual(eval_argv[target_arg + 1], "relative_return")
+            cutoff_arg = eval_argv.index("--data_end_date")
+            self.assertEqual(eval_argv[cutoff_arg + 1], "2026-01-01")
 
     def test_ema_schedule_advances_per_optimizer_step(self):
         values = [ema_momentum_at_step(0.9, step, 10) for step in range(11)]

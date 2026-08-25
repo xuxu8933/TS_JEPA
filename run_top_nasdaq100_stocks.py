@@ -70,6 +70,8 @@ def effective_experiment_config(args_or_options):
     # did not affect results, so omit it when comparing old and new manifests.
     if effective.get("feature_cols") is None:
         effective.pop("feature_cols", None)
+    if effective.get("forecast_horizon") is None:
+        effective.pop("forecast_horizon", None)
 
     if effective.get("skip_download") is True:
         for key in (
@@ -801,6 +803,15 @@ def parse_args(argv=None):
         default="value",
         help="Downstream value path or cutoff-relative return path.",
     )
+    parser.add_argument(
+        "--forecast-horizon",
+        type=int,
+        default=None,
+        help=(
+            "Number of downstream forecast steps. Defaults to --patch-size "
+            "for backward compatibility."
+        ),
+    )
     parser.add_argument("--eval-num-epochs", type=int, default=501)
     parser.add_argument("--pretrain-num-epochs", type=int, default=2001)
     parser.add_argument("--checkpoint-to-use", type=int, default=2000)
@@ -1119,6 +1130,11 @@ def build_stock_commands(args, stock, seed=None, strategy=None, results_dir=None
             args.encoder_weights,
             "--forecast-target",
             preprocessing["forecast_target"],
+            *(
+                ["--forecast-horizon", str(args.forecast_horizon)]
+                if getattr(args, "forecast_horizon", None) is not None
+                else []
+            ),
             *preprocessing_args,
             "--num_epochs",
             str(args.eval_num_epochs),

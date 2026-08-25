@@ -729,6 +729,12 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         ),
     )
     parser.add_argument(
+        "--eval-forecast-horizon",
+        type=int,
+        default=config.get("eval_forecast_horizon"),
+        help="Optional downstream target width used by --run-eval.",
+    )
+    parser.add_argument(
         "--eval-results-dir",
         default=config.get("eval_results_dir", None),
         help="Optional output directory for automatic downstream evaluation.",
@@ -1466,6 +1472,10 @@ def run_downstream_evaluation(config):
         "--validation_fraction",
         str(config["validation_fraction"]),
     ]
+    if config.get("eval_forecast_horizon") is not None:
+        eval_argv.extend(
+            ["--forecast-horizon", str(config["eval_forecast_horizon"])]
+        )
     eval_argv.append(
         "--use-sentiment" if config["use_sentiment"] else "--no-sentiment"
     )

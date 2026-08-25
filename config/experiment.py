@@ -119,6 +119,7 @@ PRETRAIN_CONFIG_SECTIONS = {
         "eval_checkpoint_to_use": None,
         "eval_encoder_weights": "ema",
         "eval_forecast_target": "relative_return",
+        "eval_forecast_horizon": None,
         "eval_num_epochs": 501,
         "eval_results_dir": "./results/NVDA/relative_return/seed_42",
     },
@@ -203,6 +204,7 @@ DOWNSTREAM_CONFIG_SECTIONS = {
     },
     "evaluation": {
         "forecast_target": "value",
+        "forecast_horizon": None,
         "eval_type": "last",
     },
     "runtime": {
@@ -220,6 +222,17 @@ def none_if_requested(value: Any) -> Any:
     if isinstance(value, str) and value.lower() in ("", "none", "null"):
         return None
     return value
+
+
+def resolve_forecast_horizon(
+    forecast_horizon: int | None,
+    patch_size: int,
+) -> int:
+    """Resolve the downstream target width independently of input patches."""
+    resolved = int(patch_size if forecast_horizon is None else forecast_horizon)
+    if resolved <= 0:
+        raise ValueError(f"forecast_horizon must be positive, got {resolved}")
+    return resolved
 
 
 def _deduplicate(names: Sequence[str], label: str) -> list[str]:
@@ -407,6 +420,7 @@ def validate_data_config(config: Mapping[str, Any], *, stage: str) -> None:
                 f"series_split_size={context_length}, patch_size={patch_size}"
             )
     elif stage == "downstream":
+        resolve_forecast_horizon(config.get("forecast_horizon"), patch_size)
         context_size = int(config["context_size"])
         if context_size <= 0:
             raise ValueError(f"context_size must be positive, got {context_size}")

@@ -1833,6 +1833,7 @@ if __name__ == "__main__":
     # =========================
     # These should match your pretraining patch setting.
     patch_size = int(config["patch_size"])
+    forecast_horizon = int(config["forecast_horizon"])
     feature_cols = list(config["feature_cols"])
     use_sentiment = bool(config["use_sentiment"])
     timestamp_col = config["timestamp_col"]
@@ -1859,6 +1860,7 @@ if __name__ == "__main__":
         target_col = feature_cols[target_feature_index]
 
     config["patch_size"] = patch_size
+    config["forecast_horizon"] = forecast_horizon
     config["feature_cols"] = feature_cols
     config["target_feature_index"] = target_feature_index
     config["forecast_target"] = forecast_target
@@ -1874,6 +1876,7 @@ if __name__ == "__main__":
     print("target_feature_index =", target_feature_index)
     print("target_col =", target_col)
     print("forecast_target =", forecast_target)
+    print("forecast_horizon =", forecast_horizon)
     print("feature_transform =", feature_transform)
     print("normalization =", normalization)
     print("robust_zscore_clip =", robust_zscore_clip)
@@ -1904,6 +1907,7 @@ if __name__ == "__main__":
         config["batch_size"],
         split="train",
         patch_size=patch_size,
+        forecast_horizon=forecast_horizon,
         context_size=context_size,
         stride=eval_stride,
         sampling_mode=sampling_mode,
@@ -1948,7 +1952,7 @@ if __name__ == "__main__":
     print("Normalization:", normalization)
     print("Normalization fit split: train only")
     print("Forecast target:", forecast_target)
-    print(f"Forecast horizons: 1..{patch_size}")
+    print(f"Forecast horizons: 1..{forecast_horizon}")
     print(f"Window length: {context_size * patch_size}")
     print("Patch size:", patch_size)
     print("Market data:", market_data or "disabled")
@@ -1982,8 +1986,8 @@ if __name__ == "__main__":
             "known zero origin; cumulative/excess log-return targets compare "
             "the binary indicators (forecast > 0) and (target > 0) at each horizon"
         ),
-        "forecast_horizons": list(range(1, patch_size + 1)),
-        "forecast_horizon": patch_size,
+        "forecast_horizons": list(range(1, forecast_horizon + 1)),
+        "forecast_horizon": forecast_horizon,
         "market_data": market_data,
         "warmup_report": config["warmup_report"],
         "market_alignment_report": config["market_alignment_report"],
@@ -2021,6 +2025,7 @@ if __name__ == "__main__":
         config["batch_size"],
         split="val",
         patch_size=patch_size,
+        forecast_horizon=forecast_horizon,
         context_size=context_size,
         stride=eval_stride,
         sampling_mode=sampling_mode,
@@ -2045,6 +2050,7 @@ if __name__ == "__main__":
         config["batch_size"],
         split="test",
         patch_size=patch_size,
+        forecast_horizon=forecast_horizon,
         context_size=context_size,
         stride=eval_stride,
         sampling_mode=sampling_mode,
@@ -2073,7 +2079,7 @@ if __name__ == "__main__":
             "test_target_end": _maybe_get_dataset_date(
                 test_loader.dataset,
                 len(test_loader.dataset) - 1,
-                patch_size - 1,
+                forecast_horizon - 1,
             ),
         }
     )
@@ -2109,7 +2115,7 @@ if __name__ == "__main__":
     decoder = build_reconstruction_decoder(
         decoder_type=config["decoder_type"],
         embedding_dim=config["pretrain_encoder_embed_dim"],
-        output_dim=patch_size,
+        output_dim=forecast_horizon,
         hidden_dim=config["decoder_hidden_dim"],
         num_layers=config["decoder_num_layers"],
         dropout=config["decoder_dropout"],
@@ -2260,7 +2266,7 @@ if __name__ == "__main__":
             target_patch = target_patch.to(device)
             target_patch = select_target_feature_tensor(
                 target_patch,
-                patch_size=patch_size,
+                patch_size=forecast_horizon,
                 feature_dim=feature_dim,
                 target_feature_index=target_feature_index,
             )
@@ -2391,7 +2397,7 @@ if __name__ == "__main__":
         input_size=feature_dim,
         hidden_size=config.get("gru_hidden_size", 64),
         num_layers=config.get("gru_num_layers", 2),
-        output_size=patch_size,
+        output_size=forecast_horizon,
         dropout=config.get("gru_dropout", 0.1),
     ).to(device)
 
@@ -2413,7 +2419,7 @@ if __name__ == "__main__":
             target_patch = target_patch.to(device)
             target_patch = select_target_feature_tensor(
                 target_patch,
-                patch_size=patch_size,
+                patch_size=forecast_horizon,
                 feature_dim=feature_dim,
                 target_feature_index=target_feature_index,
             )

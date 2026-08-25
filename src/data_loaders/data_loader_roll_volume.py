@@ -72,6 +72,7 @@ def get_evaluation_loaders(
     batch_size,
     split="train",
     patch_size=5,
+    forecast_horizon=None,
     context_size=10,
     stride=1,
     sampling_mode="sliding_window",
@@ -98,6 +99,7 @@ def get_evaluation_loaders(
     dataset = EvaluationDataLoader(
         path_data=path_data,
         patch_size=patch_size,
+        forecast_horizon=forecast_horizon,
         context_size=context_size,
         stride=stride,
         sampling_mode=sampling_mode,
