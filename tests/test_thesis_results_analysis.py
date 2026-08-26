@@ -10,11 +10,15 @@ import pandas as pd
 
 from analysis.thesis_results import (
     METHOD_ORDER,
+    _student_t_cdf,
+    build_shared_vs_local_comparison,
     compute_direction_accuracy,
     exact_wilcoxon,
     load_scope,
+    paired_difference_statistics,
     parse_args,
     run_analysis,
+    write_shared_vs_local_table,
 )
 from eval_forecast_prequential_with_baselines_gru_volume import (
     _maybe_get_dataset_date,
@@ -23,6 +27,37 @@ from eval_forecast_prequential_with_baselines_gru_volume import (
 
 
 class ThesisStatisticsTest(unittest.TestCase):
+    @staticmethod
+    def _strategy_row(
+        stock,
+        seed,
+        method,
+        mse,
+        mae,
+        *,
+        test_signature="common-targets",
+        **metadata,
+    ):
+        return {
+            "stock": stock,
+            "seed": seed,
+            "method": method,
+            "strategy": "random" if method == METHOD_ORDER[0] else "local_long",
+            "split": "test",
+            "mse": mse,
+            "mae": mae,
+            "forecast_horizon": 5,
+            "forecast_target": "value",
+            "target_definition": "future-close",
+            "normalization": "window_return",
+            "metric_definition": "rolling-origin-v1",
+            "test_start": "2025-01-01",
+            "test_end": "2025-12-31",
+            "test_signature": test_signature,
+            "original_source_file": f"{stock}/{seed}/{method}.csv",
+            **metadata,
+        }
+
     def test_thesis_scope_accepts_commented_experiment_template(self):
         config_path = (
             Path(__file__).resolve().parents[1]
@@ -44,6 +79,196 @@ class ThesisStatisticsTest(unittest.TestCase):
         self.assertEqual(p_value, 0.25)
         self.assertEqual(effect, -1.0)
         self.assertEqual(count, 3)
+
+    def test_paired_statistics_use_signed_sample_standard_deviation(self):
+        statistics = paired_difference_statistics([-1.0, -2.0, -3.0, -4.0, -5.0])
+
+        self.assertEqual(statistics["n_stocks"], 5)
+        self.assertAlmostEqual(statistics["mean_delta"], -3.0)
+        self.assertAlmostEqual(statistics["median_delta"], -3.0)
+        self.assertAlmostEqual(statistics["cohens_dz"], -3.0 / np.sqrt(2.5))
+        self.assertAlmostEqual(statistics["t_statistic"], -3.0 / np.sqrt(2.5 / 5.0))
+        self.assertAlmostEqual(statistics["p_value"], 0.0132355995636827)
+        self.assertEqual(statistics["status"], "ok")
+
+    def test_student_t_probabilities_cover_low_and_high_degrees_of_freedom(self):
+        self.assertEqual(_student_t_cdf(0.0, 1), 0.5)
+        self.assertAlmostEqual(2.0 * (1.0 - _student_t_cdf(1.0, 1)), 0.5)
+        self.assertAlmostEqual(
+            2.0 * (1.0 - _student_t_cdf(np.sqrt(3.0), 2)),
+            0.2254033307585166,
+        )
+        self.assertAlmostEqual(
+            2.0 * (1.0 - _student_t_cdf(2.0, 30)),
+            0.0546250449629831,
+        )
+
+    def test_paired_statistics_report_insufficient_and_zero_variance_samples(self):
+        insufficient = paired_difference_statistics([-0.25])
+        constant = paired_difference_statistics([-0.25, -0.25, -0.25])
+        roundoff_only = paired_difference_statistics(
+            [-0.00012000000000000010, -0.00012000000000000011]
+        )
+
+        self.assertEqual(insufficient["status"], "insufficient_stock_observations")
+        self.assertTrue(np.isnan(insufficient["t_statistic"]))
+        self.assertTrue(np.isnan(insufficient["p_value"]))
+        self.assertTrue(np.isnan(insufficient["cohens_dz"]))
+        self.assertEqual(constant["status"], "zero_variance_differences")
+        self.assertTrue(np.isnan(constant["t_statistic"]))
+        self.assertTrue(np.isnan(constant["p_value"]))
+        self.assertTrue(np.isnan(constant["cohens_dz"]))
+        self.assertEqual(roundoff_only["status"], "zero_variance_differences")
+        self.assertTrue(np.isnan(roundoff_only["t_statistic"]))
+
+    def test_shared_local_latex_marks_unavailable_statistics_explicitly(self):
+        summary = pd.DataFrame(
+            [
+                {
+                    "metric": "MSE",
+                    "n_stocks": 1,
+                    "mean_delta": -0.25,
+                    "median_delta": -0.25,
+                    "t_statistic": np.nan,
+                    "p_value": np.nan,
+                    "cohens_dz": np.nan,
+                    "status": "insufficient_stock_observations",
+                },
+                {
+                    "metric": "MAE",
+                    "n_stocks": 0,
+                    "mean_delta": np.nan,
+                    "median_delta": np.nan,
+                    "t_statistic": np.nan,
+                    "p_value": np.nan,
+                    "cohens_dz": np.nan,
+                    "status": "insufficient_stock_observations",
+                },
+            ]
+        )
+        with tempfile.TemporaryDirectory() as temporary:
+            paths = write_shared_vs_local_table(summary, Path(temporary))
+            rendered = paths[1].read_text(encoding="utf-8")
+
+        self.assertNotIn("nan", rendered.lower())
+        self.assertIn("--", rendered)
+        self.assertIn("insufficient stocks", rendered)
+
+    def test_shared_local_pairing_uses_configured_matched_seeds_and_stock_units(self):
+        shared, local = METHOD_ORDER[:2]
+        rows = [
+            self._strategy_row("AAA", 7, shared, 1.0, 3.0),
+            self._strategy_row("AAA", 7, local, 2.0, 4.0),
+            self._strategy_row("AAA", 9, shared, 3.0, 6.0),
+            self._strategy_row("AAA", 9, local, 5.0, 8.0),
+            self._strategy_row("AAA", 11, shared, 100.0, 100.0),
+            self._strategy_row("BBB", 7, shared, 4.0, 4.0),
+            self._strategy_row("BBB", 7, local, 2.0, 2.0),
+            self._strategy_row("BBB", 9, shared, 1.0, 1.0, test_signature="left"),
+            self._strategy_row("BBB", 9, local, 9.0, 9.0, test_signature="right"),
+            self._strategy_row("CCC", 7, shared, 1.0, 1.0),
+            self._strategy_row("OUT", 7, shared, -100.0, -100.0),
+            self._strategy_row("OUT", 7, local, 100.0, 100.0),
+        ]
+        scope = {
+            "stocks": ["AAA", "BBB", "CCC"],
+            "seeds": [7, 9, 11],
+            "strategies": ["random", "local_long"],
+        }
+        issues = []
+
+        stock_pairs, summary = build_shared_vs_local_comparison(
+            pd.DataFrame(rows), scope, issues
+        )
+
+        self.assertEqual(stock_pairs["stock"].tolist(), ["AAA", "BBB"])
+        aaa = stock_pairs.set_index("stock").loc["AAA"]
+        self.assertEqual(aaa["n_matched_seeds"], 2)
+        self.assertEqual(aaa["matched_seeds"], "7;9")
+        self.assertAlmostEqual(aaa["shared_mse"], 2.0)
+        self.assertAlmostEqual(aaa["local_mse"], 3.5)
+        self.assertAlmostEqual(aaa["delta_mse"], -1.5)
+        self.assertAlmostEqual(aaa["delta_mae"], -1.5)
+        bbb = stock_pairs.set_index("stock").loc["BBB"]
+        self.assertEqual(bbb["n_matched_seeds"], 1)
+        self.assertEqual(bbb["matched_seeds"], "7")
+        self.assertAlmostEqual(bbb["delta_mse"], 2.0)
+        self.assertEqual(set(summary["metric"]), {"MSE", "MAE"})
+        self.assertTrue((summary["n_stocks"] == 2).all())
+        self.assertAlmostEqual(
+            summary.set_index("metric").loc["MSE", "mean_delta"], 0.25
+        )
+        self.assertIn("unmatched_shared_local_seed", {row["status"] for row in issues})
+        self.assertIn("incompatible_shared_local_pair", {row["status"] for row in issues})
+        self.assertIn("shared_local_stock_excluded", {row["status"] for row in issues})
+
+    def test_shared_local_pairing_rejects_different_saved_experiment_identities(self):
+        shared, local = METHOD_ORDER[:2]
+        rows = [
+            self._strategy_row(
+                "AAA", 7, shared, 1.0, 1.0,
+                experiment_id="experiment-a", config_signature="config-a",
+            ),
+            self._strategy_row(
+                "AAA", 7, local, 2.0, 2.0,
+                experiment_id="experiment-a", config_signature="config-a",
+            ),
+            self._strategy_row(
+                "AAA", 9, shared, 3.0, 3.0,
+                experiment_id="experiment-a", config_signature="config-a",
+            ),
+            self._strategy_row(
+                "AAA", 9, local, 9.0, 9.0,
+                experiment_id="experiment-b", config_signature="config-b",
+            ),
+        ]
+        scope = {"stocks": ["AAA"], "seeds": [7, 9]}
+        issues = []
+
+        stock_pairs, summary = build_shared_vs_local_comparison(
+            pd.DataFrame(rows), scope, issues
+        )
+
+        row = stock_pairs.iloc[0]
+        self.assertEqual(row["matched_seeds"], "7")
+        self.assertEqual(row["n_matched_seeds"], 1)
+        self.assertAlmostEqual(row["delta_mse"], -1.0)
+        self.assertTrue((summary["n_stocks"] == 1).all())
+        incompatibility = next(
+            item for item in issues if item["status"] == "incompatible_shared_local_pair"
+        )
+        self.assertIn("experiment_id", incompatibility["details"])
+        self.assertIn("config_signature", incompatibility["details"])
+
+    def test_published_top10_shared_local_statistics_are_reproduced_dynamically(self):
+        repository = Path(__file__).resolve().parents[1]
+        published = (
+            repository
+            / "thesis_results"
+            / "top10_with_sentiment"
+            / "5b8f3897bf23-02add88f32d5"
+            / "data"
+            / "all_runs_tidy.csv"
+        )
+        if not published.is_file():
+            self.skipTest("published top10_with_sentiment canonical data are unavailable")
+        args = parse_args(
+            ["--config", str(repository / "config/experiments/top10_with_sentiment.json")]
+        )
+        scope, _ = load_scope(args)
+
+        stock_pairs, summary = build_shared_vs_local_comparison(
+            pd.read_csv(published), scope, []
+        )
+
+        self.assertEqual(len(stock_pairs), len(scope["stocks"]))
+        self.assertTrue((stock_pairs["n_matched_seeds"] == len(scope["seeds"])).all())
+        indexed = summary.set_index("metric")
+        self.assertEqual(indexed.loc["MSE", "n_stocks"], len(scope["stocks"]))
+        self.assertAlmostEqual(indexed.loc["MSE", "cohens_dz"], -0.43, delta=0.02)
+        self.assertAlmostEqual(indexed.loc["MSE", "p_value"], 0.21, delta=0.02)
+        self.assertAlmostEqual(indexed.loc["MAE", "cohens_dz"], -0.61, delta=0.02)
+        self.assertAlmostEqual(indexed.loc["MAE", "p_value"], 0.09, delta=0.02)
 
     def test_direction_accuracy_uses_same_trajectory_rule_for_baseline(self):
         targets = np.array([[0.1, 0.2, 0.15], [-0.1, -0.2, -0.1]])
@@ -276,13 +501,52 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
             self.assertFalse((issues["severity"] == "error").any())
             paired = pd.read_csv(output_dir / "data" / "paired_vs_naive.csv")
             self.assertEqual(set(paired["model"]), set(METHOD_ORDER[:3]))
+            shared_naive = paired.set_index("model").loc[METHOD_ORDER[0]]
+            self.assertAlmostEqual(shared_naive["mean_delta_mse"], -0.0078333333333333)
+            self.assertAlmostEqual(shared_naive["mean_delta_mae"], -0.068)
+            for metric, mean_delta in (
+                ("mse", -0.0078333333333333),
+                ("mae", -0.068),
+            ):
+                self.assertAlmostEqual(shared_naive[f"{metric}_ci_low"], mean_delta)
+                self.assertAlmostEqual(shared_naive[f"{metric}_ci_high"], mean_delta)
+                self.assertEqual(shared_naive[f"{metric}_wilcoxon_statistic"], 0.0)
+                self.assertEqual(shared_naive[f"{metric}_p_value"], 0.5)
+                self.assertEqual(shared_naive[f"{metric}_holm_p_value"], 1.0)
+                self.assertEqual(shared_naive[f"{metric}_rank_biserial"], -1.0)
+                self.assertEqual(shared_naive[f"{metric}_wilcoxon_n"], len(stocks))
+            shared_local = pd.read_csv(
+                output_dir / "data" / "paired_shared_vs_local.csv"
+            )
+            self.assertEqual(len(shared_local), len(stocks))
+            self.assertTrue((shared_local["n_matched_seeds"] == len(seeds)).all())
+            shared_local_table = pd.read_csv(
+                output_dir / "tables" / "table_shared_vs_local.csv"
+            )
+            self.assertEqual(set(shared_local_table["metric"]), {"MSE", "MAE"})
+            self.assertTrue((shared_local_table["n_stocks"] == len(stocks)).all())
             self.assertTrue((output_dir / "tables" / "table_main_metrics.tex").exists())
+            self.assertTrue((output_dir / "tables" / "table_shared_vs_local.tex").exists())
             self.assertTrue((output_dir / "figures" / "fig_paired_mse_forest.pdf").exists())
             self.assertTrue((output_dir / "figures" / "fig_mse_by_horizon.pdf").exists())
             self.assertTrue((output_dir / "figures" / "fig_representative_prediction_trajectory.pdf").exists())
             self.assertIn(
                 "equities as the statistical units",
                 (output_dir / "README.md").read_text(encoding="utf-8"),
+            )
+            artifact_manifest = pd.read_csv(output_dir / "artifact_manifest.csv")
+            self.assertEqual(
+                set(
+                    artifact_manifest.loc[
+                        artifact_manifest["artifact"].str.contains("shared_vs_local"),
+                        "artifact",
+                    ]
+                ),
+                {
+                    "data/paired_shared_vs_local.csv",
+                    "tables/table_shared_vs_local.csv",
+                    "tables/table_shared_vs_local.tex",
+                },
             )
             if shutil.which("pdflatex"):
                 compile_dir = root / "latex_check"
@@ -295,6 +559,7 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
                     "\\begin{document}\n"
                     f"\\input{{{output_dir / 'tables' / 'table_main_metrics.tex'}}}\n"
                     f"\\input{{{output_dir / 'tables' / 'table_paired_vs_naive.tex'}}}\n"
+                    f"\\input{{{output_dir / 'tables' / 'table_shared_vs_local.tex'}}}\n"
                     f"\\input{{{output_dir / 'tables' / 'table_appendix_stock_metrics.tex'}}}\n"
                     f"\\input{{{output_dir / 'tables' / 'table_reproducibility.tex'}}}\n"
                     "\\end{document}\n",

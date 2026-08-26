@@ -146,6 +146,8 @@ THESIS_TABLE_FILES = (
     "table_main_metrics.tex",
     "table_paired_vs_naive.csv",
     "table_paired_vs_naive.tex",
+    "table_shared_vs_local.csv",
+    "table_shared_vs_local.tex",
     "table_appendix_stock_metrics.csv",
     "table_appendix_stock_metrics.tex",
     "table_reproducibility.tex",
@@ -385,6 +387,116 @@ def exact_wilcoxon(values: Sequence[float]) -> tuple[float, float, float, int]:
     p_value = min(1.0, 2.0 * min(lower, upper))
     effect = (positive - negative) / total
     return statistic, p_value, float(effect), n
+
+
+def _beta_continued_fraction(a: float, b: float, x: float) -> float:
+    """Evaluate the continued fraction used by the incomplete beta function."""
+    maximum_iterations = 300
+    tolerance = 3e-14
+    tiny = 1e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    d = tiny if abs(d) < tiny else d
+    d = 1.0 / d
+    value = d
+    for iteration in range(1, maximum_iterations + 1):
+        m2 = 2 * iteration
+        numerator = iteration * (b - iteration) * x / (
+            (qam + m2) * (a + m2)
+        )
+        d = 1.0 + numerator * d
+        d = tiny if abs(d) < tiny else d
+        c = 1.0 + numerator / c
+        c = tiny if abs(c) < tiny else c
+        d = 1.0 / d
+        value *= d * c
+        numerator = -(a + iteration) * (qab + iteration) * x / (
+            (a + m2) * (qap + m2)
+        )
+        d = 1.0 + numerator * d
+        d = tiny if abs(d) < tiny else d
+        c = 1.0 + numerator / c
+        c = tiny if abs(c) < tiny else c
+        d = 1.0 / d
+        delta = d * c
+        value *= delta
+        if abs(delta - 1.0) < tolerance:
+            return value
+    raise RuntimeError("Incomplete-beta continued fraction did not converge")
+
+
+def _regularized_incomplete_beta(a: float, b: float, x: float) -> float:
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+    front = math.exp(
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    if x < (a + 1.0) / (a + b + 2.0):
+        return front * _beta_continued_fraction(a, b, x) / a
+    return 1.0 - front * _beta_continued_fraction(b, a, 1.0 - x) / b
+
+
+def _student_t_cdf(value: float, degrees_freedom: int) -> float:
+    if degrees_freedom <= 0:
+        raise ValueError("Student-t degrees of freedom must be positive")
+    if math.isinf(value):
+        return 1.0 if value > 0 else 0.0
+    x = degrees_freedom / (degrees_freedom + value * value)
+    tail = 0.5 * _regularized_incomplete_beta(
+        degrees_freedom / 2.0,
+        0.5,
+        x,
+    )
+    return 1.0 - tail if value >= 0 else tail
+
+
+def paired_difference_statistics(values: Sequence[float]) -> dict[str, Any]:
+    """Return paired t-test and signed Cohen's dz for stock-level differences."""
+    differences = np.asarray(values, dtype=float)
+    if differences.ndim != 1:
+        raise ValueError("Paired differences must be one-dimensional")
+    if not np.isfinite(differences).all():
+        raise ValueError("Paired differences must be finite")
+    count = len(differences)
+    mean = float(np.mean(differences)) if count else float("nan")
+    median = float(np.median(differences)) if count else float("nan")
+    result = {
+        "n_stocks": count,
+        "mean_delta": mean,
+        "median_delta": median,
+        "t_statistic": float("nan"),
+        "p_value": float("nan"),
+        "cohens_dz": float("nan"),
+        "status": "insufficient_stock_observations",
+    }
+    if count < 2:
+        return result
+    standard_deviation = float(np.std(differences, ddof=1))
+    scale = max(1.0, float(np.max(np.abs(differences))))
+    roundoff_tolerance = 16.0 * np.finfo(float).eps * scale
+    if float(np.ptp(differences)) <= roundoff_tolerance:
+        result["status"] = "zero_variance_differences"
+        return result
+    t_statistic = mean / (standard_deviation / math.sqrt(count))
+    p_value = 2.0 * (1.0 - _student_t_cdf(abs(t_statistic), count - 1))
+    result.update(
+        {
+            "t_statistic": t_statistic,
+            "p_value": max(0.0, min(1.0, p_value)),
+            "cohens_dz": mean / standard_deviation,
+            "status": "ok",
+        }
+    )
+    return result
 
 
 def holm_adjust(p_values: Mapping[str, float]) -> dict[str, float]:
@@ -1271,6 +1383,20 @@ def _pair_compatible(model: Mapping[str, Any], reference: Mapping[str, Any]) -> 
     return not mismatches, "; ".join(mismatches)
 
 
+def _shared_local_pair_compatible(
+    shared: Mapping[str, Any], local: Mapping[str, Any]
+) -> tuple[bool, str]:
+    compatible, details = _pair_compatible(shared, local)
+    mismatches = [details] if not compatible else []
+    for key in ("experiment_id", "config_signature"):
+        left, right = shared.get(key), local.get(key)
+        left_present = left not in (None, "") and not pd.isna(left)
+        right_present = right not in (None, "") and not pd.isna(right)
+        if left_present and right_present and str(left) != str(right):
+            mismatches.append(f"{key}={left!r}/{right!r}")
+    return not mismatches, "; ".join(mismatches)
+
+
 def build_canonical_data(
     bundles: Sequence[Bundle],
     selected: Mapping[tuple[str, str, int], Bundle],
@@ -1847,6 +1973,140 @@ def build_paired_summary(
         if not summary.empty:
             summary[f"{metric}_holm_p_value"] = summary["model"].map(adjusted)
     return summary.reindex(columns=columns), stock_pairs.reindex(columns=stock_columns)
+
+
+def build_shared_vs_local_comparison(
+    tidy: pd.DataFrame,
+    scope: Mapping[str, Any],
+    issues: list[dict[str, Any]],
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pair Shared and Local runs by configured stock/seed, then infer by stock."""
+    shared_method, local_method = METHOD_ORDER[:2]
+    stock_columns = (
+        "stock",
+        "n_matched_seeds",
+        "matched_seeds",
+        "shared_mse",
+        "local_mse",
+        "delta_mse",
+        "shared_mae",
+        "local_mae",
+        "delta_mae",
+    )
+    summary_columns = (
+        "metric",
+        "n_stocks",
+        "mean_delta",
+        "median_delta",
+        "t_statistic",
+        "p_value",
+        "cohens_dz",
+        "status",
+    )
+    required = {"stock", "seed", "method", "mse", "mae"}
+    missing = sorted(required - set(tidy.columns))
+    if missing:
+        raise ValueError(f"Canonical data are missing Shared-vs-Local columns: {missing}")
+    expected_stocks = [str(stock) for stock in scope["stocks"]]
+    expected_seeds = [int(seed) for seed in scope["seeds"]]
+    relevant = tidy[
+        tidy["stock"].astype(str).isin(expected_stocks)
+        & pd.to_numeric(tidy["seed"], errors="coerce").isin(expected_seeds)
+        & tidy["method"].isin((shared_method, local_method))
+    ].copy()
+    duplicates = relevant.duplicated(["stock", "seed", "method"], keep=False)
+    if duplicates.any():
+        keys = relevant.loc[duplicates, ["stock", "seed", "method"]]
+        raise ValueError(
+            "Canonical Shared-vs-Local keys are duplicated: "
+            + repr(keys.head().to_dict(orient="records"))
+        )
+
+    stock_rows: list[dict[str, Any]] = []
+    for stock in expected_stocks:
+        matched: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+        for seed in expected_seeds:
+            seed_rows = relevant[
+                (relevant["stock"].astype(str) == stock)
+                & (pd.to_numeric(relevant["seed"], errors="coerce") == seed)
+            ]
+            shared_rows = seed_rows[seed_rows["method"] == shared_method]
+            local_rows = seed_rows[seed_rows["method"] == local_method]
+            if shared_rows.empty or local_rows.empty:
+                if not shared_rows.empty or not local_rows.empty:
+                    available = shared_rows if not shared_rows.empty else local_rows
+                    missing_method = local_method if local_rows.empty else shared_method
+                    issues.append(
+                        issue(
+                            "unmatched_shared_local_seed",
+                            f"No {missing_method} row is available for this configured seed",
+                            severity="warning",
+                            stock=stock,
+                            seed=seed,
+                            method=missing_method,
+                            source_file=str(
+                                available.iloc[0].get("original_source_file", "")
+                            ),
+                        )
+                    )
+                continue
+            shared = shared_rows.iloc[0].to_dict()
+            local = local_rows.iloc[0].to_dict()
+            compatible, details = _shared_local_pair_compatible(shared, local)
+            if not compatible:
+                issues.append(
+                    issue(
+                        "incompatible_shared_local_pair",
+                        details,
+                        severity="warning",
+                        stock=stock,
+                        seed=seed,
+                        method=f"{shared_method} vs {local_method}",
+                        source_file=";".join(
+                            str(row.get("original_source_file", ""))
+                            for row in (shared, local)
+                        ),
+                    )
+                )
+                continue
+            matched.append((seed, shared, local))
+        if not matched:
+            issues.append(
+                issue(
+                    "shared_local_stock_excluded",
+                    "No compatible matched Shared-vs-Local seeds are available",
+                    severity="warning",
+                    stock=stock,
+                    method=f"{shared_method} vs {local_method}",
+                )
+            )
+            continue
+        stock_row: dict[str, Any] = {
+            "stock": stock,
+            "n_matched_seeds": len(matched),
+            "matched_seeds": ";".join(str(seed) for seed, _, _ in matched),
+        }
+        for metric in ("mse", "mae"):
+            shared_value = float(np.mean([float(row[metric]) for _, row, _ in matched]))
+            local_value = float(np.mean([float(row[metric]) for _, _, row in matched]))
+            stock_row[f"shared_{metric}"] = shared_value
+            stock_row[f"local_{metric}"] = local_value
+            stock_row[f"delta_{metric}"] = shared_value - local_value
+        stock_rows.append(stock_row)
+
+    stock_pairs = pd.DataFrame(stock_rows, columns=stock_columns)
+    summary_rows = []
+    for metric in ("mse", "mae"):
+        values = (
+            stock_pairs[f"delta_{metric}"].to_numpy(float)
+            if not stock_pairs.empty
+            else np.asarray([], dtype=float)
+        )
+        summary_rows.append(
+            {"metric": metric.upper(), **paired_difference_statistics(values)}
+        )
+    summary = pd.DataFrame(summary_rows, columns=summary_columns)
+    return stock_pairs, summary
 
 
 def build_relative_stock_data(paired_runs: pd.DataFrame) -> pd.DataFrame:
@@ -2754,6 +3014,71 @@ def write_paired_table(summary: pd.DataFrame, tables_dir: Path) -> list[Path]:
     return [csv_path, tex_path]
 
 
+def write_shared_vs_local_table(
+    summary: pd.DataFrame, tables_dir: Path
+) -> list[Path]:
+    if summary.empty:
+        return []
+    csv_path = tables_dir / "table_shared_vs_local.csv"
+    summary.to_csv(csv_path, index=False)
+    lines = [
+        r"\begin{table}[t]",
+        r"\centering",
+        r"\small",
+        r"\caption{Stock-level paired comparison of Shared-target JEPA--MAE and Local-MAE/Long-JEPA. Differences are Shared minus Local, so negative values favour Shared for both error metrics.}",
+        r"\label{tab:shared_vs_local}",
+        r"\begin{tabular}{lrrrrrrl}",
+        r"\toprule",
+        r"Metric & Stocks & Mean $\Delta$ & Median $\Delta$ & $t$ & $p$ & Cohen's $d_z$ & Status \\",
+        r"\midrule",
+    ]
+    for row in summary.itertuples():
+        t_statistic = (
+            f"{float(row.t_statistic):.3f}"
+            if math.isfinite(float(row.t_statistic))
+            else "--"
+        )
+        effect = (
+            f"{float(row.cohens_dz):.3f}"
+            if math.isfinite(float(row.cohens_dz))
+            else "--"
+        )
+        mean_delta = (
+            f"{float(row.mean_delta):.5f}"
+            if math.isfinite(float(row.mean_delta))
+            else "--"
+        )
+        median_delta = (
+            f"{float(row.median_delta):.5f}"
+            if math.isfinite(float(row.median_delta))
+            else "--"
+        )
+        status = {
+            "ok": "ok",
+            "insufficient_stock_observations": "insufficient stocks",
+            "zero_variance_differences": "zero variance",
+        }.get(str(row.status), str(row.status).replace("_", " "))
+        lines.append(
+            " & ".join(
+                [
+                    latex_escape(row.metric),
+                    str(int(row.n_stocks)),
+                    mean_delta,
+                    median_delta,
+                    t_statistic,
+                    _format_p(float(row.p_value)),
+                    effect,
+                    latex_escape(status),
+                ]
+            )
+            + r" \\"
+        )
+    lines.extend([r"\bottomrule", r"\end{tabular}", r"\end{table}"])
+    tex_path = tables_dir / "table_shared_vs_local.tex"
+    tex_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return [csv_path, tex_path]
+
+
 def write_appendix_table(stock_summary: pd.DataFrame, tables_dir: Path) -> list[Path]:
     if stock_summary.empty:
         return []
@@ -2993,6 +3318,7 @@ def write_analysis_readme(
     issues: pd.DataFrame,
     coverage: pd.DataFrame,
     paired_summary: pd.DataFrame,
+    shared_local_summary: pd.DataFrame,
     representative_metadata: Mapping[str, Any] | None,
     artifact_records: Sequence[Mapping[str, Any]],
     command: str,
@@ -3064,6 +3390,8 @@ def write_analysis_readme(
             "",
             "Primary inference averages seed-level paired differences within each equity and uses equities as the statistical units. The 95% interval is a percentile bootstrap that resamples equity-level means. The Wilcoxon result is an exact two-sided signed-rank sign-permutation test (zero differences removed); rank-biserial correlation is signed in Δ coordinates, so a negative effect favours the model. P-values are Holm-adjusted separately for the three learned-model MSE and MAE comparisons. Seed-level win counts and distribution figures are descriptive only.",
             "",
+            "The separate Shared-vs-Local comparison first retains compatible seeds matched by equity, seed, target definition, normalization, metric definition, forecast horizon, test period, and saved target signature. Shared and Local MSE/MAE are averaged over the same matched seeds within each equity. A two-sided paired Student t-test and signed Cohen's dz then use the resulting equity-level values only, with Δ = Shared − Local; negative values favour Shared for these error metrics. No Direction Accuracy test or multiple-comparison correction is applied to this separate comparison.",
+            "",
             "## Paired results snapshot",
             "",
             _markdown_table(
@@ -3077,6 +3405,22 @@ def write_analysis_readme(
                     "mse_stock_wins",
                     "mse_run_wins",
                     "mse_run_total",
+                ],
+            ),
+            "",
+            "## Shared-target vs Local-MAE/Long-JEPA snapshot",
+            "",
+            _markdown_table(
+                shared_local_summary,
+                [
+                    "metric",
+                    "n_stocks",
+                    "mean_delta",
+                    "median_delta",
+                    "t_statistic",
+                    "p_value",
+                    "cohens_dz",
+                    "status",
                 ],
             ),
             "",
@@ -3169,6 +3513,7 @@ def _console_report(
     issues: pd.DataFrame,
     overall: pd.DataFrame,
     paired: pd.DataFrame,
+    shared_local: pd.DataFrame,
     artifacts: Sequence[Mapping[str, Any]],
 ) -> None:
     print("\n=== Thesis results analysis report ===")
@@ -3209,6 +3554,13 @@ def _console_report(
                 f"stock wins={row.mse_stock_wins}/{row.n_stocks}, "
                 f"run wins={row.mse_run_wins}/{row.mse_run_total}"
             )
+    print("Paired Shared-target vs Local-MAE/Long-JEPA:")
+    for row in shared_local.itertuples():
+        print(
+            f"  {row.metric}: n_stocks={row.n_stocks}, "
+            f"delta={row.mean_delta:.6g}, t={row.t_statistic:.6g}, "
+            f"p={row.p_value:.4g}, dz={row.cohens_dz:.4g}, status={row.status}"
+        )
     generated = [record["artifact"] for record in artifacts if record["status"] == "generated"]
     print("Generated artifacts:")
     for artifact in generated:
@@ -3246,6 +3598,9 @@ def run_analysis(args: argparse.Namespace) -> int:
         analysis_seed=args.analysis_seed,
         bootstrap_samples=args.bootstrap_samples,
     )
+    shared_local_stocks, shared_local_summary = build_shared_vs_local_comparison(
+        tidy, scope, issue_rows
+    )
     relative_stock = build_relative_stock_data(paired_runs)
     horizon_metrics = build_horizon_metrics(
         predictions,
@@ -3275,6 +3630,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         "stock_summary.csv": stock_summary,
         "overall_summary.csv": overall_summary,
         "paired_vs_naive.csv": paired_summary,
+        "paired_shared_vs_local.csv": shared_local_stocks,
         "relative_performance_by_stock.csv": relative_stock,
         "horizon_metrics.csv": horizon_metrics,
     }
@@ -3311,6 +3667,9 @@ def run_analysis(args: argparse.Namespace) -> int:
     if generate_thesis_outputs:
         generated_tables.extend(write_main_table(overall_summary, tables_dir))
         generated_tables.extend(write_paired_table(paired_summary, tables_dir))
+        generated_tables.extend(
+            write_shared_vs_local_table(shared_local_summary, tables_dir)
+        )
         generated_tables.extend(write_appendix_table(stock_summary, tables_dir))
         generated_tables.extend(
             write_reproducibility_table(tidy, bundles, scope, tables_dir)
@@ -3355,11 +3714,16 @@ def run_analysis(args: argparse.Namespace) -> int:
                 plot_pretraining_diagnostics(bundles, diagnostics_dir)
             )
     for path in generated_tables:
+        source_data = (
+            "data/paired_shared_vs_local.csv"
+            if "shared_vs_local" in path.name
+            else "data/stock_summary.csv, data/overall_summary.csv, and/or data/paired_vs_naive.csv"
+        )
         _record_artifact(
             artifact_records,
             path,
             status="generated",
-            source_data="data/stock_summary.csv, data/overall_summary.csv, and/or data/paired_vs_naive.csv",
+            source_data=source_data,
             description="Thesis or appendix table",
             output_dir=output_dir,
         )
@@ -3375,6 +3739,7 @@ def run_analysis(args: argparse.Namespace) -> int:
     expected_optional = {
         "tables/table_main_metrics.tex": "Complete compatible model coverage was unavailable.",
         "tables/table_paired_vs_naive.tex": "Paired learned-model and naive-last runs were unavailable.",
+        "tables/table_shared_vs_local.tex": "Compatible Shared-vs-Local stock pairs were unavailable.",
         "tables/table_appendix_stock_metrics.tex": "No compatible stock-level summaries were available.",
         "tables/table_reproducibility.tex": "No included run metadata were available.",
         "figures/fig_paired_mse_forest.pdf": "Paired stock-level MSE observations were unavailable.",
@@ -3465,6 +3830,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         issues=issues,
         coverage=coverage,
         paired_summary=paired_summary,
+        shared_local_summary=shared_local_summary,
         representative_metadata=representative_metadata,
         artifact_records=artifact_records,
         command=command,
@@ -3496,6 +3862,7 @@ def run_analysis(args: argparse.Namespace) -> int:
         issues=issues,
         overall=overall_summary,
         paired=paired_summary,
+        shared_local=shared_local_summary,
         artifacts=artifact_records,
     )
     error_count = analysis_metadata["error_issues"]
