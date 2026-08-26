@@ -1,3 +1,0 @@
-config_signature,strategy,forecast_target,normalization,feature_transform,forecast_horizon,checkpoint_selection,encoder_weight_source,fine_tune_encoder,trend_weight,test_start,test_end,run_rows,source_files
-ae06a24fdb74c9af,local_long,value,window_return,raw,1,fixed_pretraining_epoch_2000,ema,True,0.001,2025-04-01T00:00:00,2025-12-24T00:00:00,5,results/top10_h1_with_sentiment/local_long/NVDA/seed_42/last_model_comparison_20260825_214538.csv
-ae06a24fdb74c9af,random,value,window_return,raw,1,fixed_pretraining_epoch_2000,ema,True,0.001,2025-04-01T00:00:00,2025-12-24T00:00:00,5,results/top10_h1_with_sentiment/random/NVDA/seed_42/last_model_comparison_20260825_214453.csv

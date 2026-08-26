@@ -1,7 +1,0 @@
-method,strategy,expected_stocks,available_stocks,expected_seeds_per_stock,available_unique_seeds,expected_runs,available_runs,coverage_pct
-Shared-target JEPA--MAE,random,1,1,1,1,1,1,100.0
-Local-MAE/Long-JEPA,local_long,1,1,1,1,1,1,100.0
-GRU,random,1,1,1,1,1,1,100.0
-Naive-last,random,1,1,1,1,1,1,100.0
-Drift,random,1,1,1,1,1,1,100.0
-Mean-context,random,1,1,1,1,1,1,100.0
