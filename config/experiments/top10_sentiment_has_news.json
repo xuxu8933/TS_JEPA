@@ -46,7 +46,7 @@
     "output": {"skip_combined_plot": false}
   },
   "analysis": {
-    "models": ["TS-JEPA", "GRU", "naive_last", "drift", "mean_context", "previous_patch"],
+    "models": ["TS-JEPA", "GRU", "naive_last", "drift", "mean_context"],
     "allow_incomplete": false,
     "skip_plot": false
   }

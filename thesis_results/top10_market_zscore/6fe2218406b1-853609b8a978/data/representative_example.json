@@ -1,0 +1,13 @@
+{
+  "rolling_step": 0,
+  "seed": 42,
+  "selection_rule": "Use NVDA when it has complete saved predictions (otherwise the alphabetically first complete stock); select the Shared-target seed whose overall test MSE is closest to that stock's median, breaking ties by smaller seed; plot the first saved rolling step.",
+  "stock": "NVDA",
+  "target_dates": [
+    "2025-04-01T00:00:00",
+    "2025-04-02T00:00:00",
+    "2025-04-03T00:00:00",
+    "2025-04-04T00:00:00",
+    "2025-04-07T00:00:00"
+  ]
+}

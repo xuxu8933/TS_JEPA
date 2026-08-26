@@ -176,12 +176,8 @@ class FinancialPreprocessingTest(unittest.TestCase):
             "forecast_target": "cumulative_log_return",
             "target_feature_index": 0,
         }
-        previous = make_baseline_prediction(
-            context, 2, "previous_patch", config=config
-        )
         mean = make_baseline_prediction(context, 2, "mean_context", config=config)
         naive = make_baseline_prediction(context, 2, "naive_last", config=config)
-        self.assertTrue(np.allclose(previous, [0.03, 0.07]))
         self.assertTrue(np.allclose(mean, [0.015, 0.03]))
         self.assertTrue(np.allclose(naive, [0.0, 0.0]))
         self.assertEqual(
@@ -192,6 +188,23 @@ class FinancialPreprocessingTest(unittest.TestCase):
             ),
             1.0,
         )
+
+    def test_removed_previous_patch_baseline_is_rejected(self):
+        context = torch.tensor([[0.01, -0.02], [0.03, 0.04]])
+        config = {
+            "feature_transform": "return",
+            "feature_cols": ["log_return_1"],
+            "feature_dim": 1,
+            "patch_size": 2,
+            "normalization": "none",
+            "forecast_target": "cumulative_log_return",
+            "target_feature_index": 0,
+        }
+
+        with self.assertRaisesRegex(ValueError, "Unknown baseline_name"):
+            make_baseline_prediction(
+                context, 2, "previous_patch", config=config
+            )
 
     def test_checkpoint_round_trip_preserves_preprocessing_state(self):
         with tempfile.TemporaryDirectory() as tmp:

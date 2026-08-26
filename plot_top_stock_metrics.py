@@ -26,7 +26,6 @@ DEFAULT_MODELS = [
     "naive_last",
     "drift",
     "mean_context",
-    "previous_patch",
 ]
 
 MODEL_COLORS = {
@@ -35,7 +34,6 @@ MODEL_COLORS = {
     "naive_last": "tab:green",
     "drift": "tab:red",
     "mean_context": "tab:purple",
-    "previous_patch": "tab:brown",
 }
 
 

@@ -607,7 +607,6 @@ def make_baseline_prediction(
     baseline_name : str
         Baseline model name:
             - "naive_last"
-            - "previous_patch"
             - "mean_context"
             - "drift"
 
@@ -625,15 +624,11 @@ def make_baseline_prediction(
     if forecast_target in ("cumulative_log_return", "excess_log_return"):
         # h=1..H definitions:
         # naive_last:       0 for every h (no-change return forecast)
-        # previous_patch:   cumulative sum of replayed recent 1-day returns
         # mean_context:     h times the mean historical 1-day return
         # drift:            endpoint log drift accumulated for h days
         one_day_returns = context_one_day_log_returns(context_patches, config)
         if baseline_name == "naive_last" or len(one_day_returns) == 0:
             pred = np.zeros(horizon, dtype=np.float64)
-        elif baseline_name == "previous_patch":
-            replay = np.resize(one_day_returns[-horizon:], horizon)
-            pred = np.cumsum(replay)
         elif baseline_name == "mean_context":
             pred = np.arange(1, horizon + 1) * one_day_returns.mean()
         elif baseline_name == "drift":
@@ -649,7 +644,7 @@ def make_baseline_prediction(
 
         if baseline_name == "naive_last":
             pred = np.zeros(horizon, dtype=np.float64)
-        elif baseline_name in ("previous_patch", "mean_context"):
+        elif baseline_name == "mean_context":
             previous = np.where(
                 np.abs(levels[:-1]) < 1e-8,
                 np.where(levels[:-1] < 0, -1e-8, 1e-8),
@@ -658,10 +653,7 @@ def make_baseline_prediction(
             one_step_returns = levels[1:] / previous - 1.0
             if len(one_step_returns) == 0:
                 return np.zeros(horizon, dtype=np.float32)
-            if baseline_name == "previous_patch":
-                replay_returns = np.resize(one_step_returns[-horizon:], horizon)
-            else:
-                replay_returns = np.repeat(one_step_returns.mean(), horizon)
+            replay_returns = np.repeat(one_step_returns.mean(), horizon)
             pred = np.cumprod(1.0 + replay_returns) - 1.0
         elif baseline_name == "drift":
             if len(levels) <= 1:
@@ -680,15 +672,6 @@ def make_baseline_prediction(
     if baseline_name == "naive_last":
         # Repeat the last observed value for all future steps
         pred = np.repeat(context_flat[-1], horizon)
-
-    elif baseline_name == "previous_patch":
-        # Use the last context patch as the forecast
-        last_patch = context_flat[-horizon:]
-
-        if len(last_patch) >= horizon:
-            pred = last_patch[:horizon]
-        else:
-            pred = np.resize(last_patch, horizon)
 
     elif baseline_name == "mean_context":
         # Repeat the mean value of the whole context window
@@ -793,7 +776,6 @@ def visualize_all_rolling_windows(
         Default:
             [
                 "naive_last",
-                "previous_patch",
                 "mean_context",
                 "drift",
             ]
@@ -807,7 +789,6 @@ def visualize_all_rolling_windows(
     if baseline_names is None:
         baseline_names = [
             "naive_last",
-            "previous_patch",
             "mean_context",
             "drift",
         ]
@@ -1179,7 +1160,6 @@ def prequential_baseline_evaluate(
     if baseline_names is None:
         baseline_names = [
             "naive_last",
-            "previous_patch",
             "mean_context",
             "drift",
         ]
@@ -2645,7 +2625,6 @@ if __name__ == "__main__":
                 "baseline_names",
                 [
                     "naive_last",
-                    "previous_patch",
                     "mean_context",
                     "drift",
                 ],
@@ -2782,7 +2761,6 @@ if __name__ == "__main__":
         make_gif=False,
         baseline_names=[
             "naive_last",
-            "previous_patch",
             "mean_context",
             "drift",
         ],

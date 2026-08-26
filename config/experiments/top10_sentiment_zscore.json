@@ -1,10 +1,10 @@
 {
   "common": {
-    "stocks": ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "AVGO", "META", "TSLA", "COST", "WMT"],
-    "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+    "stocks": ["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL"],
+    "seeds": [42, 44, 46, 48, 50]
   },
   "runner": {
-    "execution": {"max_stocks": 10, "max_seeds": 10, "dry_run": false, "verbose": false},
+    "execution": {"max_stocks": 5, "max_seeds": 5, "max_parallel_jobs": 2, "dry_run": false, "verbose": false},
     "download": {
       "skip": true,
       "start_date": "2015-01-01",
@@ -33,10 +33,10 @@
       "preset": null,
       "custom": {
         "feature_transform": "raw",
-        "normalization": {"method": "window_return", "robust_zscore": {"clip": 5.0}},
+        "normalization": {"method": "train_zscore", "robust_zscore": {"clip": 5.0}},
         "features": {
           "market": ["Close", "Volume", "MA10", "MA50"],
-          "sentiment": {"enabled": true, "columns": ["sentiment_mean_z"], "normalization": "train_zscore"}
+          "sentiment": {"enabled": true, "columns": ["sentiment_mean_z", "has_news"], "normalization": "train_zscore"}
         },
         "forecast": {"target": "value", "market_data": {"enabled": false, "name": "NASDAQ100"}}
       }
@@ -46,7 +46,7 @@
     "output": {"skip_combined_plot": false}
   },
   "analysis": {
-    "models": ["TS-JEPA", "GRU", "naive_last", "drift", "mean_context", "previous_patch"],
+    "models": ["TS-JEPA", "GRU", "naive_last", "drift", "mean_context"],
     "allow_incomplete": false,
     "skip_plot": false
   }

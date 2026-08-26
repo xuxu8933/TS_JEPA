@@ -116,8 +116,7 @@
       "GRU",
       "naive_last",
       "drift",
-      "mean_context",
-      "previous_patch"
+      "mean_context"
     ],
     "allow_incomplete": false,
     "skip_plot": false
