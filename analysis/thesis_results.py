@@ -1348,6 +1348,22 @@ def _method_strategy(method: str, reference_strategy: str) -> str:
     return reference_strategy
 
 
+def _methods_for_scope(scope: Mapping[str, Any]) -> tuple[str, ...]:
+    """Return methods required by the configured masking-strategy scope."""
+    configured_strategies = set(scope.get("strategies", STRATEGY_METHODS))
+    configured_learned_methods = {
+        method
+        for strategy, method in STRATEGY_METHODS.items()
+        if strategy in configured_strategies
+    }
+    always_required = set(METHOD_ORDER[2:])
+    return tuple(
+        method
+        for method in METHOD_ORDER
+        if method in configured_learned_methods or method in always_required
+    )
+
+
 def _row_for_method(bundle: Bundle | None, method: str) -> dict[str, Any] | None:
     if bundle is None:
         return None
@@ -1406,11 +1422,12 @@ def build_canonical_data(
     canonical_rows: list[dict[str, Any]] = []
     inventory_rows: list[dict[str, Any]] = []
     included_ids: set[tuple[str, str, int, str, str]] = set()
+    expected_methods = _methods_for_scope(scope)
 
     # Select one coherent configuration per method. A minority configuration is
     # excluded instead of being silently pooled with the dominant procedure.
     candidate_by_method: dict[str, list[dict[str, Any]]] = defaultdict(list)
-    for method in METHOD_ORDER:
+    for method in expected_methods:
         strategy = _method_strategy(method, scope["reference_strategy"])
         for stock in scope["stocks"]:
             for seed in scope["seeds"]:
@@ -1458,7 +1475,7 @@ def build_canonical_data(
                     )
                 )
 
-    for method in METHOD_ORDER:
+    for method in expected_methods:
         strategy = _method_strategy(method, scope["reference_strategy"])
         for stock in scope["stocks"]:
             for seed in scope["seeds"]:
@@ -1676,7 +1693,9 @@ def build_canonical_data(
     predictions = pd.DataFrame(prediction_rows, columns=PREDICTION_COLUMNS)
 
     paired_rows: list[dict[str, Any]] = []
-    pair_methods = [method for method in METHOD_ORDER if method != REFERENCE_METHOD]
+    pair_methods = [
+        method for method in expected_methods if method != REFERENCE_METHOD
+    ]
     for method in pair_methods:
         strategy = _method_strategy(method, scope["reference_strategy"])
         for stock in scope["stocks"]:
@@ -2003,6 +2022,12 @@ def build_shared_vs_local_comparison(
         "cohens_dz",
         "status",
     )
+    configured_strategies = set(scope.get("strategies", STRATEGY_METHODS))
+    if not {"random", "local_long"}.issubset(configured_strategies):
+        return (
+            pd.DataFrame(columns=stock_columns),
+            pd.DataFrame(columns=summary_columns),
+        )
     required = {"stock", "seed", "method", "mse", "mae"}
     missing = sorted(required - set(tidy.columns))
     if missing:
@@ -3209,7 +3234,7 @@ def write_reproducibility_table(
 def build_coverage_summary(tidy: pd.DataFrame, scope: Mapping[str, Any]) -> pd.DataFrame:
     rows = []
     expected_runs = len(scope["stocks"]) * len(scope["seeds"])
-    for method in METHOD_ORDER:
+    for method in _methods_for_scope(scope):
         group = tidy[tidy["method"] == method] if not tidy.empty else tidy
         rows.append(
             {

@@ -431,6 +431,91 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
         )
         history.to_csv(run_dir / "loss.txt", index=False)
 
+    def test_single_strategy_scope_is_complete_without_unrequested_local_long(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            results_dir = root / "results" / "experiment"
+            output_dir = root / "analysis_artifacts" / "experiment"
+            stocks = ["AAA"]
+            seeds = [1, 2]
+            for seed in seeds:
+                self._write_bundle(
+                    results_dir,
+                    "random",
+                    "AAA",
+                    seed,
+                    stock_offset=0.0,
+                )
+            (results_dir / "experiment_manifest.json").write_text(
+                json.dumps(
+                    {
+                        "stocks": stocks,
+                        "seeds": seeds,
+                        "mask_strategies": ["random"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            config_path = root / "experiment.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "common": {"stocks": stocks, "seeds": seeds},
+                        "runner": {
+                            "mask_strategies": ["random"],
+                            "patch_size": 3,
+                            "normalization": "window_return",
+                            "forecast_target": "value",
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            result = run_analysis(
+                parse_args(
+                    [
+                        "--config",
+                        str(config_path),
+                        "--bootstrap-samples",
+                        "200",
+                        "--skip-figures",
+                    ]
+                )
+            )
+
+            self.assertEqual(result, 0)
+            tidy = pd.read_csv(output_dir / "data" / "all_runs_tidy.csv")
+            self.assertEqual(
+                set(tidy["method"]),
+                {
+                    "Shared-target JEPA--MAE",
+                    "GRU",
+                    "Naive-last",
+                    "Drift",
+                    "Mean-context",
+                },
+            )
+            issues = pd.read_csv(output_dir / "data" / "missing_runs.csv")
+            self.assertFalse((issues["severity"] == "error").any(), issues)
+            self.assertNotIn(
+                "unmatched_shared_local_seed",
+                set(issues["status"]),
+            )
+            self.assertNotIn(
+                "shared_local_stock_excluded",
+                set(issues["status"]),
+            )
+            coverage = pd.read_csv(output_dir / "data" / "coverage_summary.csv")
+            self.assertNotIn("Local-MAE/Long-JEPA", set(coverage["method"]))
+            shared_local = pd.read_csv(
+                output_dir / "data" / "paired_shared_vs_local.csv"
+            )
+            self.assertTrue(shared_local.empty)
+            self.assertFalse(
+                (output_dir / "tables" / "table_shared_vs_local.csv").exists()
+            )
+
     def test_complete_pipeline_generates_traceable_outputs(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

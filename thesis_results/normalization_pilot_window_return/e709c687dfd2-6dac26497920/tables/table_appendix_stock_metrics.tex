@@ -1,0 +1,17 @@
+\begin{longtable}{llrrrr}
+\caption{Complete stock-level forecasting results. Standard deviations are across valid seeds.}\label{tab:appendix_stock_metrics}\\
+\toprule
+Equity & Method & MSE & MAE & Direction & Seeds \\
+\midrule
+\endfirsthead
+\toprule
+Equity & Method & MSE & MAE & Direction & Seeds \\
+\midrule
+\endhead
+NVDA & Shared-target JEPA--MAE & $0.00229 \pm 0.00004$ & $0.03649 \pm 0.00091$ & $0.560 \pm 0.048$ & 3 \\
+NVDA & GRU & $0.00229 \pm 0.00005$ & $0.03506 \pm 0.00023$ & $0.549 \pm 0.017$ & 3 \\
+NVDA & Naive-last & $0.00208 \pm 0.00000$ & $0.03385 \pm 0.00000$ & $0.000 \pm 0.000$ & 3 \\
+NVDA & Drift & $0.00222 \pm 0.00000$ & $0.03411 \pm 0.00000$ & $0.505 \pm 0.000$ & 3 \\
+NVDA & Mean-context & $0.00218 \pm 0.00000$ & $0.03435 \pm 0.00000$ & $0.521 \pm 0.000$ & 3 \\
+\bottomrule
+\end{longtable}
