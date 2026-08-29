@@ -39,7 +39,7 @@ After stage 1 selection, a materialization command reads the winning stage-1 con
 - `02_sentiment_excluded.json`;
 - `02_sentiment_included.json`.
 
-The files are deep copies of the validated stage-1 winner. They differ only in sentiment enablement and the download/news setting needed to make the feature available. Both record the parent candidate ID and parent config SHA-256 in the ignored top-level provenance section.
+The files are deep copies of the validated stage-1 winner and differ only in sentiment enablement. Market/news downloads remain disabled for both timed candidates, so the sentiment dataset must already be cached. Both files record the parent candidate ID and parent config SHA-256 in the ignored top-level provenance section.
 
 ### Stage 3: architecture and historical-context interaction
 
