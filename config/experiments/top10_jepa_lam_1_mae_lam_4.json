@@ -2,17 +2,10 @@
   "common": {
     "stocks": [
       "NVDA",
-      "AAPL",
-      "MSFT",
-      "AMZN",
-      "GOOGL",
       "AVGO",
-      "META",
-      "TSLA",
-      "COST",
-      "WMT"
+      "COST"
     ],
-    "seeds": [42, 43, 44, 45, 46, 47, 48, 49, 50, 51]
+    "seeds": [42, 46, 50]
   },
   "runner": {
     "execution": {"max_stocks": 10, "max_seeds": 10, "max_parallel_jobs": 2, "dry_run": false, "verbose": false},
