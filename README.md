@@ -1264,11 +1264,28 @@ Configuration selection is a separate phase from final test evaluation. Candidat
 
 Run every candidate normally. Validation-only execution trains on the chronological training split, retains the existing downstream and GRU validation checkpoint rules, evaluates on validation, and writes `validation_metrics.json` in each stock/seed run directory. It does not construct the test dataset.
 
-Copy [the selection manifest template](config/experiments/chapter5_selection.template.jsonc), list the four stages in their fixed order, and point each candidate's `validation_root` at the strategy directory containing its stock/seed runs. Then select and freeze:
+The staged workflow uses five stocks (NVDA, AAPL, AVGO, TSLA, WMT), seeds 42/44/46, and the following ten candidates. Objective weights remain fixed at `lambda_jepa=1.0` and `lambda_mae=0.5`:
+
+| Stage | Candidate config | Only experimental difference |
+| --- | --- | --- |
+| Preprocessing/normalization | `chapter5_candidates/01_preprocessing_window_return.json` | `normalization.method=window_return` |
+| Preprocessing/normalization | `chapter5_candidates/01_preprocessing_train_zscore.json` | `normalization.method=train_zscore` |
+| Sentiment | `chapter5_candidates/02_sentiment_excluded.json` | Inherit the preprocessing winner; set `features.sentiment.enabled=false` |
+| Sentiment | `chapter5_candidates/02_sentiment_included.json` | Inherit the preprocessing winner; set `features.sentiment.enabled=true` |
+| Architecture × context | `chapter5_candidates/03_shared_context_6_patches.json` | Shared-target, 30 observations |
+| Architecture × context | `chapter5_candidates/03_shared_context_12_patches.json` | Shared-target, 60 observations |
+| Architecture × context | `chapter5_candidates/03_shared_context_24_patches.json` | Shared-target, 120 observations |
+| Architecture × context | `chapter5_candidates/03_local_long_context_6_patches.json` | Local-MAE/Long-JEPA, 30 observations |
+| Architecture × context | `chapter5_candidates/03_local_long_context_12_patches.json` | Local-MAE/Long-JEPA, 60 observations |
+| Architecture × context | `chapter5_candidates/03_local_long_context_24_patches.json` | Local-MAE/Long-JEPA, 120 observations |
+
+The two normalization files are checked in. Later files are created deterministically from each preceding validation winner by `chapter5_prepare_candidates.py`; this prevents an assumed winner from entering the next stage. All candidates use `checkpoint.selection.mode=best` and `downstream.evaluation_split=validation`.
+
+Follow the complete commands in [the staged selection guide](doc/chapter5_staged_selection.md). Stage-prefix manifests produce validation-only `selected_stage_config.json` snapshots; the complete [selection manifest template](config/experiments/chapter5_selection.template.jsonc) freezes the architecture-context winner:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python chapter5_selection.py \
-  --manifest config/experiments/chapter5_selection.json \
+  --manifest config/experiments/chapter5_selection.jsonc \
   --output-dir selection_artifacts/chapter5_main
 ```
 

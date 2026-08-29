@@ -10,8 +10,7 @@ Selection proceeds in this fixed order:
 
 1. `preprocessing_normalization`
 2. `sentiment`
-3. `historical_context`
-4. `architecture_objective`
+3. `architecture_context`
 
 Every candidate is evaluated on the existing chronological validation split. The final winner is frozen into a new runnable `selected_config.json`, whose downstream evaluation split is changed to `test`. Running that frozen config therefore writes to a result root distinct from every validation candidate config.
 
@@ -33,7 +32,7 @@ Validation-only execution must not instantiate a test dataset. It trains downstr
 
 ## Candidate manifest
 
-A selection manifest contains the selection ID and four ordered stages. Each candidate declares:
+A selection manifest contains the selection ID and three ordered stages. Each candidate declares:
 
 - stable candidate ID;
 - runnable experiment config path;

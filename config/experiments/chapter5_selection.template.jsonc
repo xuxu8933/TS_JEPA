@@ -1,5 +1,5 @@
 {
-  // Copy this file, replace the example candidate paths, and keep this stage order.
+  // Copy this file and replace result IDs plus both sets of parent IDs.
   "schema_version": 1,
   "selection_id": "chapter5_main",
   "stages": [
@@ -8,64 +8,82 @@
       "candidates": [
         {
           "id": "preprocessing_window_return",
-          "config": "chapter5_candidates/preprocessing_window_return.json",
-          "validation_root": "../../results/preprocessing_window_return/random",
+          "config": "chapter5_candidates/01_preprocessing_window_return.json",
+          "validation_root": "../../results/01_preprocessing_window_return/REPLACE_CONFIG_ID/random",
           "strategy": "random"
         },
         {
           "id": "preprocessing_train_zscore",
-          "config": "chapter5_candidates/preprocessing_train_zscore.json",
-          "validation_root": "../../results/preprocessing_train_zscore/random",
+          "config": "chapter5_candidates/01_preprocessing_train_zscore.json",
+          "validation_root": "../../results/01_preprocessing_train_zscore/REPLACE_CONFIG_ID/random",
           "strategy": "random"
         }
       ]
     },
     {
+      // Replace both parent IDs with the actual preprocessing-stage winner.
       "name": "sentiment",
       "candidates": [
         {
           "id": "sentiment_excluded",
           "parent_candidate_id": "preprocessing_window_return",
-          "config": "chapter5_candidates/sentiment_excluded.json",
-          "validation_root": "../../results/sentiment_excluded/random",
+          "config": "chapter5_candidates/02_sentiment_excluded.json",
+          "validation_root": "../../results/02_sentiment_excluded/REPLACE_CONFIG_ID/random",
           "strategy": "random"
         },
         {
           "id": "sentiment_included",
           "parent_candidate_id": "preprocessing_window_return",
-          "config": "chapter5_candidates/sentiment_included.json",
-          "validation_root": "../../results/sentiment_included/random",
+          "config": "chapter5_candidates/02_sentiment_included.json",
+          "validation_root": "../../results/02_sentiment_included/REPLACE_CONFIG_ID/random",
           "strategy": "random"
         }
       ]
     },
     {
-      "name": "historical_context",
+      // Replace all parent IDs with the actual sentiment-stage winner.
+      "name": "architecture_context",
       "candidates": [
         {
-          "id": "context_12_patches",
+          "id": "shared_context_6",
           "parent_candidate_id": "sentiment_included",
-          "config": "chapter5_candidates/context_12_patches.json",
-          "validation_root": "../../results/context_12_patches/random",
-          "strategy": "random"
-        }
-      ]
-    },
-    {
-      "name": "architecture_objective",
-      "candidates": [
-        {
-          "id": "shared_target_jepa_mae",
-          "parent_candidate_id": "context_12_patches",
-          "config": "chapter5_candidates/shared_target_jepa_mae.json",
-          "validation_root": "../../results/shared_target_jepa_mae/random",
+          "config": "chapter5_candidates/03_shared_context_6_patches.json",
+          "validation_root": "../../results/03_shared_context_6_patches/REPLACE_CONFIG_ID/random",
           "strategy": "random"
         },
         {
-          "id": "local_mae_long_jepa",
-          "parent_candidate_id": "context_12_patches",
-          "config": "chapter5_candidates/local_mae_long_jepa.json",
-          "validation_root": "../../results/local_mae_long_jepa/local_long",
+          "id": "shared_context_12",
+          "parent_candidate_id": "sentiment_included",
+          "config": "chapter5_candidates/03_shared_context_12_patches.json",
+          "validation_root": "../../results/03_shared_context_12_patches/REPLACE_CONFIG_ID/random",
+          "strategy": "random"
+        },
+        {
+          "id": "shared_context_24",
+          "parent_candidate_id": "sentiment_included",
+          "config": "chapter5_candidates/03_shared_context_24_patches.json",
+          "validation_root": "../../results/03_shared_context_24_patches/REPLACE_CONFIG_ID/random",
+          "strategy": "random"
+        },
+        {
+          "id": "local_long_context_6",
+          "parent_candidate_id": "sentiment_included",
+          "config": "chapter5_candidates/03_local_long_context_6_patches.json",
+          "validation_root": "../../results/03_local_long_context_6_patches/REPLACE_CONFIG_ID/local_long",
+          "strategy": "local_long"
+        },
+        {
+          "id": "local_long_context_12",
+          "parent_candidate_id": "sentiment_included",
+          "config": "chapter5_candidates/03_local_long_context_12_patches.json",
+          "validation_root": "../../results/03_local_long_context_12_patches/REPLACE_CONFIG_ID/local_long",
+          "strategy": "local_long"
+        },
+        {
+          "id": "local_long_context_24",
+          "parent_candidate_id": "sentiment_included",
+          "config": "chapter5_candidates/03_local_long_context_24_patches.json",
+          "validation_root": "../../results/03_local_long_context_24_patches/REPLACE_CONFIG_ID/local_long",
           "strategy": "local_long"
         }
       ]

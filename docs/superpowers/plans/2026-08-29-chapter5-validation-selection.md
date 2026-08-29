@@ -189,7 +189,7 @@ Expected: FAIL because aggregation and staged selection are absent.
 
 - [ ] **Step 3: Implement exact stage validation and ranking**
 
-Validate the four canonical stage names/order, parent filtering, unique IDs, identical eligible coverage, enabled strategy, validation evaluation split, and best checkpoint mode. Require complete stock/seed coverage and serialize candidates sorted by ID.
+Validate the three canonical stage names/order, parent filtering, unique IDs, identical eligible coverage, enabled strategy, validation evaluation split, and best checkpoint mode. Require complete stock/seed coverage and serialize candidates sorted by ID.
 
 - [ ] **Step 4: Run tests and verify GREEN**
 

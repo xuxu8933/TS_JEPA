@@ -1,0 +1,44 @@
+{
+  // Copy to chapter5_stage2_selection.jsonc and replace result IDs and parent IDs.
+  "schema_version": 1,
+  "selection_id": "chapter5_stage2",
+  "stages": [
+    {
+      "name": "preprocessing_normalization",
+      "candidates": [
+        {
+          "id": "preprocessing_window_return",
+          "config": "chapter5_candidates/01_preprocessing_window_return.json",
+          "validation_root": "../../results/01_preprocessing_window_return/REPLACE_CONFIG_ID/random",
+          "strategy": "random"
+        },
+        {
+          "id": "preprocessing_train_zscore",
+          "config": "chapter5_candidates/01_preprocessing_train_zscore.json",
+          "validation_root": "../../results/01_preprocessing_train_zscore/REPLACE_CONFIG_ID/random",
+          "strategy": "random"
+        }
+      ]
+    },
+    {
+      // Both parent IDs must equal the selected stage-1 candidate ID.
+      "name": "sentiment",
+      "candidates": [
+        {
+          "id": "sentiment_excluded",
+          "parent_candidate_id": "preprocessing_window_return",
+          "config": "chapter5_candidates/02_sentiment_excluded.json",
+          "validation_root": "../../results/02_sentiment_excluded/REPLACE_CONFIG_ID/random",
+          "strategy": "random"
+        },
+        {
+          "id": "sentiment_included",
+          "parent_candidate_id": "preprocessing_window_return",
+          "config": "chapter5_candidates/02_sentiment_included.json",
+          "validation_root": "../../results/02_sentiment_included/REPLACE_CONFIG_ID/random",
+          "strategy": "random"
+        }
+      ]
+    }
+  ]
+}

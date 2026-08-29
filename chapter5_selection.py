@@ -27,8 +27,7 @@ METRIC_NAMES = ("mse", "mae", "direction_accuracy")
 STAGE_NAMES = (
     "preprocessing_normalization",
     "sentiment",
-    "historical_context",
-    "architecture_objective",
+    "architecture_context",
 )
 
 
@@ -244,6 +243,27 @@ def _candidate_summary(
         candidate,
         manifest_root,
     )
+    parent_candidate_id = candidate.get("parent_candidate_id")
+    parent_config_sha256 = None
+    if parent_candidate_id is not None:
+        provenance = raw_config.get("provenance")
+        if not isinstance(provenance, dict) or provenance.get(
+            "artifact_type"
+        ) != "chapter5_candidate_config":
+            raise ValueError(
+                f"{candidate_id}: later-stage config requires candidate provenance"
+            )
+        if provenance.get("parent_candidate_id") != parent_candidate_id:
+            raise ValueError(
+                f"{candidate_id}: manifest parent does not match config provenance"
+            )
+        parent_config_sha256 = provenance.get("parent_config_sha256")
+        if not isinstance(parent_config_sha256, str) or re.fullmatch(
+            r"[0-9a-f]{64}", parent_config_sha256
+        ) is None:
+            raise ValueError(
+                f"{candidate_id}: invalid parent_config_sha256 provenance"
+            )
     strategy = candidate.get("strategy")
     if strategy not in resolve_mask_strategies(args):
         raise ValueError(
@@ -254,7 +274,8 @@ def _candidate_summary(
     summary = {
         "id": candidate_id,
         "status": "eligible" if eligible else "ineligible_parent",
-        "parent_candidate_id": candidate.get("parent_candidate_id"),
+        "parent_candidate_id": parent_candidate_id,
+        "parent_config_sha256": parent_config_sha256,
         "config": str(candidate["config"]),
         "config_sha256": canonical_sha256(raw_config),
         "config_signature": signature,
@@ -309,7 +330,7 @@ def _ranking_key(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
 
 
 def select_stages(manifest_path: Path) -> dict[str, Any]:
-    """Select all four Chapter 5 stages using validation artifacts only."""
+    """Select the three Chapter 5 stages using validation artifacts only."""
     resolved_manifest = Path(manifest_path).resolve()
     manifest = _read_object(resolved_manifest, "selection manifest")
     if set(manifest) != {"schema_version", "selection_id", "stages"}:
@@ -325,15 +346,17 @@ def select_stages(manifest_path: Path) -> dict[str, Any]:
     if not isinstance(stages, list):
         raise ValueError("stages must be a list")
     actual_stage_names = [stage.get("name") for stage in stages if isinstance(stage, dict)]
-    if tuple(actual_stage_names) != STAGE_NAMES or len(stages) != len(STAGE_NAMES):
+    if not stages or tuple(actual_stage_names) != STAGE_NAMES[: len(stages)]:
         raise ValueError(
-            f"Stage order must be exactly {list(STAGE_NAMES)}, got {actual_stage_names}"
+            "Stage order must be a non-empty prefix of "
+            f"{list(STAGE_NAMES)}, got {actual_stage_names}"
         )
 
     manifest_root = resolved_manifest.parent
     seen_ids = set()
     previous_winner = None
     previous_stage_ids = set()
+    previous_candidates_by_id = {}
     stage_summaries = []
     for stage_index, (expected_name, stage) in enumerate(zip(STAGE_NAMES, stages)):
         if set(stage) != {"name", "candidates"}:
@@ -360,9 +383,20 @@ def select_stages(manifest_path: Path) -> dict[str, Any]:
                     "candidate in the previous stage"
                 )
             eligible = stage_index == 0 or parent == previous_winner
-            candidate_summaries.append(
-                _candidate_summary(candidate, manifest_root, eligible=eligible)
+            candidate_summary = _candidate_summary(
+                candidate,
+                manifest_root,
+                eligible=eligible,
             )
+            if stage_index > 0:
+                expected_parent_hash = previous_candidates_by_id[parent][
+                    "config_sha256"
+                ]
+                if candidate_summary["parent_config_sha256"] != expected_parent_hash:
+                    raise ValueError(
+                        f"{candidate_id}: parent config hash mismatch for {parent!r}"
+                    )
+            candidate_summaries.append(candidate_summary)
         eligible_candidates = [
             candidate
             for candidate in candidate_summaries
@@ -392,6 +426,9 @@ def select_stages(manifest_path: Path) -> dict[str, Any]:
             }
         )
         previous_stage_ids = {candidate["id"] for candidate in candidate_summaries}
+        previous_candidates_by_id = {
+            candidate["id"]: candidate for candidate in candidate_summaries
+        }
 
     return {
         "artifact_type": "chapter5_validation_selection",
@@ -410,6 +447,7 @@ def select_stages(manifest_path: Path) -> dict[str, Any]:
         ],
         "stages": stage_summaries,
         "selected_candidate_id": previous_winner,
+        "complete": len(stages) == len(STAGE_NAMES),
     }
 
 
@@ -440,6 +478,8 @@ def freeze_selected_config(
     summary: Mapping[str, Any],
 ) -> dict[str, Any]:
     """Copy the final validation winner and switch only its holdout to test."""
+    if not summary.get("complete"):
+        raise ValueError("Final freezing requires a complete three-stage selection")
     resolved_manifest = Path(manifest_path).resolve()
     selected = _selected_candidate(summary)
     source_path = _resolve_manifest_path(
@@ -490,6 +530,38 @@ def freeze_selected_config(
     return frozen
 
 
+def snapshot_selected_stage_config(
+    manifest_path: Path,
+    summary: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Copy an intermediate validation winner without enabling test evaluation."""
+    resolved_manifest = Path(manifest_path).resolve()
+    selected = _selected_candidate(summary)
+    source_path = _resolve_manifest_path(
+        resolved_manifest.parent,
+        selected["config"],
+        "selected candidate config",
+    )
+    _, source = read_config_file(source_path)
+    snapshot = copy.deepcopy(source)
+    downstream = snapshot.get("runner", {}).get("downstream")
+    if not isinstance(downstream, dict) or downstream.get("evaluation_split") != "validation":
+        raise ValueError("Intermediate selected config must remain validation-only")
+    snapshot["provenance"] = {
+        "artifact_type": "selected_chapter5_stage_config",
+        "schema_version": 1,
+        "selection_id": summary["selection_id"],
+        "selected_candidate_id": selected["id"],
+        "selected_stage": summary["stages"][-1]["name"],
+        "source_config": selected["config"],
+        "source_config_sha256": selected["config_sha256"],
+        "source_config_signature": selected["config_signature"],
+        "selection_summary_sha256": canonical_sha256(summary),
+        "metric_split": "validation",
+    }
+    return snapshot
+
+
 def _write_json_atomic(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".tmp")
@@ -534,11 +606,19 @@ def main(argv=None) -> int:
     output_dir = Path(args.output_dir).resolve()
     _validate_output_separation(manifest_path, output_dir)
     summary = select_stages(manifest_path)
-    frozen = freeze_selected_config(manifest_path, summary)
     _write_json_atomic(output_dir / "selection_summary.json", summary)
-    _write_json_atomic(output_dir / "selected_config.json", frozen)
     print(f"Validation selection summary: {output_dir / 'selection_summary.json'}")
-    print(f"Frozen final test config: {output_dir / 'selected_config.json'}")
+    if summary["complete"]:
+        frozen = freeze_selected_config(manifest_path, summary)
+        _write_json_atomic(output_dir / "selected_config.json", frozen)
+        print(f"Frozen final test config: {output_dir / 'selected_config.json'}")
+    else:
+        snapshot = snapshot_selected_stage_config(manifest_path, summary)
+        _write_json_atomic(output_dir / "selected_stage_config.json", snapshot)
+        print(
+            "Selected validation-stage config: "
+            f"{output_dir / 'selected_stage_config.json'}"
+        )
     return 0
 
 

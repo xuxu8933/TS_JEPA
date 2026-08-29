@@ -47,13 +47,19 @@ def results_dir_from_config(config_path):
     """Derive ``results/<config_stem>`` without a configured output option."""
     path = Path(config_path)
     resolved_path = path.resolve()
-    if (
-        resolved_path.parent.name == "experiments"
-        and resolved_path.parent.parent.name == "config"
-    ):
-        project_root = resolved_path.parent.parent.parent
-    else:
-        project_root = resolved_path.parent
+    experiments_root = next(
+        (
+            parent
+            for parent in resolved_path.parents
+            if parent.name == "experiments" and parent.parent.name == "config"
+        ),
+        None,
+    )
+    project_root = (
+        experiments_root.parent.parent
+        if experiments_root is not None
+        else resolved_path.parent
+    )
     return project_root / "results" / path.stem
 
 
