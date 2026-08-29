@@ -1,0 +1,29 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Overall forecasting performance. Each metric is first averaged across seeds within an equity and then across equities; $\pm$ denotes the standard deviation across equity-level means. Best values are bold and second-best values are underlined.}
+\label{tab:main_metrics}
+\begin{tabular}{lrrr}
+\toprule
+Method & MSE $\downarrow$ & MAE $\downarrow$ & Direction $\uparrow$ \\
+\midrule
+Shared-target JEPA--MAE & $0.00335 \pm 0.00158$ & $0.04144 \pm 0.01088$ & \underline{$0.499 \pm 0.008$} \\
+GRU & \underline{$0.00253 \pm 0.00173$} & \underline{$0.03433 \pm 0.01287$} & $0.495 \pm 0.042$ \\
+Naive-last & \textbf{$0.00203 \pm 0.00110$} & \textbf{$0.03027 \pm 0.00977$} & $0.001 \pm 0.002$ \\
+Drift & $0.79950 \pm 1.49295$ & $0.22882 \pm 0.15732$ & \textbf{$0.527 \pm 0.037$} \\
+Mean-context & $3245150406717270853980244706832546791424.00000 \pm 7159543046554468271098961221434810040320.00000$ & $4971962779071188992.00000 \pm 9859761607500152832.00000$ & $0.498 \pm 0.041$ \\
+\bottomrule
+\end{tabular}
+\par\medskip
+\begin{tabular}{lrrr}
+\toprule
+Method & MSE rank $\downarrow$ & MAE rank $\downarrow$ & Direction rank $\downarrow$ \\
+\midrule
+Shared-target JEPA--MAE & 2.80 & 2.80 & 2.80 \\
+GRU & \underline{2.20} & \underline{2.20} & \underline{2.60} \\
+Naive-last & \textbf{1.00} & \textbf{1.00} & 5.00 \\
+Drift & 4.00 & 4.00 & \textbf{1.60} \\
+Mean-context & 5.00 & 5.00 & 3.00 \\
+\bottomrule
+\end{tabular}
+\end{table}

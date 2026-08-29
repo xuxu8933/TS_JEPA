@@ -1,0 +1,31 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Stock-level paired MSE comparison against naive-last. Negative $\Delta$ and positive relative improvement favour the model. Confidence intervals bootstrap equity-level seed means; adjusted $p$ values use Holm correction across the three learned procedures.}
+\label{tab:paired_mse_naive}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Model & $\Delta$MSE & 95\% CI & Rel. impr. & Adj. $p$ & $r_{rb}$ & Stocks & Runs \\
+\midrule
+Shared-target JEPA--MAE & 0.00117 & [0.00063, 0.00181] & -78.7\% & 0.006 & 1.00 & 0/10 & 0/100 \\
+Local-MAE/Long-JEPA & 0.00094 & [0.00057, 0.00137] & -68.6\% & 0.006 & 1.00 & 0/10 & 0/100 \\
+GRU & 0.00011 & [0.00004, 0.00020] & -8.4\% & 0.020 & 0.82 & 2/8 & 27/100 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[t]
+\centering
+\small
+\caption{Stock-level paired MAE comparison against naive-last. Negative $\Delta$ and positive relative improvement favour the model. Confidence intervals bootstrap equity-level seed means; adjusted $p$ values use Holm correction across the three learned procedures.}
+\label{tab:paired_mae_naive}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Model & $\Delta$MAE & 95\% CI & Rel. impr. & Adj. $p$ & $r_{rb}$ & Stocks & Runs \\
+\midrule
+Shared-target JEPA--MAE & 0.01089 & [0.00788, 0.01471] & -42.7\% & 0.006 & 1.00 & 0/10 & 0/100 \\
+Local-MAE/Long-JEPA & 0.00943 & [0.00708, 0.01205] & -38.5\% & 0.006 & 1.00 & 0/10 & 0/100 \\
+GRU & 0.00187 & [0.00096, 0.00291] & -7.4\% & 0.010 & 0.89 & 2/8 & 17/100 \\
+\bottomrule
+\end{tabular}
+\end{table}

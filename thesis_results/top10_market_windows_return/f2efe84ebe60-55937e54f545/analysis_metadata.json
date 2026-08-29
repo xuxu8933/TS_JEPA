@@ -1,0 +1,45 @@
+{
+  "analysis_git_branch": "single-dim",
+  "analysis_git_commit": "61fdd15a28add76845ee8db84408d34295037179",
+  "analysis_numpy": "2.4.3",
+  "analysis_pandas": "3.0.1",
+  "analysis_python": "3.11.15",
+  "analysis_seed": 20260822,
+  "bootstrap_samples": 20000,
+  "canonical_rows": 600,
+  "error_issues": 0,
+  "results_dir": "results/top10_market_windows_return",
+  "scope": {
+    "config_path": "config/experiments/top10_market_windows_return.json",
+    "reference_strategy": "random",
+    "seeds": [
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51
+    ],
+    "stocks": [
+      "NVDA",
+      "AAPL",
+      "MSFT",
+      "AMZN",
+      "GOOGL",
+      "AVGO",
+      "META",
+      "TSLA",
+      "COST",
+      "WMT"
+    ],
+    "strategies": [
+      "random",
+      "local_long"
+    ]
+  },
+  "warning_issues": 0
+}

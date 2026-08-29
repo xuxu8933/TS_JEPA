@@ -1,6 +1,0 @@
-method,mse,mse_std_across_stocks,mae,mae_std_across_stocks,direction_accuracy,direction_accuracy_std_across_stocks,mse_average_rank,mae_average_rank,direction_accuracy_average_rank,mse_stock_wins,mse_stock_second_places,mae_stock_wins,mae_stock_second_places,direction_accuracy_stock_wins,direction_accuracy_stock_second_places,n_stocks,n_direction_stocks
-Shared-target JEPA--MAE,0.002285143743541513,0.0,0.036492501491509136,0.0,0.5596491228070176,0.0,4.0,5.0,1.0,0,0,0,0,1,0,1,1
-GRU,0.0022905797117829013,0.0,0.0350563909384634,0.0,0.5491228070175439,0.0,5.0,4.0,2.0,0,0,0,0,0,1,1,1
-Naive-last,0.0020790753562398285,0.0,0.033849857982836226,0.0,0.0,0.0,1.0,1.0,5.0,1,0,1,0,0,0,1,1
-Drift,0.0022182012412194844,0.0,0.0341106216471847,0.0,0.5052631578947369,0.0,3.0,2.0,4.0,0,0,0,1,0,0,1,1
-Mean-context,0.002183755134313742,0.0,0.034351809296410754,0.0,0.5210526315789473,0.0,2.0,3.0,3.0,0,1,0,0,0,0,1,1

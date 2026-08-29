@@ -1,6 +1,0 @@
-stock,method,relative_mse_improvement_pct,relative_mae_improvement_pct,n_paired_seeds
-NVDA,Drift,-6.69171950737043,-0.7703538941053161,3
-NVDA,GRU,-42.04788246812905,-20.98926927292747,3
-NVDA,Mean-context,-5.034919488283691,-1.4828757306658156,3
-NVDA,Shared-target JEPA--MAE,-105.79697427077095,-48.9779168009936,3
-NVDA,Naive-last,0.0,0.0,3
