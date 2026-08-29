@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Create and run the seven three-stage Chapter 5 candidates without assuming an unknown earlier-stage winner. The workflow must preserve validation-only selection, deterministic provenance, and the existing chronological train/validation/test protocol.
+Create and run the ten three-stage Chapter 5 candidates without assuming an unknown earlier-stage winner. The workflow must preserve validation-only selection, deterministic provenance, and the existing chronological train/validation/test protocol.
 
 ## Experimental coverage
 
@@ -11,7 +11,6 @@ Every candidate uses the same pilot coverage:
 - stocks: `NVDA`, `AAPL`, `AVGO`, `TSLA`, `WMT`;
 - seeds: `42`, `44`, `46`;
 - maximum parallel jobs: `2`;
-- masking/model: shared-target JEPA--MAE (`random` strategy);
 - objective weights: JEPA `1.0`, MAE `0.5`;
 - patch size: `5`;
 - forecast horizon: `5`;
@@ -20,7 +19,7 @@ Every candidate uses the same pilot coverage:
 - checkpoint selection: `best`;
 - downstream evaluation split: `validation`.
 
-The fixed forecast target and all remaining training settings come from a single checked-in base candidate. Later candidates may change only their declared experimental factor.
+The fixed forecast target and all remaining training settings come from a single checked-in base candidate. Stages 1 and 2 use shared-target JEPA--MAE (`random` strategy). Stage 3 compares shared-target and Local-MAE/Long-JEPA jointly with downstream context length while keeping objective weights fixed.
 
 ## Candidate sequence
 
@@ -42,15 +41,20 @@ After stage 1 selection, a materialization command reads the winning stage-1 con
 
 The files are deep copies of the validated stage-1 winner. They differ only in sentiment enablement and the download/news setting needed to make the feature available. Both record the parent candidate ID and parent config SHA-256 in the ignored top-level provenance section.
 
-### Stage 3: historical context
+### Stage 3: architecture and historical-context interaction
 
-After stage 2 selection, the materialization command reads the winning sentiment config and creates:
+After stage 2 selection, the materialization command reads the winning sentiment config and creates a six-cell validation grid:
 
-- `03_context_6_patches.json`;
-- `03_context_12_patches.json`;
-- `03_context_24_patches.json`.
+- `03_shared_context_6_patches.json`;
+- `03_shared_context_12_patches.json`;
+- `03_shared_context_24_patches.json`;
+- `03_local_long_context_6_patches.json`;
+- `03_local_long_context_12_patches.json`;
+- `03_local_long_context_24_patches.json`.
 
-They differ only in `runner.downstream.context_size`, corresponding to 30, 60, and 120 historical observations at patch size 5. Each records the stage-2 parent identity and hash.
+The shared-target candidates enable only the `random` strategy. The Local-MAE/Long-JEPA candidates enable only `local_long`, with local-MAE window 1 patch, JEPA gap 4 patches, and JEPA target 4 patches. Within each architecture, `runner.downstream.context_size` is 6, 12, or 24 patches, corresponding to 30, 60, and 120 historical observations at patch size 5. Pretraining window length remains fixed at 60 observations, so the grid isolates downstream context and its interaction with pretrained architecture. Every candidate records the stage-2 parent identity and hash.
+
+The selector reports all six cells and chooses the architecture-context pair by the standard validation ranking. This supports an interaction analysis without treating objective composition as an additional factor.
 
 ## Partial-stage selection
 
@@ -58,7 +62,7 @@ They differ only in `runner.downstream.context_size`, corresponding to 30, 60, a
 
 1. `preprocessing_normalization`;
 2. `sentiment`;
-3. `historical_context`.
+3. `architecture_context`.
 
 For a one- or two-stage manifest, it writes `selection_summary.json` and `selected_stage_config.json`. The selected stage config remains validation-only and is intended solely as the immutable base for materializing the next stage. It must not contain or produce test metrics.
 
@@ -71,7 +75,7 @@ Four-stage manifests remain invalid.
 A new `chapter5_prepare_candidates.py` command has two modes:
 
 - `--stage sentiment --base-config PATH --parent-candidate-id ID`;
-- `--stage historical_context --base-config PATH --parent-candidate-id ID`.
+- `--stage architecture_context --base-config PATH --parent-candidate-id ID`.
 
 It validates that the base config is validation-only and uses best-checkpoint selection. It writes candidates atomically, refuses to overwrite non-identical files unless explicitly requested, and records canonical parent/config hashes. The generated files remain directly runnable by `run_top_nasdaq100_stocks.py`.
 
@@ -99,7 +103,8 @@ Tests cover:
 
 - five-stock/three-seed coverage in both stage-1 configs;
 - candidate configs using validation and best checkpoints;
-- exact one-factor differences within each stage;
+- exact one-factor differences in stages 1 and 2;
+- the complete 2 × 3 architecture-context grid with fixed objective weights;
 - deterministic materialization and parent hashes;
 - rejection of invalid, test, or non-best base configs;
 - prefix-stage selection;
@@ -109,4 +114,4 @@ Tests cover:
 
 ## Runtime estimate
 
-The workflow executes 7 candidates × 5 stocks × 3 seeds = 105 stock-seed runs. With two parallel jobs on the detected RTX 3060, 2,001 pretraining epochs, and 501 downstream epochs, the expected wall time is approximately 4--7 hours. Context size 24 is expected to be the slowest candidate. The estimate excludes downloading news; sentiment data should be prepared or cached before timed execution.
+The workflow executes 10 candidates × 5 stocks × 3 seeds = 150 stock-seed runs. With two parallel jobs on the detected RTX 3060, 2,001 pretraining epochs, and 501 downstream epochs, the expected wall time is approximately 6--10 hours. Local-MAE/Long-JEPA with context size 24 is expected to be the slowest candidate. The estimate excludes downloading news; sentiment data should be prepared or cached before timed execution.
