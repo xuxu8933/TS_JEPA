@@ -15,6 +15,26 @@ This workflow runs three validation-only stages and performs one held-out test e
 
 Sentiment CSVs must already be cached. The timed candidate configs do not download market or news data.
 
+## Automated execution
+
+First validate all ten candidate configurations without training, selecting, writing repository artifacts, or evaluating test data:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_chapter5_staged.py --dry-run
+```
+
+Then run the complete workflow:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_chapter5_staged.py
+```
+
+The script runs each stage sequentially, generates later candidates from the actual preceding validation winner, writes the three selection manifests automatically, and finally runs `selection_artifacts/chapter5_automated/final/selected_config.json` on test once. Re-running the command resumes compatible completed stock/seed runs through the existing runner checks. It stops immediately on a failed or incompatible run.
+
+Audit outputs are under `selection_artifacts/chapter5_automated/`. The final workflow summary is `workflow_summary.json`; each stage retains its manifest and selection summary. The held-out test results are written below `selection_artifacts/chapter5_automated/final/results/selected_config/`, separate from all validation candidate roots.
+
+The remaining sections describe the equivalent manual procedure.
+
 ## Stage 1: preprocessing and normalization
 
 Inspect both generated command sets without running them:
@@ -43,7 +63,7 @@ find results/01_preprocessing_window_return results/01_preprocessing_train_zscor
   -name validation_metrics.json -print
 ```
 
-Copy `config/experiments/chapter5_stage1_selection.template.jsonc` to `config/experiments/chapter5_stage1_selection.jsonc`. Replace each `REPLACE_CONFIG_ID` so each `validation_root` is the strategy directory directly above the stock directories. Select stage 1:
+Copy `config/experiments/chapter5_stage1_selection.template.jsonc` to `config/experiments/chapter5_stage1_selection.jsonc`. Its validation roots already match the runner output directories. Select stage 1:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python chapter5_selection.py \
@@ -81,7 +101,7 @@ for cfg in 02_sentiment_excluded 02_sentiment_included; do
 done
 ```
 
-Copy `chapter5_stage2_selection.template.jsonc` to `chapter5_stage2_selection.jsonc`. Fill all stage-1 and stage-2 validation roots. Set both sentiment `parent_candidate_id` values to `STAGE1_PARENT_ID`, then select:
+Copy `chapter5_stage2_selection.template.jsonc` to `chapter5_stage2_selection.jsonc`. Set both sentiment `parent_candidate_id` values to `STAGE1_PARENT_ID`, then select:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python chapter5_selection.py \
@@ -135,7 +155,7 @@ for cfg in \
 done
 ```
 
-Copy `chapter5_selection.template.jsonc` to `chapter5_selection.jsonc`. Fill all ten validation roots, set both sentiment parent IDs to `STAGE1_PARENT_ID`, and set all six final parent IDs to `STAGE2_PARENT_ID`. Perform complete validation selection:
+Copy `chapter5_selection.template.jsonc` to `chapter5_selection.jsonc`. Set both sentiment parent IDs to `STAGE1_PARENT_ID`, and set all six final parent IDs to `STAGE2_PARENT_ID`. Perform complete validation selection:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python chapter5_selection.py \

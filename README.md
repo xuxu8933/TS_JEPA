@@ -1281,7 +1281,19 @@ The staged workflow uses five stocks (NVDA, AAPL, AVGO, TSLA, WMT), seeds 42/44/
 
 The two normalization files are checked in. Later files are created deterministically from each preceding validation winner by `chapter5_prepare_candidates.py`; this prevents an assumed winner from entering the next stage. All candidates use `checkpoint.selection.mode=best` and `downstream.evaluation_split=validation`.
 
-Follow the complete commands in [the staged selection guide](doc/chapter5_staged_selection.md). Stage-prefix manifests produce validation-only `selected_stage_config.json` snapshots; the complete [selection manifest template](config/experiments/chapter5_selection.template.jsonc) freezes the architecture-context winner:
+Follow the complete commands in [the staged selection guide](doc/chapter5_staged_selection.md). The automated dry run validates all ten candidate commands without training or selecting:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_chapter5_staged.py --dry-run
+```
+
+The complete command runs all three validation stages and then evaluates the frozen winner on test exactly once:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_chapter5_staged.py
+```
+
+For manual operation, stage-prefix manifests produce validation-only `selected_stage_config.json` snapshots; the complete [selection manifest template](config/experiments/chapter5_selection.template.jsonc) freezes the architecture-context winner:
 
 ```bash
 conda run --no-capture-output -n ts-jepa python chapter5_selection.py \

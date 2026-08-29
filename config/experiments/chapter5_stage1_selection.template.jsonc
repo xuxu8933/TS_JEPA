@@ -1,5 +1,5 @@
 {
-  // Copy to chapter5_stage1_selection.jsonc and replace both validation roots.
+  // Copy to chapter5_stage1_selection.jsonc; paths match runner output roots.
   "schema_version": 1,
   "selection_id": "chapter5_stage1",
   "stages": [
@@ -9,13 +9,13 @@
         {
           "id": "preprocessing_window_return",
           "config": "chapter5_candidates/01_preprocessing_window_return.json",
-          "validation_root": "../../results/01_preprocessing_window_return/REPLACE_CONFIG_ID/random",
+          "validation_root": "../../results/01_preprocessing_window_return/random",
           "strategy": "random"
         },
         {
           "id": "preprocessing_train_zscore",
           "config": "chapter5_candidates/01_preprocessing_train_zscore.json",
-          "validation_root": "../../results/01_preprocessing_train_zscore/REPLACE_CONFIG_ID/random",
+          "validation_root": "../../results/01_preprocessing_train_zscore/random",
           "strategy": "random"
         }
       ]
