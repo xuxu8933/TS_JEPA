@@ -1242,6 +1242,47 @@ The suite covers:
 - downstream context-length compatibility;
 - synthetic forecasting and MNIST reconstruction.
 
+## Chapter 5 validation-only configuration selection
+
+Configuration selection is a separate phase from final test evaluation. Candidate configs must set both:
+
+```json
+{
+  "runner": {
+    "checkpoint": {
+      "selection": {"mode": "best"},
+      "encoder_weights": "ema"
+    },
+    "downstream": {
+      "epochs": 501,
+      "context_size": 12,
+      "evaluation_split": "validation"
+    }
+  }
+}
+```
+
+Run every candidate normally. Validation-only execution trains on the chronological training split, retains the existing downstream and GRU validation checkpoint rules, evaluates on validation, and writes `validation_metrics.json` in each stock/seed run directory. It does not construct the test dataset.
+
+Copy [the selection manifest template](config/experiments/chapter5_selection.template.jsonc), list the four stages in their fixed order, and point each candidate's `validation_root` at the strategy directory containing its stock/seed runs. Then select and freeze:
+
+```bash
+conda run --no-capture-output -n ts-jepa python chapter5_selection.py \
+  --manifest config/experiments/chapter5_selection.json \
+  --output-dir selection_artifacts/chapter5_main
+```
+
+The command writes `selection_summary.json` with every candidate and `selected_config.json` with config hashes and provenance. MSE is primary; MAE and direction accuracy are secondary. Metrics are averaged first across seeds within each stock, then across stocks. Exact ties resolve by candidate ID.
+
+Inspect and archive the selection summary before the one final test run:
+
+```bash
+conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
+  --config selection_artifacts/chapter5_main/selected_config.json
+```
+
+The selector changes only `runner.downstream.evaluation_split` to `test` in the frozen config. Its config-derived final result root is separate from all validation candidate roots. The selector accepts only strict `validation_metrics.json` artifacts and rejects test-split content even if a file is renamed.
+
 ## Repository structure
 
 ```text

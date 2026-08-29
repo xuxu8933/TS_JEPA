@@ -80,6 +80,10 @@ def effective_experiment_config(args_or_options):
         effective.pop("forecast_horizon", None)
     if effective.get("sentiment_normalization") in (None, "none"):
         effective.pop("sentiment_normalization", None)
+    if effective.get("evaluation_split") == "test":
+        effective.pop("evaluation_split", None)
+    if effective.get("context_size") is None:
+        effective.pop("context_size", None)
 
     if effective.get("skip_download") is True:
         for key in (
@@ -502,6 +506,7 @@ def _write_json(path, value):
 
 def write_run_manifest(args, task, status):
     run_dir = task["run_dir"]
+    evaluation_split = getattr(args, "evaluation_split", "test")
     comparison_files = []
     if status == "complete":
         comparison_files = [
@@ -509,6 +514,8 @@ def write_run_manifest(args, task, status):
             for path in sorted(run_dir.glob("last_model_comparison_*.*"))
             if path.suffix in (".csv", ".txt")
         ]
+    metrics_filename = f"{evaluation_split}_metrics.json"
+    metrics_path = run_dir / metrics_filename
     _write_json(
         run_dir / RUN_MANIFEST_FILENAME,
         {
@@ -524,6 +531,10 @@ def write_run_manifest(args, task, status):
                 else None
             ),
             "comparison_files": comparison_files,
+            "evaluation_split": evaluation_split,
+            "metrics_artifact": (
+                metrics_filename if metrics_path.is_file() else None
+            ),
         },
     )
 
@@ -592,6 +603,13 @@ def execute_task(args, task):
                     "Downstream evaluation completed without a "
                     "model-comparison CSV/TXT pair in "
                     f"{task['run_dir']}"
+                )
+            if getattr(args, "evaluation_split", "test") == "validation" and not (
+                task["run_dir"] / "validation_metrics.json"
+            ).is_file():
+                raise RuntimeError(
+                    "Validation evaluation completed without "
+                    f"validation_metrics.json in {task['run_dir']}"
                 )
             write_run_manifest(args, task, "complete")
             if not args.verbose:
@@ -826,6 +844,21 @@ def parse_args(argv=None):
             "for backward compatibility."
         ),
     )
+    parser.add_argument(
+        "--context-size",
+        type=int,
+        default=None,
+        help="Number of historical patches used by downstream forecasting.",
+    )
+    parser.add_argument(
+        "--evaluation-split",
+        choices=("validation", "test"),
+        default="test",
+        help=(
+            "Evaluate restored downstream checkpoints on validation for "
+            "configuration selection or on test for the final frozen run."
+        ),
+    )
     parser.add_argument("--eval-num-epochs", type=int, default=501)
     parser.add_argument("--pretrain-num-epochs", type=int, default=2001)
     parser.add_argument("--checkpoint-to-use", type=int, default=2000)
@@ -875,6 +908,8 @@ def parse_args(argv=None):
     args = parse_args_with_config(parser, argv, section="runner")
     if args.max_parallel_jobs <= 0:
         parser.error("--max-parallel-jobs must be positive")
+    if args.context_size is not None and args.context_size <= 0:
+        raise ValueError("context_size must be positive")
     return args
 
 
@@ -1004,6 +1039,7 @@ def resolve_preprocessing_settings(args):
 
 def build_stock_commands(args, stock, seed=None, strategy=None, results_dir=None):
     commands = []
+    evaluation_split = getattr(args, "evaluation_split", "test")
     seed = resolve_seeds(args)[0] if seed is None else seed
     if strategy is None:
         strategies = resolve_mask_strategies(args)
@@ -1156,6 +1192,15 @@ def build_stock_commands(args, stock, seed=None, strategy=None, results_dir=None
                 if getattr(args, "forecast_horizon", None) is not None
                 else []
             ),
+            *(
+                ["--context-size", str(args.context_size)]
+                if getattr(args, "context_size", None) is not None
+                else []
+            ),
+            "--evaluation-split",
+            evaluation_split,
+            "--experiment-config-signature",
+            experiment_config_signature(vars(args)),
             *preprocessing_args,
             "--num_epochs",
             str(args.eval_num_epochs),

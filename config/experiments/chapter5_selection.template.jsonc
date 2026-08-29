@@ -1,0 +1,74 @@
+{
+  // Copy this file, replace the example candidate paths, and keep this stage order.
+  "schema_version": 1,
+  "selection_id": "chapter5_main",
+  "stages": [
+    {
+      "name": "preprocessing_normalization",
+      "candidates": [
+        {
+          "id": "preprocessing_window_return",
+          "config": "chapter5_candidates/preprocessing_window_return.json",
+          "validation_root": "../../results/preprocessing_window_return/random",
+          "strategy": "random"
+        },
+        {
+          "id": "preprocessing_train_zscore",
+          "config": "chapter5_candidates/preprocessing_train_zscore.json",
+          "validation_root": "../../results/preprocessing_train_zscore/random",
+          "strategy": "random"
+        }
+      ]
+    },
+    {
+      "name": "sentiment",
+      "candidates": [
+        {
+          "id": "sentiment_excluded",
+          "parent_candidate_id": "preprocessing_window_return",
+          "config": "chapter5_candidates/sentiment_excluded.json",
+          "validation_root": "../../results/sentiment_excluded/random",
+          "strategy": "random"
+        },
+        {
+          "id": "sentiment_included",
+          "parent_candidate_id": "preprocessing_window_return",
+          "config": "chapter5_candidates/sentiment_included.json",
+          "validation_root": "../../results/sentiment_included/random",
+          "strategy": "random"
+        }
+      ]
+    },
+    {
+      "name": "historical_context",
+      "candidates": [
+        {
+          "id": "context_12_patches",
+          "parent_candidate_id": "sentiment_included",
+          "config": "chapter5_candidates/context_12_patches.json",
+          "validation_root": "../../results/context_12_patches/random",
+          "strategy": "random"
+        }
+      ]
+    },
+    {
+      "name": "architecture_objective",
+      "candidates": [
+        {
+          "id": "shared_target_jepa_mae",
+          "parent_candidate_id": "context_12_patches",
+          "config": "chapter5_candidates/shared_target_jepa_mae.json",
+          "validation_root": "../../results/shared_target_jepa_mae/random",
+          "strategy": "random"
+        },
+        {
+          "id": "local_mae_long_jepa",
+          "parent_candidate_id": "context_12_patches",
+          "config": "chapter5_candidates/local_mae_long_jepa.json",
+          "validation_root": "../../results/local_mae_long_jepa/local_long",
+          "strategy": "local_long"
+        }
+      ]
+    }
+  ]
+}

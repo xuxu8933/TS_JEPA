@@ -613,6 +613,8 @@ def build_eval_argv(args, passthrough_args):
         "eval_forecast_prequential_with_baselines_gru_volume.py",
         "--data",
         str(args.data),
+        "--mask-strategy",
+        str(args.mask_strategy),
         "--checkpoint_to_use",
         str(checkpoint_epoch),
         "--pretrain_checkpoint_path",

@@ -20,6 +20,7 @@ import json
 import platform
 import subprocess
 from datetime import datetime
+from pathlib import Path
 import imageio.v2 as imageio
 
 from main.utils import mae, mse, ordered_scalar_mean, prepare_args
@@ -113,6 +114,67 @@ def runtime_provenance():
         "cuda_version": torch.version.cuda,
         "hardware": hardware,
     }
+
+
+def choose_evaluation_loader(evaluation_split, validation_loader, test_loader_factory):
+    """Return validation directly; construct the test loader only for final test."""
+    if evaluation_split == "validation":
+        return validation_loader
+    if evaluation_split == "test":
+        return test_loader_factory()
+    raise ValueError(
+        "evaluation_split must be 'validation' or 'test', got "
+        f"{evaluation_split!r}"
+    )
+
+
+def build_downstream_metrics_artifact(
+    *,
+    split,
+    config_signature,
+    stock,
+    seed,
+    strategy,
+    metrics,
+):
+    """Build the strict machine-readable result consumed by Chapter 5 selection."""
+    if split not in ("validation", "test"):
+        raise ValueError(f"Unsupported downstream metrics split: {split!r}")
+    required_metrics = ("mse", "mae", "direction_accuracy")
+    missing = [name for name in required_metrics if name not in metrics]
+    if missing:
+        raise ValueError(f"Missing downstream metrics: {missing}")
+    return {
+        "artifact_type": "downstream_forecast_metrics",
+        "schema_version": 1,
+        "artifact_filename": f"{split}_metrics.json",
+        "split": split,
+        "model": "TS-JEPA",
+        "config_signature": str(config_signature or ""),
+        "stock": str(stock).upper(),
+        "seed": int(seed),
+        "strategy": str(strategy),
+        "metrics": {
+            name: float(metrics[name])
+            for name in required_metrics
+        },
+    }
+
+
+def write_downstream_metrics_artifact(results_dir, artifact):
+    """Atomically write a validation or test metrics artifact."""
+    output_dir = Path(results_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    filename = artifact.get("artifact_filename")
+    if filename not in ("validation_metrics.json", "test_metrics.json"):
+        raise ValueError(f"Invalid downstream artifact filename: {filename!r}")
+    path = output_dir / filename
+    temporary = path.with_name(path.name + ".tmp")
+    with temporary.open("w", encoding="utf-8") as handle:
+        json.dump(artifact, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    temporary.replace(path)
+    return path
 
 
 # =========================================================
@@ -2124,46 +2186,61 @@ if __name__ == "__main__":
         data_end_date=data_end_date,
     )
 
-    test_loader = get_evaluation_loaders(
-        config["path_data"],
-        config["batch_size"],
-        split="test",
-        patch_size=patch_size,
-        forecast_horizon=forecast_horizon,
-        context_size=context_size,
-        stride=eval_stride,
-        sampling_mode=sampling_mode,
-        normalization=normalization,
-        normalization_stats=normalization_stats,
-        sentiment_normalization=sentiment_normalization,
-        sentiment_normalization_stats=sentiment_normalization_stats,
-        feature_transform=feature_transform,
-        market_data=market_data,
-        robust_zscore_clip=robust_zscore_clip,
-        feature_cols=feature_cols,
-        target_col=target_col,
-        forecast_target=forecast_target,
-        timestamp_col=timestamp_col,
-        sentiment_path=sentiment_path,
-        validation_fraction=validation_fraction,
-        train_end_date=train_end_date,
-        test_start_date=test_start_date,
-        data_end_date=data_end_date,
-    )
+    def build_test_loader():
+        return get_evaluation_loaders(
+            config["path_data"],
+            config["batch_size"],
+            split="test",
+            patch_size=patch_size,
+            forecast_horizon=forecast_horizon,
+            context_size=context_size,
+            stride=eval_stride,
+            sampling_mode=sampling_mode,
+            normalization=normalization,
+            normalization_stats=normalization_stats,
+            sentiment_normalization=sentiment_normalization,
+            sentiment_normalization_stats=sentiment_normalization_stats,
+            feature_transform=feature_transform,
+            market_data=market_data,
+            robust_zscore_clip=robust_zscore_clip,
+            feature_cols=feature_cols,
+            target_col=target_col,
+            forecast_target=forecast_target,
+            timestamp_col=timestamp_col,
+            sentiment_path=sentiment_path,
+            validation_fraction=validation_fraction,
+            train_end_date=train_end_date,
+            test_start_date=test_start_date,
+            data_end_date=data_end_date,
+        )
 
-    preprocessing_metadata.update(
-        {
-            "test_sample_count": len(test_loader.dataset),
-            "test_target_start": _maybe_get_dataset_date(
-                test_loader.dataset, 0, 0
-            ),
-            "test_target_end": _maybe_get_dataset_date(
-                test_loader.dataset,
-                len(test_loader.dataset) - 1,
-                forecast_horizon - 1,
-            ),
-        }
+    evaluation_split = config.get("evaluation_split", "test")
+    evaluation_loader = choose_evaluation_loader(
+        evaluation_split,
+        val_loader,
+        build_test_loader,
     )
+    evaluation_metadata = {
+        "evaluation_split": evaluation_split,
+        "evaluation_sample_count": len(evaluation_loader.dataset),
+        "evaluation_target_start": _maybe_get_dataset_date(
+            evaluation_loader.dataset, 0, 0
+        ),
+        "evaluation_target_end": _maybe_get_dataset_date(
+            evaluation_loader.dataset,
+            len(evaluation_loader.dataset) - 1,
+            forecast_horizon - 1,
+        ),
+    }
+    if evaluation_split == "test":
+        evaluation_metadata.update(
+            {
+                "test_sample_count": evaluation_metadata["evaluation_sample_count"],
+                "test_target_start": evaluation_metadata["evaluation_target_start"],
+                "test_target_end": evaluation_metadata["evaluation_target_end"],
+            }
+        )
+    preprocessing_metadata.update(evaluation_metadata)
     with open(metadata_path, "w") as metadata_file:
         json.dump(preprocessing_metadata, metadata_file, indent=2, sort_keys=True)
 
@@ -2560,14 +2637,14 @@ if __name__ == "__main__":
     print("GRU baseline training finished")
 
     # =========================
-    # Final test on future test split
+    # Split-specific downstream evaluation after validation checkpoint selection
     # =========================
 
     test_mse, test_mae, all_preds, all_targets, forecast_csv_path, score_csv_path = (
         prequential_rolling_evaluate(
             encoder=encoder,
             decoder=decoder,
-            dataset=test_loader.dataset,
+            dataset=evaluation_loader.dataset,
             device=device,
             eval_type=config["eval_type"],
             config=config,
@@ -2581,18 +2658,19 @@ if __name__ == "__main__":
         include_origin=forecast_target == "relative_return",
         direct_return=forecast_target
         in ("cumulative_log_return", "excess_log_return"),
-        origins=dataset_value_forecast_origins(test_loader.dataset, config),
+        origins=dataset_value_forecast_origins(evaluation_loader.dataset, config),
     )
 
-    print(f"========== Final Test ({data_title(config)}) ==========")
-    print("TS-JEPA Test MSE is: {:.6f}".format(test_mse))
-    print("TS-JEPA Test MAE is: {:.6f}".format(test_mae))
+    evaluation_label = "Validation Selection" if evaluation_split == "validation" else "Final Test"
+    print(f"========== {evaluation_label} ({data_title(config)}) ==========")
+    print("TS-JEPA MSE is: {:.6f}".format(test_mse))
+    print("TS-JEPA MAE is: {:.6f}".format(test_mae))
     print("TS-JEPA Trend Accuracy is: {:.4f}".format(trend_accuracy))
 
     gru_test_mse, gru_test_mae, gru_preds, gru_targets, _, _ = (
         prequential_gru_evaluate(
             model=gru_model,
-            dataset=test_loader.dataset,
+            dataset=evaluation_loader.dataset,
             device=device,
             config=config,
             save_dir=results_dir,
@@ -2605,12 +2683,12 @@ if __name__ == "__main__":
         include_origin=forecast_target == "relative_return",
         direct_return=forecast_target
         in ("cumulative_log_return", "excess_log_return"),
-        origins=dataset_value_forecast_origins(test_loader.dataset, config),
+        origins=dataset_value_forecast_origins(evaluation_loader.dataset, config),
     )
 
-    print(f"========== GRU Final Test ({data_title(config)}) ==========")
-    print("GRU Test MSE is: {:.6f}".format(gru_test_mse))
-    print("GRU Test MAE is: {:.6f}".format(gru_test_mae))
+    print(f"========== GRU {evaluation_label} ({data_title(config)}) ==========")
+    print("GRU MSE is: {:.6f}".format(gru_test_mse))
+    print("GRU MAE is: {:.6f}".format(gru_test_mae))
     print("GRU Trend Accuracy is: {:.4f}".format(gru_trend_accuracy))
 
     # =========================
@@ -2619,7 +2697,7 @@ if __name__ == "__main__":
 
     baseline_summary_rows, baseline_preds, baseline_targets, _, _, _ = (
         prequential_baseline_evaluate(
-            dataset=test_loader.dataset,
+            dataset=evaluation_loader.dataset,
             config=config,
             baseline_names=config.get(
                 "baseline_names",
@@ -2649,6 +2727,24 @@ if __name__ == "__main__":
             "trend_accuracy": gru_trend_accuracy,
         },
     ] + baseline_summary_rows
+
+    metrics_artifact = build_downstream_metrics_artifact(
+        split=evaluation_split,
+        config_signature=config.get("experiment_config_signature"),
+        stock=config["data"],
+        seed=config["seed"],
+        strategy=config.get("mask_strategy", "random"),
+        metrics={
+            "mse": test_mse,
+            "mae": test_mae,
+            "direction_accuracy": trend_accuracy,
+        },
+    )
+    metrics_artifact_path = write_downstream_metrics_artifact(
+        results_dir,
+        metrics_artifact,
+    )
+    print(f"Downstream {evaluation_split} metrics saved to: {metrics_artifact_path}")
 
     comparison_paths = save_model_comparison(
         model_rows=model_comparison_rows,
@@ -2752,7 +2848,7 @@ if __name__ == "__main__":
     visualize_all_rolling_windows(
         encoder=encoder,
         decoder=decoder,
-        dataset=test_loader.dataset,
+        dataset=evaluation_loader.dataset,
         device=device,
         eval_type=config["eval_type"],
         config=config,

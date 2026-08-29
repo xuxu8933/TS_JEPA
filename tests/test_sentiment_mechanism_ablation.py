@@ -2,6 +2,7 @@ import inspect
 import io
 import json
 import math
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -559,6 +560,13 @@ class ConfigIsolationTest(unittest.TestCase):
 class DryRunSafetyTest(unittest.TestCase):
     def test_reports_exact_structured_values_for_all_configs(self):
         repo_root = Path(__file__).resolve().parents[1]
+        expected_branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         expected = ConfigIsolationTest.EXPECTED
         for filename, (horizon, features, dimension) in expected.items():
             with self.subTest(config=filename):
@@ -579,7 +587,7 @@ class DryRunSafetyTest(unittest.TestCase):
                     stock_runner.resolve_mask_strategies(args),
                 )
                 self.assertEqual(report["experiment_name"], Path(filename).stem)
-                self.assertEqual(report["git_branch"], "single-dim")
+                self.assertEqual(report["git_branch"], expected_branch)
                 self.assertEqual(report["stock_count"], 10)
                 self.assertEqual(report["stocks"], ConfigIsolationTest.EXPECTED_STOCKS)
                 self.assertEqual(report["seed_count"], 10)
