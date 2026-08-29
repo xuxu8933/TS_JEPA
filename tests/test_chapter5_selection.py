@@ -147,19 +147,23 @@ class DownstreamSplitTest(unittest.TestCase):
         self.assertEqual(saved, artifact)
 
     def test_unified_wrapper_forwards_split_identity_and_strategy(self):
-        args, passthrough = parse_eval_args(
-            argv=[
-                "--data",
-                "NVDA",
-                "--mask-strategy",
-                "local_long",
-                "--evaluation-split",
-                "validation",
-                "--experiment-config-signature",
-                "a" * 64,
-            ]
-        )
-        argv, _ = build_eval_argv(args, passthrough)
+        with tempfile.TemporaryDirectory() as tmp:
+            explicit_checkpoint = Path(tmp) / "fixture_checkpoint.pt"
+            args, passthrough = parse_eval_args(
+                argv=[
+                    "--data",
+                    "NVDA",
+                    "--mask-strategy",
+                    "local_long",
+                    "--pretrain-checkpoint-path",
+                    str(explicit_checkpoint),
+                    "--evaluation-split",
+                    "validation",
+                    "--experiment-config-signature",
+                    "a" * 64,
+                ]
+            )
+            argv, _ = build_eval_argv(args, passthrough)
 
         self.assertEqual(argv[argv.index("--mask-strategy") + 1], "local_long")
         self.assertEqual(
