@@ -269,6 +269,7 @@ does not apply to that stage. Defaults below are the repository values in
 | `trend_weight` | Training | float | — | `0.001` | Directional auxiliary loss weight | Methodological |
 | `forecast_target` | Evaluation | str | — | `value` | Downstream label definition | Methodological |
 | `forecast_horizon` | Evaluation | int/null | — | `null` → `patch_size` | Independent downstream target/output width | Methodological |
+| `evaluation_split` | Evaluation | str | — | `test` | `validation` for candidate selection or `test` for the frozen final run | Experimental protocol |
 | `eval_forecast_target` | Evaluation | str | `relative_return` | — | Target used by automatic post-pretrain evaluation | Methodological |
 | `eval_type` | Evaluation | str | — | `last` | Context pooling rule | Methodological |
 | `run_eval` | Evaluation | bool | `true` | — | Run downstream evaluation after pretraining | Runtime |
@@ -303,6 +304,10 @@ does not apply to that stage. Defaults below are the repository values in
 - Validation and test reuse normalization statistics fitted only on the
   chronological training split. The final test period is never used for
   fitting, early stopping, or configuration selection.
+- Chapter 5 candidate configs use `evaluation_split=validation` and
+  `checkpoint.selection.mode=best`. The selector consumes only
+  `validation_metrics.json`; the emitted frozen config switches to
+  `evaluation_split=test` for the single held-out evaluation.
 
 ## Compatibility behavior
 

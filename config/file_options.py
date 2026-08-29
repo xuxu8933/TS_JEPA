@@ -11,7 +11,7 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 compatibility
     tomllib = None
 
 
-CONFIG_SECTIONS = ("common", "runner", "analysis")
+CONFIG_SECTIONS = ("common", "runner", "analysis", "provenance")
 COMMON_ONLY_OPTIONS = frozenset(("stocks", "seeds"))
 DERIVED_CONFIG_OPTIONS = frozenset(("results_dir",))
 RUNNER_GROUPS = frozenset(
@@ -531,7 +531,7 @@ def flatten_runner_options(runner, config_path):
         )
         _validate_keys(
             downstream,
-            {"epochs", "forecast_horizon"},
+            {"epochs", "forecast_horizon", "context_size", "evaluation_split"},
             "[runner].downstream",
             config_path,
             required=("epochs",),
@@ -539,6 +539,10 @@ def flatten_runner_options(runner, config_path):
         flattened["eval_num_epochs"] = downstream["epochs"]
         if "forecast_horizon" in downstream:
             flattened["forecast_horizon"] = downstream["forecast_horizon"]
+        if "context_size" in downstream:
+            flattened["context_size"] = downstream["context_size"]
+        if "evaluation_split" in downstream:
+            flattened["evaluation_split"] = downstream["evaluation_split"]
 
     if "output" in runner:
         output = _config_object(runner["output"], "[runner].output", config_path)

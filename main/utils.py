@@ -119,6 +119,22 @@ def prepare_args(config):
         help="Chronological stride between downstream evaluation samples.",
     )
     parser.add_argument(
+        "--evaluation-split",
+        choices=("validation", "test"),
+        default=config.get("evaluation_split", "test"),
+        help="Holdout split used only after downstream checkpoint selection.",
+    )
+    parser.add_argument(
+        "--experiment-config-signature",
+        default=config.get("experiment_config_signature"),
+        help="Runner configuration signature recorded in metrics artifacts.",
+    )
+    parser.add_argument(
+        "--mask-strategy",
+        choices=("random", "local_long", "future_block", "causal_multiblock"),
+        default=config.get("mask_strategy", "random"),
+    )
+    parser.add_argument(
         "--target_feature_index",
         "--target-feature-index",
         dest="target_feature_index",
@@ -381,6 +397,9 @@ def prepare_args(config):
     )
     config["context_size"] = args.context_size
     config["eval_stride"] = args.eval_stride
+    config["evaluation_split"] = args.evaluation_split
+    config["experiment_config_signature"] = args.experiment_config_signature
+    config["mask_strategy"] = args.mask_strategy
     config["target_feature_index"] = args.target_feature_index
     config["target_col"] = args.target_col
     config["forecast_target"] = args.forecast_target
