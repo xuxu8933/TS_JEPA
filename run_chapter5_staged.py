@@ -13,6 +13,7 @@ from typing import Any, Callable, Sequence
 from chapter5_prepare_candidates import materialize_candidates
 from chapter5_selection import main as run_selection
 from run_top_nasdaq100_stocks import (
+    experiment_config_signature,
     parse_args as parse_runner_args,
     resolve_mask_strategies,
     strategy_results_dir,
@@ -138,9 +139,29 @@ def _select_stage(
 def _run_candidates(
     paths: Sequence[Path],
     candidate_executor: CandidateExecutor,
-) -> None:
+    parent_entry: dict[str, Any] | None = None,
+) -> dict[Path, str]:
+    reused = {}
+    parent_signature = None
+    if parent_entry is not None:
+        parent_args = parse_runner_args(["--config", parent_entry["config"]])
+        parent_signature = experiment_config_signature(parent_args)
     for path in paths:
+        args = parse_runner_args(["--config", str(Path(path).resolve())])
+        if experiment_config_signature(args) == parent_signature:
+            reused[Path(path).resolve()] = parent_entry["validation_root"]
+            continue
         candidate_executor(path, dry_run=False)
+    return reused
+
+
+def _apply_reused_roots(
+    entries: Sequence[dict[str, Any]], reused: dict[Path, str]
+) -> None:
+    for entry in entries:
+        root = reused.get(Path(entry["config"]).resolve())
+        if root is not None:
+            entry["validation_root"] = root
 
 
 def run_complete_process(
@@ -183,7 +204,14 @@ def run_complete_process(
         stage_one_parent,
         resolved_candidate_dir,
     )
-    _run_candidates(sentiment_paths, candidate_executor)
+    stage_one_selected = next(
+        entry
+        for entry in stage_one_entries
+        if entry["id"] == stage_one_parent
+    )
+    reused = _run_candidates(
+        sentiment_paths, candidate_executor, stage_one_selected
+    )
     sentiment_entries = [
         _candidate_entry(
             candidate_id,
@@ -193,6 +221,7 @@ def run_complete_process(
         )
         for candidate_id, path in zip(SENTIMENT_IDS, sentiment_paths)
     ]
+    _apply_reused_roots(sentiment_entries, reused)
     sentiment_stage = {"name": "sentiment", "candidates": sentiment_entries}
     stage_two_summary, stage_two_output = _select_stage(
         resolved_artifacts,
@@ -210,7 +239,14 @@ def run_complete_process(
         stage_two_parent,
         resolved_candidate_dir,
     )
-    _run_candidates(architecture_paths, candidate_executor)
+    stage_two_selected = next(
+        entry
+        for entry in sentiment_entries
+        if entry["id"] == stage_two_parent
+    )
+    reused = _run_candidates(
+        architecture_paths, candidate_executor, stage_two_selected
+    )
     architecture_entries = [
         _candidate_entry(
             candidate_id,
@@ -224,6 +260,7 @@ def run_complete_process(
             architecture_paths,
         )
     ]
+    _apply_reused_roots(architecture_entries, reused)
     architecture_stage = {
         "name": "architecture_context",
         "candidates": architecture_entries,

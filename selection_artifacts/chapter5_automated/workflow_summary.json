@@ -1,0 +1,14 @@
+{
+  "artifact_type": "chapter5_automated_workflow",
+  "schema_version": 1,
+  "selected_candidate_id": "shared_context_6",
+  "selected_config": "/home/xujiang/TS_JEPA/selection_artifacts/chapter5_automated/final/selected_config.json",
+  "selection_summary": "/home/xujiang/TS_JEPA/selection_artifacts/chapter5_automated/final/selection_summary.json",
+  "stage_winners": [
+    "preprocessing_window_return",
+    "sentiment_included",
+    "shared_context_6"
+  ],
+  "test_evaluation_performed": true,
+  "validation_candidate_count": 10
+}

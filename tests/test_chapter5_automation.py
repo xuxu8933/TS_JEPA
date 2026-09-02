@@ -144,7 +144,7 @@ class Chapter5CompleteAutomationTest(unittest.TestCase):
                     )
                     return
 
-                mse = scores[config_path.stem]
+                rmse = scores[config_path.stem]
                 signature = experiment_config_signature(args)
                 for strategy in resolve_mask_strategies(args):
                     validation_root = strategy_results_dir(args, strategy)
@@ -159,9 +159,8 @@ class Chapter5CompleteAutomationTest(unittest.TestCase):
                                 seed=seed,
                                 strategy=strategy,
                                 metrics={
-                                    "mse": mse,
-                                    "mae": mse + 0.1,
-                                    "direction_accuracy": 1.0 - mse,
+                                    "rmse": rmse,
+                                    "direction_accuracy": 1.0 - rmse,
                                 },
                             )
                             write_downstream_metrics_artifact(
@@ -181,14 +180,25 @@ class Chapter5CompleteAutomationTest(unittest.TestCase):
                 [
                     "01_preprocessing_window_return",
                     "01_preprocessing_train_zscore",
-                    "02_sentiment_excluded",
                     "02_sentiment_included",
                     "03_shared_context_6_patches",
-                    "03_shared_context_12_patches",
                     "03_shared_context_24_patches",
                     "03_local_long_context_6_patches",
                     "03_local_long_context_12_patches",
                     "03_local_long_context_24_patches",
+                ],
+            )
+            stage_two_manifest = json.loads(
+                (artifacts_dir / "stage2" / "selection_manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(
+                stage_two_manifest["stages"][1]["candidates"][0][
+                    "validation_root"
+                ],
+                stage_two_manifest["stages"][0]["candidates"][0][
+                    "validation_root"
                 ],
             )
             self.assertEqual(calls[-1], ("selected_config", "test"))

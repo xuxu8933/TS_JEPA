@@ -25,8 +25,8 @@
       }
     },
     "objectives": {
-      "jepa": {"weight": 2.0, "loss": "mse"},
-      "mae": {"weight": 0.0, "loss": "mse"}
+      "jepa": {"weight": 2.0, "loss": "rmse"},
+      "mae": {"weight": 0.0, "loss": "rmse"}
     },
     "pretraining": {
       "skip": false,

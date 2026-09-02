@@ -1,0 +1,90 @@
+{
+  "batch_size": 32,
+  "checkpoint_epoch": 1440,
+  "checkpoint_path": "./logs/output_model/NVDA/lr_1e-05_ema_momentum_0.998_mask_ratio_0.7_ratio_patches_10_encoder_256_2_1_predictor_128_2_1_dual_jepa_mae_ljepa_1.0_lmae_0.5_cfg_53257384eb56_best.pt",
+  "checkpoint_selection": "best_pretraining_validation",
+  "context_size": 6,
+  "cuda_version": "13.0",
+  "direction_accuracy_definition": "sign of consecutive forecast-horizon differences equals sign of consecutive target differences; relative-return paths include the known zero origin; one-step value forecasts compare movement from the final observed context value; cumulative/excess log-return targets compare the binary indicators (forecast > 0) and (target > 0) at each horizon",
+  "downstream_epochs": 501,
+  "encoder_finetune_lr": 1e-05,
+  "encoder_weight_source": "ema",
+  "eval_stride": 5,
+  "evaluation_sample_count": 50,
+  "evaluation_split": "test",
+  "evaluation_target_end": "2025-12-31T00:00:00",
+  "evaluation_target_start": "2025-01-02T00:00:00",
+  "feature_names": [
+    "Close",
+    "Volume",
+    "MA10",
+    "MA50",
+    "sentiment_mean"
+  ],
+  "feature_transform": "raw",
+  "fine_tune_encoder": true,
+  "forecast_head_lr": 0.001,
+  "forecast_horizon": 5,
+  "forecast_horizons": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "forecast_target": "relative_return",
+  "git_commit_sha": "3ff0ad5e2f0871b0066fc164a44dc14930978329",
+  "hardware": "Linux-7.0.0-30-generic-x86_64-with-glibc2.39; GPU=NVIDIA GeForce RTX 3060",
+  "market_alignment_report": null,
+  "market_data": null,
+  "market_features": [
+    "Close",
+    "Volume",
+    "MA10",
+    "MA50"
+  ],
+  "metric_definition": "RMSE over every saved rolling-step/horizon target value",
+  "normalization": "window_return",
+  "normalization_fit_split": "train",
+  "normalization_stats": {
+    "feature_cols": [
+      "Close",
+      "Volume",
+      "MA10",
+      "MA50",
+      "sentiment_mean"
+    ],
+    "mode": "window_return"
+  },
+  "patch_size": 5,
+  "python_version": "3.11.15",
+  "pytorch_version": "2.11.0+cu130",
+  "robust_zscore_clip": null,
+  "sampling_mode": "sliding_window",
+  "sentiment_features": [
+    "sentiment_mean"
+  ],
+  "sentiment_normalization": "none",
+  "sentiment_normalization_stats": null,
+  "target_definition": "Close[t+h] / Close[t] - 1",
+  "test_end": "2026-01-01",
+  "test_sample_count": 50,
+  "test_start": "2025-01-01",
+  "test_target_end": "2025-12-31T00:00:00",
+  "test_target_start": "2025-01-02T00:00:00",
+  "train_end": "2024-12-31",
+  "trend_loss_temperature": 0.01,
+  "trend_loss_threshold": 1e-05,
+  "trend_selection_weight": 0.0005,
+  "trend_weight": 0.001,
+  "use_sentiment": true,
+  "validation_fraction": 0.05,
+  "warmup_report": {
+    "ma50_warmup": 49,
+    "other_required_transformations": 0,
+    "return_5_warmup": 0,
+    "total_rows_removed": 49,
+    "volatility_20_warmup": 0
+  },
+  "window_length": 30
+}

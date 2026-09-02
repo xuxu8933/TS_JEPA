@@ -826,11 +826,11 @@ def evaluate_mnist_rows(args, checkpoint_path):
                         )
                     )
 
-    model_mse = model_squared_error / value_count
-    naive_mse = naive_squared_error / value_count
+    model_rmse = (model_squared_error / value_count) ** 0.5
+    naive_rmse = (naive_squared_error / value_count) ** 0.5
     result = {
-        "model_mse": model_mse,
-        "naive_mse": naive_mse,
+        "model_rmse": model_rmse,
+        "naive_rmse": naive_rmse,
         "inputs": np.stack([example[0] for example in examples]),
         "reconstructions": np.stack([example[1] for example in examples]),
         "naive_reconstructions": np.stack([example[2] for example in examples]),
@@ -844,13 +844,13 @@ def evaluate_mnist_rows(args, checkpoint_path):
         print("Predictions:", output_path)
 
     print(
-        f"MNIST rows: model_mse={model_mse:.6f}, "
-        f"naive_previous_row_mse={naive_mse:.6f}"
+        f"MNIST rows: model_rmse={model_rmse:.6f}, "
+        f"naive_previous_row_rmse={naive_rmse:.6f}"
     )
-    if args.require_better_than_naive and model_mse >= naive_mse:
+    if args.require_better_than_naive and model_rmse >= naive_rmse:
         raise AssertionError(
             f"MNIST row reconstruction did not beat previous-row copying: "
-            f"{model_mse:.6f} >= {naive_mse:.6f}"
+            f"{model_rmse:.6f} >= {naive_rmse:.6f}"
         )
     return result
 

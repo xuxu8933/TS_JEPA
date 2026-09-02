@@ -108,8 +108,7 @@ def load_rows(results_dir, stock_order, models, seeds=None):
                         {
                             "stock": stock,
                             "model": row["model"],
-                            "mse": float(row["mse"]),
-                            "mae": float(row["mae"]),
+                            "rmse": float(row["rmse"]),
                             "trend_accuracy": float(row["trend_accuracy"]),
                             "source_file": str(csv_path),
                         }
@@ -122,17 +121,15 @@ def load_rows(results_dir, stock_order, models, seeds=None):
     aggregated = (
         raw.groupby(["stock", "model"], as_index=False)
         .agg(
-            mse=("mse", "mean"),
-            mse_std=("mse", "std"),
-            mae=("mae", "mean"),
-            mae_std=("mae", "std"),
+            rmse=("rmse", "mean"),
+            rmse_std=("rmse", "std"),
             trend_accuracy=("trend_accuracy", "mean"),
             trend_accuracy_std=("trend_accuracy", "std"),
             num_runs=("source_file", "count"),
             source_files=("source_file", lambda values: ";".join(sorted(values))),
         )
     )
-    std_columns = ["mse_std", "mae_std", "trend_accuracy_std"]
+    std_columns = ["rmse_std", "trend_accuracy_std"]
     aggregated[std_columns] = aggregated[std_columns].fillna(0.0)
     return aggregated
 
@@ -213,7 +210,7 @@ def plot_metric(
 
 
 def save_combined_plot(df, stock_order, models, output_path, figure_title):
-    fig, axes = plt.subplots(3, 1, figsize=(14, 13), sharex=False)
+    fig, axes = plt.subplots(2, 1, figsize=(14, 9), sharex=False)
     fig.suptitle(
         figure_title,
         fontsize=16,
@@ -225,19 +222,9 @@ def save_combined_plot(df, stock_order, models, output_path, figure_title):
         df,
         stock_order,
         models,
-        "mse",
-        "MSE",
-        "Mean Squared Error (lower is better)",
-        model_colors=MODEL_COLORS,
-    )
-    plot_metric(
-        axes[1],
-        df,
-        stock_order,
-        models,
-        "mae",
-        "MAE",
-        "Mean Absolute Error (lower is better)",
+        "rmse",
+        "RMSE",
+        "Root Mean Squared Error (lower is better)",
         model_colors=MODEL_COLORS,
     )
     trend_models = [
@@ -246,7 +233,7 @@ def save_combined_plot(df, stock_order, models, output_path, figure_title):
         if model not in {"naive_last", "mean_context"}
     ]
     plot_metric(
-        axes[2],
+        axes[1],
         df,
         stock_order,
         trend_models,
@@ -267,7 +254,7 @@ def save_combined_plot(df, stock_order, models, output_path, figure_title):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Combine MSE, MAE, and trend accuracy for stock comparison runs."
+        description="Combine RMSE and trend accuracy for stock comparison runs."
     )
     parser.add_argument("--results-dir", default="./results")
     parser.add_argument("--output-dir", default="./results")

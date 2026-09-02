@@ -119,7 +119,7 @@ class NormalizationPilotResultMetadataTest(unittest.TestCase):
         "forecast_target": "relative_return",
         "target_definition": "Close[t+h] / Close[t] - 1",
         "metric_definition": (
-            "MSE and MAE over every saved rolling-step/horizon target value"
+            "RMSE over every saved rolling-step/horizon target value"
         ),
         "forecast_horizon": 5,
         "test_sample_count": 38,

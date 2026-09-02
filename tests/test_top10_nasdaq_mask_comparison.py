@@ -77,7 +77,7 @@ class StockMaskComparisonTest(unittest.TestCase):
         txt_path = run_dir / "last_model_comparison_20260101_000000.txt"
         txt_path.write_text(f"Data source: {stock}\n")
         txt_path.with_suffix(".csv").write_text(
-            "model,mse,mae,trend_accuracy\nTS-JEPA,0.1,0.2,0.6\n"
+            "model,rmse,trend_accuracy\nTS-JEPA,0.1,0.6\n"
         )
         return run_dir
 
@@ -425,7 +425,7 @@ class StockMaskComparisonTest(unittest.TestCase):
                 txt_path = run_dir / "last_model_comparison_20260101_000000.txt"
                 txt_path.write_text("Data source: QUIET\n")
                 txt_path.with_suffix(".csv").write_text(
-                    "model,mse,mae,trend_accuracy\nTS-JEPA,0.1,0.2,0.6\n"
+                    "model,rmse,trend_accuracy\nTS-JEPA,0.1,0.6\n"
                 )
 
             output = io.StringIO()
@@ -1135,14 +1135,14 @@ class StockMaskComparisonTest(unittest.TestCase):
     def test_collect_and_aggregate_calculates_sample_standard_deviation(self):
         with tempfile.TemporaryDirectory() as tmp:
             results_dir = Path(tmp)
-            for seed, mse in ((1, 0.1), (2, 0.3)):
+            for seed, rmse in ((1, 0.1), (2, 0.3)):
                 run_dir = results_dir / "NVDA" / f"seed_{seed}"
                 run_dir.mkdir(parents=True)
                 txt_path = run_dir / "last_model_comparison_20260101_000000.txt"
                 txt_path.write_text("Data source: NVDA\n")
                 txt_path.with_suffix(".csv").write_text(
-                    "model,mse,mae,trend_accuracy\n"
-                    f"TS-JEPA,{mse},{mse + 0.1},0.6\n"
+                    "model,rmse,trend_accuracy\n"
+                    f"TS-JEPA,{rmse},0.6\n"
                 )
 
             raw = collect_raw_results(
@@ -1157,9 +1157,9 @@ class StockMaskComparisonTest(unittest.TestCase):
             )
 
         self.assertEqual(int(summary.iloc[0]["num_runs"]), 2)
-        self.assertAlmostEqual(float(summary.iloc[0]["mse_mean"]), 0.2)
+        self.assertAlmostEqual(float(summary.iloc[0]["rmse_mean"]), 0.2)
         self.assertAlmostEqual(
-            float(summary.iloc[0]["mse_std"]),
+            float(summary.iloc[0]["rmse_std"]),
             0.1414213562,
         )
 
@@ -1171,33 +1171,32 @@ class StockMaskComparisonTest(unittest.TestCase):
                     "stock": stock,
                     "seed": seed,
                     "model": "TS-JEPA",
-                    "mse": mse,
-                    "mae": mse,
-                    "trend_accuracy": mse,
+                    "rmse": rmse,
+                    "trend_accuracy": rmse,
                 }
                 for seed, stock_values in (
                     (1, (("NVDA", 0.1), ("AAPL", 0.9))),
                     (2, (("NVDA", 0.3), ("AAPL", 1.1))),
                 )
-                for stock, mse in stock_values
+                for stock, rmse in stock_values
             ]
         )
 
         per_run, overall = aggregate_strategy_runs(raw)
 
-        self.assertAlmostEqual(float(per_run.iloc[0]["mse"]), 0.5)
-        self.assertAlmostEqual(float(per_run.iloc[1]["mse"]), 0.7)
+        self.assertAlmostEqual(float(per_run.iloc[0]["rmse"]), 0.5)
+        self.assertAlmostEqual(float(per_run.iloc[1]["rmse"]), 0.7)
         self.assertEqual(int(overall.iloc[0]["num_runs"]), 2)
-        self.assertAlmostEqual(float(overall.iloc[0]["mse_mean"]), 0.6)
+        self.assertAlmostEqual(float(overall.iloc[0]["rmse_mean"]), 0.6)
         self.assertAlmostEqual(
-            float(overall.iloc[0]["mse_std"]),
+            float(overall.iloc[0]["rmse_std"]),
             0.1414213562,
         )
 
     def test_standalone_analyzer_writes_paired_strategy_outputs(self):
         with tempfile.TemporaryDirectory() as tmp:
             results_dir = Path(tmp)
-            for strategy, mse, trend in (
+            for strategy, rmse, trend in (
                 ("random", 0.1, 0.55),
                 ("local_long", 0.2, 0.65),
             ):
@@ -1206,8 +1205,8 @@ class StockMaskComparisonTest(unittest.TestCase):
                 txt_path = run_dir / "last_model_comparison_20260101_000000.txt"
                 txt_path.write_text("Data source: NVDA\n")
                 txt_path.with_suffix(".csv").write_text(
-                    "model,mse,mae,trend_accuracy\n"
-                    f"TS-JEPA,{mse},{mse},{trend}\n"
+                    "model,rmse,trend_accuracy\n"
+                    f"TS-JEPA,{rmse},{trend}\n"
                 )
 
             args = parse_analysis_args(
@@ -1239,9 +1238,9 @@ class StockMaskComparisonTest(unittest.TestCase):
             self.assertTrue((results_dir / "overall_summary.csv").exists())
             self.assertTrue((results_dir / "strategy_comparison.png").exists())
             self.assertTrue(missing.empty)
-            mse_row = paired[paired["metric"] == "mse"].iloc[0]
-            self.assertAlmostEqual(float(mse_row["mean_delta_b_minus_a"]), 0.1)
-            self.assertEqual(mse_row["better_strategy"], "random")
+            rmse_row = paired[paired["metric"] == "rmse"].iloc[0]
+            self.assertAlmostEqual(float(rmse_row["mean_delta_b_minus_a"]), 0.1)
+            self.assertEqual(rmse_row["better_strategy"], "random")
 
     def test_analyzer_records_missing_runs_before_refusing_partial_summary(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -1251,7 +1250,7 @@ class StockMaskComparisonTest(unittest.TestCase):
             txt_path = run_dir / "last_model_comparison_20260101_000000.txt"
             txt_path.write_text("Data source: NVDA\n")
             txt_path.with_suffix(".csv").write_text(
-                "model,mse,mae,trend_accuracy\nTS-JEPA,0.1,0.2,0.6\n"
+                "model,rmse,trend_accuracy\nTS-JEPA,0.1,0.6\n"
             )
             args = parse_analysis_args(
                 [

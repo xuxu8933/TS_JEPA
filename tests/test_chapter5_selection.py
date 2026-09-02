@@ -399,8 +399,7 @@ class DownstreamSplitTest(unittest.TestCase):
         "seed": 42,
         "strategy": "random",
         "metrics": {
-            "mse": 0.125,
-            "mae": 0.25,
+            "rmse": 0.125,
             "direction_accuracy": 0.75,
         },
     }
@@ -506,8 +505,7 @@ class ValidationArtifactGuardTest(unittest.TestCase):
         artifact = build_downstream_metrics_artifact(
             split=split,
             metrics={
-                "mse": 0.1,
-                "mae": 0.2,
+                "rmse": 0.1,
                 "direction_accuracy": 0.6,
             },
             **self.identity,
@@ -525,7 +523,7 @@ class ValidationArtifactGuardTest(unittest.TestCase):
         metrics = load_validation_artifact(self.path, self.identity)
         self.assertEqual(
             metrics,
-            {"mse": 0.1, "mae": 0.2, "direction_accuracy": 0.6},
+            {"rmse": 0.1, "direction_accuracy": 0.6},
         )
 
     def test_selector_rejects_test_split_even_when_renamed(self):
@@ -538,7 +536,7 @@ class ValidationArtifactGuardTest(unittest.TestCase):
     def test_selector_rejects_nested_test_metric_keys(self):
         from chapter5_selection import load_validation_artifact
 
-        self._write_artifact(extra={"provenance": {"test_mse": 0.0}})
+        self._write_artifact(extra={"provenance": {"test_rmse": 0.0}})
         with self.assertRaisesRegex(ValueError, "test-result"):
             load_validation_artifact(self.path, self.identity)
 
@@ -561,8 +559,7 @@ class ValidationArtifactGuardTest(unittest.TestCase):
         artifact = build_downstream_metrics_artifact(
             split="validation",
             metrics={
-                "mse": float("nan"),
-                "mae": 0.2,
+                "rmse": float("nan"),
                 "direction_accuracy": 0.6,
             },
             **self.identity,
@@ -595,27 +592,26 @@ class DeterministicSelectionTest(unittest.TestCase):
         summary = aggregate_candidate(
             {
                 "AAPL": {
-                    42: {"mse": 0.0, "mae": 1.0, "direction_accuracy": 0.4},
-                    43: {"mse": 2.0, "mae": 3.0, "direction_accuracy": 0.6},
+                    42: {"rmse": 0.0, "direction_accuracy": 0.4},
+                    43: {"rmse": 2.0, "direction_accuracy": 0.6},
                 },
                 "NVDA": {
-                    42: {"mse": 100.0, "mae": 5.0, "direction_accuracy": 0.8},
-                    43: {"mse": 100.0, "mae": 7.0, "direction_accuracy": 1.0},
+                    42: {"rmse": 100.0, "direction_accuracy": 0.8},
+                    43: {"rmse": 100.0, "direction_accuracy": 1.0},
                 },
             }
         )
 
-        self.assertEqual(summary["per_stock"]["AAPL"]["mse"], 1.0)
-        self.assertEqual(summary["per_stock"]["NVDA"]["mse"], 100.0)
-        self.assertEqual(summary["overall"]["mse"], 50.5)
-        self.assertEqual(summary["overall"]["mae"], 4.0)
+        self.assertEqual(summary["per_stock"]["AAPL"]["rmse"], 1.0)
+        self.assertEqual(summary["per_stock"]["NVDA"]["rmse"], 100.0)
+        self.assertEqual(summary["overall"]["rmse"], 50.5)
         self.assertEqual(summary["overall"]["direction_accuracy"], 0.7)
 
     def _write_candidate(
         self,
         root,
         candidate_id,
-        mse,
+        rmse,
         *,
         parent=None,
         checkpoint_mode="best",
@@ -660,9 +656,8 @@ class DeterministicSelectionTest(unittest.TestCase):
             seed=42,
             strategy="random",
             metrics={
-                "mse": mse,
-                "mae": mse + 0.1,
-                "direction_accuracy": 1.0 - mse / 10.0,
+                "rmse": rmse,
+                "direction_accuracy": 1.0 - rmse / 10.0,
             },
         )
         write_downstream_metrics_artifact(artifact_path, artifact)

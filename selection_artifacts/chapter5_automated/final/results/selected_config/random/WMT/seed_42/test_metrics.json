@@ -1,0 +1,15 @@
+{
+  "artifact_filename": "test_metrics.json",
+  "artifact_type": "downstream_forecast_metrics",
+  "config_signature": "3a801a1db0ab3532c44d0e8c4e2c86bb66a38073c0f9305c6b4fa9c6059402e4",
+  "metrics": {
+    "direction_accuracy": 0.524,
+    "rmse": 0.030396267771720886
+  },
+  "model": "TS-JEPA",
+  "schema_version": 2,
+  "seed": 42,
+  "split": "test",
+  "stock": "WMT",
+  "strategy": "random"
+}

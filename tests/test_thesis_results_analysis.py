@@ -32,8 +32,7 @@ class ThesisStatisticsTest(unittest.TestCase):
         stock,
         seed,
         method,
-        mse,
-        mae,
+        rmse,
         *,
         test_signature="common-targets",
         **metadata,
@@ -44,8 +43,7 @@ class ThesisStatisticsTest(unittest.TestCase):
             "method": method,
             "strategy": "random" if method == METHOD_ORDER[0] else "local_long",
             "split": "test",
-            "mse": mse,
-            "mae": mae,
+            "rmse": rmse,
             "forecast_horizon": 5,
             "forecast_target": "value",
             "target_definition": "future-close",
@@ -125,20 +123,10 @@ class ThesisStatisticsTest(unittest.TestCase):
         summary = pd.DataFrame(
             [
                 {
-                    "metric": "MSE",
+                    "metric": "RMSE",
                     "n_stocks": 1,
                     "mean_delta": -0.25,
                     "median_delta": -0.25,
-                    "t_statistic": np.nan,
-                    "p_value": np.nan,
-                    "cohens_dz": np.nan,
-                    "status": "insufficient_stock_observations",
-                },
-                {
-                    "metric": "MAE",
-                    "n_stocks": 0,
-                    "mean_delta": np.nan,
-                    "median_delta": np.nan,
                     "t_statistic": np.nan,
                     "p_value": np.nan,
                     "cohens_dz": np.nan,
@@ -157,18 +145,18 @@ class ThesisStatisticsTest(unittest.TestCase):
     def test_shared_local_pairing_uses_configured_matched_seeds_and_stock_units(self):
         shared, local = METHOD_ORDER[:2]
         rows = [
-            self._strategy_row("AAA", 7, shared, 1.0, 3.0),
-            self._strategy_row("AAA", 7, local, 2.0, 4.0),
-            self._strategy_row("AAA", 9, shared, 3.0, 6.0),
-            self._strategy_row("AAA", 9, local, 5.0, 8.0),
-            self._strategy_row("AAA", 11, shared, 100.0, 100.0),
-            self._strategy_row("BBB", 7, shared, 4.0, 4.0),
-            self._strategy_row("BBB", 7, local, 2.0, 2.0),
-            self._strategy_row("BBB", 9, shared, 1.0, 1.0, test_signature="left"),
-            self._strategy_row("BBB", 9, local, 9.0, 9.0, test_signature="right"),
-            self._strategy_row("CCC", 7, shared, 1.0, 1.0),
-            self._strategy_row("OUT", 7, shared, -100.0, -100.0),
-            self._strategy_row("OUT", 7, local, 100.0, 100.0),
+            self._strategy_row("AAA", 7, shared, 1.0),
+            self._strategy_row("AAA", 7, local, 2.0),
+            self._strategy_row("AAA", 9, shared, 3.0),
+            self._strategy_row("AAA", 9, local, 5.0),
+            self._strategy_row("AAA", 11, shared, 100.0),
+            self._strategy_row("BBB", 7, shared, 4.0),
+            self._strategy_row("BBB", 7, local, 2.0),
+            self._strategy_row("BBB", 9, shared, 1.0, test_signature="left"),
+            self._strategy_row("BBB", 9, local, 9.0, test_signature="right"),
+            self._strategy_row("CCC", 7, shared, 1.0),
+            self._strategy_row("OUT", 7, shared, -100.0),
+            self._strategy_row("OUT", 7, local, 100.0),
         ]
         scope = {
             "stocks": ["AAA", "BBB", "CCC"],
@@ -185,18 +173,17 @@ class ThesisStatisticsTest(unittest.TestCase):
         aaa = stock_pairs.set_index("stock").loc["AAA"]
         self.assertEqual(aaa["n_matched_seeds"], 2)
         self.assertEqual(aaa["matched_seeds"], "7;9")
-        self.assertAlmostEqual(aaa["shared_mse"], 2.0)
-        self.assertAlmostEqual(aaa["local_mse"], 3.5)
-        self.assertAlmostEqual(aaa["delta_mse"], -1.5)
-        self.assertAlmostEqual(aaa["delta_mae"], -1.5)
+        self.assertAlmostEqual(aaa["shared_rmse"], 2.0)
+        self.assertAlmostEqual(aaa["local_rmse"], 3.5)
+        self.assertAlmostEqual(aaa["delta_rmse"], -1.5)
         bbb = stock_pairs.set_index("stock").loc["BBB"]
         self.assertEqual(bbb["n_matched_seeds"], 1)
         self.assertEqual(bbb["matched_seeds"], "7")
-        self.assertAlmostEqual(bbb["delta_mse"], 2.0)
-        self.assertEqual(set(summary["metric"]), {"MSE", "MAE"})
+        self.assertAlmostEqual(bbb["delta_rmse"], 2.0)
+        self.assertEqual(set(summary["metric"]), {"RMSE"})
         self.assertTrue((summary["n_stocks"] == 2).all())
         self.assertAlmostEqual(
-            summary.set_index("metric").loc["MSE", "mean_delta"], 0.25
+            summary.set_index("metric").loc["RMSE", "mean_delta"], 0.25
         )
         self.assertIn("unmatched_shared_local_seed", {row["status"] for row in issues})
         self.assertIn("incompatible_shared_local_pair", {row["status"] for row in issues})
@@ -206,19 +193,19 @@ class ThesisStatisticsTest(unittest.TestCase):
         shared, local = METHOD_ORDER[:2]
         rows = [
             self._strategy_row(
-                "AAA", 7, shared, 1.0, 1.0,
+                "AAA", 7, shared, 1.0,
                 experiment_id="experiment-a", config_signature="config-a",
             ),
             self._strategy_row(
-                "AAA", 7, local, 2.0, 2.0,
+                "AAA", 7, local, 2.0,
                 experiment_id="experiment-a", config_signature="config-a",
             ),
             self._strategy_row(
-                "AAA", 9, shared, 3.0, 3.0,
+                "AAA", 9, shared, 3.0,
                 experiment_id="experiment-a", config_signature="config-a",
             ),
             self._strategy_row(
-                "AAA", 9, local, 9.0, 9.0,
+                "AAA", 9, local, 9.0,
                 experiment_id="experiment-b", config_signature="config-b",
             ),
         ]
@@ -232,7 +219,7 @@ class ThesisStatisticsTest(unittest.TestCase):
         row = stock_pairs.iloc[0]
         self.assertEqual(row["matched_seeds"], "7")
         self.assertEqual(row["n_matched_seeds"], 1)
-        self.assertAlmostEqual(row["delta_mse"], -1.0)
+        self.assertAlmostEqual(row["delta_rmse"], -1.0)
         self.assertTrue((summary["n_stocks"] == 1).all())
         incompatibility = next(
             item for item in issues if item["status"] == "incompatible_shared_local_pair"
@@ -252,23 +239,24 @@ class ThesisStatisticsTest(unittest.TestCase):
         )
         if not published.is_file():
             self.skipTest("published top10_with_sentiment canonical data are unavailable")
+        published_frame = pd.read_csv(published)
+        if "rmse" not in published_frame:
+            self.skipTest("published package uses the legacy MSE/MAE schema")
         args = parse_args(
             ["--config", str(repository / "config/experiments/top10_with_sentiment.json")]
         )
         scope, _ = load_scope(args)
 
         stock_pairs, summary = build_shared_vs_local_comparison(
-            pd.read_csv(published), scope, []
+            published_frame, scope, []
         )
 
         self.assertEqual(len(stock_pairs), len(scope["stocks"]))
         self.assertTrue((stock_pairs["n_matched_seeds"] == len(scope["seeds"])).all())
         indexed = summary.set_index("metric")
-        self.assertEqual(indexed.loc["MSE", "n_stocks"], len(scope["stocks"]))
-        self.assertAlmostEqual(indexed.loc["MSE", "cohens_dz"], -0.43, delta=0.02)
-        self.assertAlmostEqual(indexed.loc["MSE", "p_value"], 0.21, delta=0.02)
-        self.assertAlmostEqual(indexed.loc["MAE", "cohens_dz"], -0.61, delta=0.02)
-        self.assertAlmostEqual(indexed.loc["MAE", "p_value"], 0.09, delta=0.02)
+        self.assertEqual(indexed.loc["RMSE", "n_stocks"], len(scope["stocks"]))
+        self.assertAlmostEqual(indexed.loc["RMSE", "cohens_dz"], -0.43, delta=0.02)
+        self.assertAlmostEqual(indexed.loc["RMSE", "p_value"], 0.21, delta=0.02)
 
     def test_direction_accuracy_uses_same_trajectory_rule_for_baseline(self):
         targets = np.array([[0.1, 0.2, 0.15], [-0.1, -0.2, -0.1]])
@@ -376,8 +364,7 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
                 {
                     "model": model,
                     "forecast_target": "value",
-                    "mse": float(np.mean((predictions - true_values) ** 2)),
-                    "mae": float(np.mean(np.abs(predictions - true_values))),
+                    "rmse": float(np.sqrt(np.mean((predictions - true_values) ** 2))),
                     "trend_accuracy": compute_direction_accuracy(
                         predictions, true_values, "value"
                     ),
@@ -422,10 +409,9 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
             {
                 "epoch": [0, 1, 2],
                 "train_loss": [0.3, 0.2, 0.1],
-                "mse_loss": [0.3, 0.2, 0.1],
+                "rmse_loss": [0.3, 0.2, 0.1],
                 "trend_loss": [0.0, 0.0, 0.0],
-                "val_mse": [0.4, 0.3, 0.2],
-                "val_mae": [0.5, 0.4, 0.3],
+                "val_rmse": [0.4, 0.3, 0.2],
                 "val_trend_acc": [0.5, 0.6, 0.7],
             }
         )
@@ -587,12 +573,8 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
             paired = pd.read_csv(output_dir / "data" / "paired_vs_naive.csv")
             self.assertEqual(set(paired["model"]), set(METHOD_ORDER[:3]))
             shared_naive = paired.set_index("model").loc[METHOD_ORDER[0]]
-            self.assertAlmostEqual(shared_naive["mean_delta_mse"], -0.0078333333333333)
-            self.assertAlmostEqual(shared_naive["mean_delta_mae"], -0.068)
-            for metric, mean_delta in (
-                ("mse", -0.0078333333333333),
-                ("mae", -0.068),
-            ):
+            self.assertAlmostEqual(shared_naive["mean_delta_rmse"], -0.0817881373457813)
+            for metric, mean_delta in (("rmse", -0.0817881373457813),):
                 self.assertAlmostEqual(shared_naive[f"{metric}_ci_low"], mean_delta)
                 self.assertAlmostEqual(shared_naive[f"{metric}_ci_high"], mean_delta)
                 self.assertEqual(shared_naive[f"{metric}_wilcoxon_statistic"], 0.0)
@@ -608,12 +590,12 @@ class ThesisPipelineIntegrationTest(unittest.TestCase):
             shared_local_table = pd.read_csv(
                 output_dir / "tables" / "table_shared_vs_local.csv"
             )
-            self.assertEqual(set(shared_local_table["metric"]), {"MSE", "MAE"})
+            self.assertEqual(set(shared_local_table["metric"]), {"RMSE"})
             self.assertTrue((shared_local_table["n_stocks"] == len(stocks)).all())
             self.assertTrue((output_dir / "tables" / "table_main_metrics.tex").exists())
             self.assertTrue((output_dir / "tables" / "table_shared_vs_local.tex").exists())
-            self.assertTrue((output_dir / "figures" / "fig_paired_mse_forest.pdf").exists())
-            self.assertTrue((output_dir / "figures" / "fig_mse_by_horizon.pdf").exists())
+            self.assertTrue((output_dir / "figures" / "fig_paired_rmse_forest.pdf").exists())
+            self.assertTrue((output_dir / "figures" / "fig_rmse_by_horizon.pdf").exists())
             self.assertTrue((output_dir / "figures" / "fig_representative_prediction_trajectory.pdf").exists())
             self.assertIn(
                 "equities as the statistical units",

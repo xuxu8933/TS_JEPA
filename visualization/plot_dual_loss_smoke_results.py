@@ -44,8 +44,8 @@ def _plot_case(case_name, result, output_path):
     plt.plot(model, label="Dual-loss model", linewidth=2)
     plt.plot(naive, label="Naive last", linewidth=2, linestyle="--")
     plt.title(
-        f"{case_name}: model MSE={result['model_mse']:.6f}, "
-        f"naive-last MSE={result['naive_mse']:.6f}"
+        f"{case_name}: model RMSE={result['model_rmse']:.6f}, "
+        f"naive-last RMSE={result['naive_rmse']:.6f}"
     )
     plt.xlabel("Flattened test forecast step")
     plt.ylabel("Normalized target")
@@ -57,17 +57,17 @@ def _plot_case(case_name, result, output_path):
 
 def _plot_summary(rows, output_path):
     names = [row["case"] for row in rows]
-    model_mse = [float(row["model_mse"]) for row in rows]
-    naive_mse = [float(row["naive_last_mse"]) for row in rows]
+    model_rmse = [float(row["model_rmse"]) for row in rows]
+    naive_rmse = [float(row["naive_last_rmse"]) for row in rows]
 
     x = np.arange(len(names))
     width = 0.36
 
     plt.figure(figsize=(8, 4.5))
-    plt.bar(x - width / 2, model_mse, width=width, label="Dual-loss model")
-    plt.bar(x + width / 2, naive_mse, width=width, label="Naive baseline")
+    plt.bar(x - width / 2, model_rmse, width=width, label="Dual-loss model")
+    plt.bar(x + width / 2, naive_rmse, width=width, label="Naive baseline")
     plt.xticks(x, names)
-    plt.ylabel("Test MSE")
+    plt.ylabel("Test RMSE")
     plt.title("Dual-loss Smoke Benchmark")
     plt.legend()
     plt.tight_layout()
@@ -93,8 +93,8 @@ def _plot_mnist_rows(prediction_path, output_path):
 
     figure.suptitle(
         f"Real MNIST, row-wise masking\n"
-        f"model MSE={float(result['model_mse']):.6f}, "
-        f"previous-row MSE={float(result['naive_mse']):.6f}"
+        f"model RMSE={float(result['model_rmse']):.6f}, "
+        f"previous-row RMSE={float(result['naive_rmse']):.6f}"
     )
     figure.tight_layout()
     figure.savefig(output_path, dpi=200, bbox_inches="tight")
@@ -127,14 +127,14 @@ def main():
         summary_rows.append(
             {
                 "case": "MNIST_ROWS",
-                "model_mse": f"{mnist_result['model_mse']:.10f}",
-                "naive_last_mse": f"{mnist_result['naive_mse']:.10f}",
+                "model_rmse": f"{mnist_result['model_rmse']:.10f}",
+                "naive_last_rmse": f"{mnist_result['naive_rmse']:.10f}",
                 "plot_path": str(mnist_plot),
             }
         )
         print(
-            f"MNIST_ROWS: model_mse={mnist_result['model_mse']:.6f}, "
-            f"naive_previous_row_mse={mnist_result['naive_mse']:.6f}, "
+            f"MNIST_ROWS: model_rmse={mnist_result['model_rmse']:.6f}, "
+            f"naive_previous_row_rmse={mnist_result['naive_rmse']:.6f}, "
             f"plot={mnist_plot}"
         )
 
@@ -156,27 +156,27 @@ def main():
         summary_rows.append(
             {
                 "case": "SIN_COS",
-                "model_mse": f"{result['model_mse']:.10f}",
-                "naive_last_mse": f"{result['naive_mse']:.10f}",
+                "model_rmse": f"{result['model_rmse']:.10f}",
+                "naive_last_rmse": f"{result['naive_rmse']:.10f}",
                 "plot_path": str(sin_plot),
             }
         )
         print(
-            f"SIN_COS: model_mse={result['model_mse']:.6f}, "
-            f"naive_last_mse={result['naive_mse']:.6f}, plot={sin_plot}"
+            f"SIN_COS: model_rmse={result['model_rmse']:.6f}, "
+            f"naive_last_rmse={result['naive_rmse']:.6f}, plot={sin_plot}"
         )
 
     summary_csv = OUTPUT_DIR / "summary.csv"
     with summary_csv.open("w", newline="") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["case", "model_mse", "naive_last_mse", "plot_path"],
+            fieldnames=["case", "model_rmse", "naive_last_rmse", "plot_path"],
             lineterminator="\n",
         )
         writer.writeheader()
         writer.writerows(summary_rows)
 
-    summary_plot = OUTPUT_DIR / "mse_comparison.png"
+    summary_plot = OUTPUT_DIR / "rmse_comparison.png"
     _plot_summary(summary_rows, summary_plot)
 
     print(f"Summary CSV: {summary_csv}")

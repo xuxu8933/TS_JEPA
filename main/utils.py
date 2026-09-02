@@ -527,19 +527,20 @@ def _reduce(metric, reduction="mean", axis=None):
         return metric
 
 
-def mse(
+def rmse(
     y: np.ndarray,
     y_hat: np.ndarray,
     reduction: str = "mean",
     axis=None,
 ):
     delta_y = np.square(y - y_hat)
-    return _reduce(delta_y, reduction=reduction, axis=axis)
+    return np.sqrt(_reduce(delta_y, reduction=reduction, axis=axis))
 
 
-def mae(y: np.ndarray, y_hat: np.ndarray, reduction: str = "mean", axis=None):
-    delta_y = np.abs(y - y_hat)
-    return _reduce(delta_y, reduction=reduction, axis=axis)
+def rmse_loss(y_hat: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+    """Differentiable RMSE with a finite gradient at a perfect prediction."""
+    error = y_hat - y
+    return torch.linalg.vector_norm(error) / math.sqrt(error.numel())
 
 
 if __name__ == "__main__":

@@ -676,7 +676,7 @@ class PairedAnalysisTest(unittest.TestCase):
                     "TS-JEPA/local_long",
                     "GRU/random",
                 ):
-                    for metric in ("mse", "mae", "direction_accuracy"):
+                    for metric in ("rmse", "direction_accuracy"):
                         rows.append(
                             {
                                 "condition": condition,
@@ -703,7 +703,7 @@ class PairedAnalysisTest(unittest.TestCase):
             )
         )
         self.assertEqual(identifiers, sorted(identifiers))
-        self.assertEqual(len(pairs), 2 * 2 * 3 * 3)
+        self.assertEqual(len(pairs), 2 * 2 * 3 * 2)
         self.assertTrue(np.allclose(pairs["delta"], 0.25))
 
         duplicate = pd.concat([control, control.iloc[[0]]], ignore_index=True)
@@ -733,7 +733,7 @@ class PairedAnalysisTest(unittest.TestCase):
                 "stock": [f"S{index}" for index in range(5)],
                 "seed": [42] * 5,
                 "model": ["TS-JEPA/random"] * 5,
-                "metric": ["mse"] * 5,
+                "metric": ["rmse"] * 5,
                 "delta": deltas,
             }
         )
@@ -780,8 +780,7 @@ class PairedAnalysisTest(unittest.TestCase):
                 rows = [
                     {
                         "model": "TS-JEPA",
-                        "mse": 0.1,
-                        "mae": 0.2,
+                        "rmse": 0.1,
                         "direction_accuracy": 0.6,
                     }
                 ]
@@ -789,8 +788,7 @@ class PairedAnalysisTest(unittest.TestCase):
                     rows.append(
                         {
                             "model": "GRU",
-                            "mse": 0.2,
-                            "mae": 0.3,
+                            "rmse": 0.2,
                             "direction_accuracy": 0.5,
                         }
                     )
@@ -829,7 +827,7 @@ class PairedAnalysisTest(unittest.TestCase):
                 [42],
                 expected_semantics=expected,
             )
-            self.assertEqual(len(loaded), 9)
+            self.assertEqual(len(loaded), 6)
 
             bad_manifest_path = (
                 results_dir / "local_long/NVDA/seed_42/run_manifest.json"
@@ -875,7 +873,7 @@ class MechanismReportTest(unittest.TestCase):
                     "TS-JEPA/local_long",
                     "GRU/random",
                 ):
-                    for metric in ("mse", "mae", "direction_accuracy"):
+                    for metric in ("rmse", "direction_accuracy"):
                         base = 1.0 if metric != "direction_accuracy" else 0.5
                         rows.append(
                             {

@@ -103,7 +103,7 @@ CANONICAL_MODELS = (
     "TS-JEPA/local_long",
     "GRU/random",
 )
-CANONICAL_METRICS = ("mse", "mae", "direction_accuracy")
+CANONICAL_METRICS = ("rmse", "direction_accuracy")
 
 
 class ExperimentResultsNotFound(FileNotFoundError):
@@ -408,8 +408,7 @@ def load_published_results(path: Path, condition: str) -> pd.DataFrame:
         "seed",
         "method",
         "strategy",
-        "mse",
-        "mae",
+        "rmse",
         "direction_accuracy",
         "forecast_horizon",
     }
@@ -574,7 +573,7 @@ def load_raw_experiment_results(
                     if "direction_accuracy" in table
                     else "trend_accuracy"
                 )
-                required = {"model", "mse", "mae", direction_column}
+                required = {"model", "rmse", direction_column}
                 missing = sorted(required - set(table))
                 if missing:
                     raise ValueError(
@@ -585,8 +584,7 @@ def load_raw_experiment_results(
                     if model is None:
                         continue
                     for metric, column in (
-                        ("mse", "mse"),
-                        ("mae", "mae"),
+                        ("rmse", "rmse"),
                         ("direction_accuracy", direction_column),
                     ):
                         rows.append(
@@ -670,7 +668,7 @@ def pair_condition_results(
     paired["delta"] = paired["intervention"] - paired["control"]
     paired["percent_delta"] = 100.0 * paired["delta"] / paired["control"].abs()
     paired["improved"] = np.where(
-        paired["metric"].isin(("mse", "mae")),
+        paired["metric"] == "rmse",
         paired["delta"] < 0,
         paired["delta"] > 0,
     )
@@ -853,7 +851,7 @@ def paired_stock_statistics(
     ).reset_index(drop=True)
     result["p_holm"] = np.nan
     for hypothesis, group in result[
-        result["metric"].isin(("mse", "mae"))
+        result["metric"] == "rmse"
     ].groupby("hypothesis", sort=True):
         indices = group.index.tolist()
         adjusted = holm_adjust(group["p_value"].tolist())
@@ -1046,18 +1044,18 @@ def _model_verdicts(
     for (hypothesis, model), group in statistics.groupby(
         ["hypothesis", "model"], sort=True
     ):
-        errors = group.set_index("metric").loc[["mse", "mae"]]
+        errors = group.set_index("metric").loc[["rmse"]]
         stock_group = per_stock[
             (per_stock["hypothesis"] == hypothesis)
             & (per_stock["model"] == model)
-            & per_stock["metric"].isin(("mse", "mae"))
+            & (per_stock["metric"] == "rmse")
         ].copy()
         wins = stock_group.assign(won=stock_group["delta"] < 0).groupby(
             "metric"
         )["won"].sum()
         favorable = bool((errors["mean_delta"] < 0).all())
         unfavorable = bool((errors["mean_delta"] > 0).all())
-        consistent = all(int(wins.get(metric, 0)) >= 6 for metric in ("mse", "mae"))
+        consistent = int(wins.get("rmse", 0)) >= 6
         significant = bool((errors["p_holm"] < 0.05).any())
         if favorable and consistent and significant:
             verdict = "supported"
@@ -1105,7 +1103,7 @@ def _mechanism_summary(
             & (per_stock["model"] == stat["model"])
             & (per_stock["metric"] == stat["metric"])
         ]
-        error_metric = stat["metric"] in ("mse", "mae")
+        error_metric = stat["metric"] == "rmse"
         stock_wins = int(
             ((stocks["delta"] < 0) if error_metric else (stocks["delta"] > 0)).sum()
         )
@@ -1146,7 +1144,7 @@ def _render_report(summary: pd.DataFrame, verdicts: Mapping[str, str]) -> str:
         f"| {hypothesis} | {verdicts[hypothesis]} |"
         for hypothesis in ("H1", "H2", "H3")
     ]
-    error_rows = summary[summary["metric"].isin(("mse", "mae"))]
+    error_rows = summary[summary["metric"] == "rmse"]
     return "\n".join(
         [
             "# Sentiment Mechanism Ablation Report",
@@ -1181,7 +1179,7 @@ def _render_report(summary: pd.DataFrame, verdicts: Mapping[str, str]) -> str:
             "",
             f"Primary inference uses {int(error_rows['stock_total'].max())} paired stock "
             "means. Stock×seed rows are descriptive only. Holm correction is applied "
-            "within each hypothesis across JEPA/GRU MSE and MAE comparisons; direction "
+            "within each hypothesis across JEPA/GRU RMSE comparisons; direction "
             "accuracy is secondary.",
             "",
             "## Overall conclusion",

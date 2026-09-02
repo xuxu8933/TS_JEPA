@@ -1,0 +1,16 @@
+Data source: AVGO
+Evaluation type: last
+Forecast target: relative_return
+Feature transform: raw
+Features: Close,Volume,MA10,MA50,sentiment_mean
+Normalization: window_return
+Market data: disabled
+Generated at: 20260902_095838
+
+Model Comparison
+model,forecast_target,rmse,trend_accuracy
+GRU,relative_return,0.055152,0.5400
+naive_last,relative_return,0.055249,0.0040
+drift,relative_return,0.059369,0.5560
+mean_context,relative_return,0.060363,0.5600
+TS-JEPA,relative_return,0.073989,0.4920

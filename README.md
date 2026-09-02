@@ -286,8 +286,8 @@ conda run --no-capture-output -n ts-jepa python pretrain_dual_loss.py \
   --future-target-patches 4 \
   --lambda-jepa 1.0 \
   --lambda-mae 0.5 \
-  --jepa-loss mse \
-  --mae-loss mse \
+  --jepa-loss rmse \
+  --mae-loss rmse \
   --decoder-type residual_mlp \
   --batch-size 32 \
   --lr 1e-5 \
@@ -521,7 +521,7 @@ By default, missing runs or expected models are recorded in
 `missing_or_failed_runs.csv` and partial summary statistics are refused. Use
 `--allow-incomplete` only for explicitly exploratory analysis.
 In `paired_strategy_differences.csv`, each delta is `strategy_b - strategy_a`;
-MSE and MAE are lower-is-better, while trend accuracy is higher-is-better.
+RMSE is lower-is-better, while trend accuracy is higher-is-better.
 
 ### Thesis result analysis
 
@@ -580,8 +580,8 @@ the adjacent `.sha256` file. Upload those two immutable files to the matching
 GitHub Release. `release_assets/`, raw `results/`, and analysis staging remain
 ignored by Git.
 
-The primary paired sign convention is `method - naive-last`, so negative MSE
-or MAE deltas favour the method. Relative improvement is positive when the
+The primary paired sign convention is `method - naive-last`, so negative RMSE
+deltas favour the method. Relative improvement is positive when the
 method beats naive-last. Seed-level outcomes are descriptive; exact signed-rank
 tests and bootstrap intervals use equity-level seed averages as the statistical
 units.
@@ -972,7 +972,7 @@ results/
 └── top_nasdaq100_stock_runs.txt
 ```
 
-Here `2` is the actual number of selected stocks after applying `--max-stocks`. The combined PNG title and filename use `top_<count>_nasdaq100`, and the image compares MSE, MAE, and trend accuracy. Timestamped files from earlier runs are preserved. Fixed-name files such as `loss.txt` are safe because each ticker has its own directory.
+Here `2` is the actual number of selected stocks after applying `--max-stocks`. The combined PNG title and filename use `top_<count>_nasdaq100`, and the image compares RMSE and trend accuracy. Timestamped files from earlier runs are preserved. Fixed-name files such as `loss.txt` are safe because each ticker has its own directory.
 
 For repeated-seed experiments, the layout becomes `results/NVDA/seed_7/`, `results/NVDA/seed_17/`, and so on. The combined CSV contains mean, standard deviation, and `num_runs` for every stock/model pair.
 
@@ -1019,8 +1019,8 @@ conda run --no-capture-output -n ts-jepa python run_top_nasdaq100_stocks.py \
   --mask-strategies random \
   --lambda-jepa 1.0 \
   --lambda-mae 0.5 \
-  --jepa-loss mse \
-  --mae-loss mse \
+  --jepa-loss rmse \
+  --mae-loss rmse \
   --pretrain-stride 5 \
   --normalization train_zscore \
   --seeds 42 \
@@ -1301,7 +1301,7 @@ conda run --no-capture-output -n ts-jepa python chapter5_selection.py \
   --output-dir selection_artifacts/chapter5_main
 ```
 
-The command writes `selection_summary.json` with every candidate and `selected_config.json` with config hashes and provenance. MSE is primary; MAE and direction accuracy are secondary. Metrics are averaged first across seeds within each stock, then across stocks. Exact ties resolve by candidate ID.
+The command writes `selection_summary.json` with every candidate and `selected_config.json` with config hashes and provenance. RMSE is primary and direction accuracy is secondary. Metrics are averaged first across seeds within each stock, then across stocks. Exact ties resolve by candidate ID.
 
 Inspect and archive the selection summary before the one final test run:
 

@@ -25,11 +25,13 @@ from eval_forecast_prequential_with_baselines_gru_volume import (
 from pretrain_dual_loss import (
     ema_momentum_at_step,
     initialize_models,
+    loss_value,
     make_strategy_masks,
     parse_args,
     restore_training_state,
     save_checkpoint,
 )
+from main.utils import rmse
 from plot_top_stock_metrics import latest_comparison_files, load_rows
 from run_top_nasdaq100_stocks import (
     build_combined_plot_command,
@@ -43,6 +45,25 @@ from tests.test_dual_loss_smoke import REPO_ROOT, _run_command, _sin_cos_rows, _
 
 
 class UnifiedDualLossTest(unittest.TestCase):
+    def test_rmse_is_used_for_numpy_evaluation_and_torch_training(self):
+        target = torch.tensor([0.0, 0.0])
+        prediction = torch.tensor([0.0, 4.0], requires_grad=True)
+
+        self.assertAlmostEqual(
+            rmse(target.numpy(), prediction.detach().numpy()),
+            np.sqrt(8.0),
+        )
+        loss = loss_value(prediction, target, "rmse")
+        self.assertAlmostEqual(loss.item(), np.sqrt(8.0), places=6)
+        loss.backward()
+        self.assertTrue(torch.isfinite(prediction.grad).all())
+
+        perfect = torch.zeros(2, requires_grad=True)
+        perfect_loss = loss_value(perfect, target, "rmse")
+        perfect_loss.backward()
+        self.assertEqual(perfect_loss.item(), 0.0)
+        self.assertTrue(torch.isfinite(perfect.grad).all())
+
     def _checkpoint_selector_args(self, checkpoint_dir, selection):
         args, passthrough = parse_eval_args(
             argv=[
@@ -122,8 +143,8 @@ class UnifiedDualLossTest(unittest.TestCase):
             pretrain_num_epochs=3,
             lambda_jepa=1.0,
             lambda_mae=0.5,
-            jepa_loss="mse",
-            mae_loss="mse",
+            jepa_loss="rmse",
+            mae_loss="rmse",
             checkpoint_to_use=2,
             use_best_checkpoint=False,
             eval_num_epochs=4,
@@ -173,7 +194,7 @@ class UnifiedDualLossTest(unittest.TestCase):
             txt_path = stock_dir / "last_model_comparison_20260101_000000.txt"
             txt_path.write_text("Data source: NVDA\n")
             txt_path.with_suffix(".csv").write_text(
-                "model,mse,mae,trend_accuracy\nTS-JEPA,0.1,0.2,0.6\n"
+                "model,rmse,trend_accuracy\nTS-JEPA,0.1,0.6\n"
             )
 
             latest = latest_comparison_files(results_dir)
@@ -183,14 +204,14 @@ class UnifiedDualLossTest(unittest.TestCase):
     def test_combined_plot_aggregates_multiple_seed_runs(self):
         with tempfile.TemporaryDirectory() as tmp:
             results_dir = Path(tmp) / "results"
-            for seed, mse in ((7, 0.1), (17, 0.3)):
+            for seed, rmse in ((7, 0.1), (17, 0.3)):
                 stock_dir = results_dir / "NVDA" / f"seed_{seed}"
                 stock_dir.mkdir(parents=True)
                 txt_path = stock_dir / "last_model_comparison_20260101_000000.txt"
                 txt_path.write_text("Data source: NVDA\n")
                 txt_path.with_suffix(".csv").write_text(
-                    "model,mse,mae,trend_accuracy\n"
-                    f"TS-JEPA,{mse},0.2,0.6\n"
+                    "model,rmse,trend_accuracy\n"
+                    f"TS-JEPA,{rmse},0.6\n"
                 )
 
             rows = load_rows(results_dir, ["NVDA"], ["TS-JEPA"])
@@ -202,10 +223,10 @@ class UnifiedDualLossTest(unittest.TestCase):
             )
 
         self.assertEqual(int(rows.iloc[0]["num_runs"]), 2)
-        self.assertAlmostEqual(float(rows.iloc[0]["mse"]), 0.2)
-        self.assertGreater(float(rows.iloc[0]["mse_std"]), 0.0)
+        self.assertAlmostEqual(float(rows.iloc[0]["rmse"]), 0.2)
+        self.assertGreater(float(rows.iloc[0]["rmse_std"]), 0.0)
         self.assertEqual(int(seed_7_rows.iloc[0]["num_runs"]), 1)
-        self.assertAlmostEqual(float(seed_7_rows.iloc[0]["mse"]), 0.1)
+        self.assertAlmostEqual(float(seed_7_rows.iloc[0]["rmse"]), 0.1)
 
     def test_unified_parser_builds_strategy_specific_paths(self):
         default_config = parse_args(copy.deepcopy(base_config), argv=[])
@@ -423,7 +444,10 @@ class UnifiedDualLossTest(unittest.TestCase):
             # including the configured end date and excluding all later rows.
             self.assertEqual(len(pretrain_dataset.test_df), 46)
             self.assertEqual(len(evaluation_dataset.test_df), 46)
-            self.assertEqual(len(evaluation_dataset.series), 46)
+            self.assertEqual(len(evaluation_dataset.series), 56)
+            self.assertEqual(
+                evaluation_dataset.dates[10], evaluation_dataset.test_dates[0]
+            )
 
     def test_temporal_segments_are_non_overlapping_and_keep_tensor_shapes(self):
         with tempfile.TemporaryDirectory() as tmp:

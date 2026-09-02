@@ -23,7 +23,7 @@ from datetime import datetime
 from pathlib import Path
 import imageio.v2 as imageio
 
-from main.utils import mae, mse, ordered_scalar_mean, prepare_args
+from main.utils import ordered_scalar_mean, prepare_args, rmse, rmse_loss
 
 from src.data_loaders.data_loader_roll_volume import get_evaluation_loaders
 from src.models.encoder import Encoder
@@ -140,13 +140,13 @@ def build_downstream_metrics_artifact(
     """Build the strict machine-readable result consumed by Chapter 5 selection."""
     if split not in ("validation", "test"):
         raise ValueError(f"Unsupported downstream metrics split: {split!r}")
-    required_metrics = ("mse", "mae", "direction_accuracy")
+    required_metrics = ("rmse", "direction_accuracy")
     missing = [name for name in required_metrics if name not in metrics]
     if missing:
         raise ValueError(f"Missing downstream metrics: {missing}")
     return {
         "artifact_type": "downstream_forecast_metrics",
-        "schema_version": 1,
+        "schema_version": 2,
         "artifact_filename": f"{split}_metrics.json",
         "split": split,
         "model": "TS-JEPA",
@@ -265,9 +265,6 @@ def evaluate_gru_model(
 ):
     model.eval()
 
-    l_mse = []
-    l_mae = []
-
     all_preds = []
     all_targets = []
 
@@ -291,26 +288,10 @@ def evaluate_gru_model(
             all_preds.append(pred_np)
             all_targets.append(target_np)
 
-            batch_mse = mse(
-                pred_np.reshape(-1),
-                target_np.reshape(-1),
-            )
-
-            batch_mae = mae(
-                pred_np.reshape(-1),
-                target_np.reshape(-1),
-            )
-
-            l_mse.append(batch_mse)
-            l_mae.append(batch_mae)
-
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
 
-    mean_mse = float(np.mean(l_mse))
-    mean_mae = float(np.mean(l_mae))
-
-    return mean_mse, mean_mae, all_preds, all_targets
+    return float(rmse(all_targets, all_preds)), all_preds, all_targets
 
 def prequential_gru_evaluate(
     model,
@@ -458,13 +439,12 @@ def prequential_gru_evaluate(
         writer.writeheader()
         writer.writerows(score_rows)
 
-    test_mse = float(np.mean((all_preds - all_targets) ** 2))
-    test_mae = float(np.mean(np.abs(all_preds - all_targets)))
+    test_rmse = float(rmse(all_targets, all_preds))
 
     print(f"GRU locked forecasts saved to: {forecast_csv_path}")
     print(f"GRU scores saved to: {score_csv_path}")
 
-    return test_mse, test_mae, all_preds, all_targets, forecast_csv_path, score_csv_path
+    return test_rmse, all_preds, all_targets, forecast_csv_path, score_csv_path
 
 def visualize_all_rolling_predictions_as_series(
     all_preds,
@@ -1329,8 +1309,7 @@ def prequential_baseline_evaluate(
         summary_rows.append({
             "model": baseline_name,
             "forecast_target": config.get("forecast_target", "value"),
-            "mse": float(np.mean((baseline_preds - baseline_targets) ** 2)),
-            "mae": float(np.mean(np.abs(baseline_preds - baseline_targets))),
+            "rmse": float(rmse(baseline_targets, baseline_preds)),
             "trend_accuracy": compute_trend_accuracy(
                 all_preds=baseline_preds,
                 all_targets=baseline_targets,
@@ -1399,8 +1378,7 @@ def prequential_baseline_evaluate(
             fieldnames=[
                 "model",
                 "forecast_target",
-                "mse",
-                "mae",
+                "rmse",
                 "trend_accuracy",
             ],
         )
@@ -1438,8 +1416,8 @@ def save_model_comparison(
         config["eval_type"] + f"_model_comparison_{timestamp}.txt",
     )
 
-    # Lower MSE is better; sort accordingly.
-    model_rows = sorted(model_rows, key=lambda row: row["mse"])
+    # Lower RMSE is better; sort accordingly.
+    model_rows = sorted(model_rows, key=lambda row: row["rmse"])
 
     import csv
     with open(comparison_csv_path, "w", newline="") as f:
@@ -1448,8 +1426,7 @@ def save_model_comparison(
             fieldnames=[
                 "model",
                 "forecast_target",
-                "mse",
-                "mae",
+                "rmse",
                 "trend_accuracy",
             ],
         )
@@ -1467,14 +1444,13 @@ def save_model_comparison(
         f"Generated at: {timestamp}",
         "",
         "Model Comparison",
-        "model,forecast_target,mse,mae,trend_accuracy",
+        "model,forecast_target,rmse,trend_accuracy",
     ]
     for row in model_rows:
         lines.append(
             f"{row['model']},"
             f"{row.get('forecast_target', config.get('forecast_target', 'value'))},"
-            f"{row['mse']:.6f},"
-            f"{row['mae']:.6f},"
+            f"{row['rmse']:.6f},"
             f"{row['trend_accuracy']:.4f}"
         )
 
@@ -1485,8 +1461,7 @@ def save_model_comparison(
     for row in model_rows:
         print(
             f"{row['model']}: "
-            f"MSE={row['mse']:.6f}, "
-            f"MAE={row['mae']:.6f}, "
+            f"RMSE={row['rmse']:.6f}, "
             f"TrendAcc={row['trend_accuracy']:.4f}"
         )
     print(f"Model comparison saved to: {comparison_csv_path}")
@@ -1496,14 +1471,13 @@ def save_model_comparison(
 
 
 def visualize_model_comparison(model_rows, config, save_dir="./results"):
-    """Bar plots for MSE, MAE, and trend accuracy of TS-JEPA vs baselines."""
+    """Bar plots for RMSE and trend accuracy of TS-JEPA vs baselines."""
     os.makedirs(save_dir, exist_ok=True)
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-    model_rows = sorted(model_rows, key=lambda row: row["mse"])
+    model_rows = sorted(model_rows, key=lambda row: row["rmse"])
     names = [row["model"] for row in model_rows]
-    mses = [row["mse"] for row in model_rows]
-    maes = [row["mae"] for row in model_rows]
+    rmses = [row["rmse"] for row in model_rows]
     trend_rows = sorted(
         model_rows,
         key=lambda row: row["trend_accuracy"],
@@ -1513,29 +1487,16 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
     trend_accs = [row["trend_accuracy"] for row in trend_rows]
 
     plt.figure(figsize=(10, 5))
-    plt.bar(names, mses)
+    plt.bar(names, rmses)
     plt.xticks(rotation=30, ha="right")
-    plt.ylabel("MSE")
-    plt.title(f"{data_title(config)} - Prequential Rolling Evaluation: MSE Comparison")
+    plt.ylabel("RMSE")
+    plt.title(f"{data_title(config)} - Prequential Rolling Evaluation: RMSE Comparison")
     plt.tight_layout()
-    mse_png_path = os.path.join(
+    rmse_png_path = os.path.join(
         save_dir,
-        config["eval_type"] + f"_model_comparison_mse_{timestamp}.png",
+        config["eval_type"] + f"_model_comparison_rmse_{timestamp}.png",
     )
-    plt.savefig(mse_png_path, dpi=300, bbox_inches="tight")
-    plt.close()
-
-    plt.figure(figsize=(10, 5))
-    plt.bar(names, maes)
-    plt.xticks(rotation=30, ha="right")
-    plt.ylabel("MAE")
-    plt.title(f"{data_title(config)} - Prequential Rolling Evaluation: MAE Comparison")
-    plt.tight_layout()
-    mae_png_path = os.path.join(
-        save_dir,
-        config["eval_type"] + f"_model_comparison_mae_{timestamp}.png",
-    )
-    plt.savefig(mae_png_path, dpi=300, bbox_inches="tight")
+    plt.savefig(rmse_png_path, dpi=300, bbox_inches="tight")
     plt.close()
 
     plt.figure(figsize=(10, 5))
@@ -1555,11 +1516,10 @@ def visualize_model_comparison(model_rows, config, save_dir="./results"):
     plt.savefig(trend_png_path, dpi=300, bbox_inches="tight")
     plt.close()
 
-    print(f"MSE comparison figure saved to: {mse_png_path}")
-    print(f"MAE comparison figure saved to: {mae_png_path}")
+    print(f"RMSE comparison figure saved to: {rmse_png_path}")
     print(f"Trend accuracy comparison figure saved to: {trend_png_path}")
 
-    return mse_png_path, mae_png_path, trend_png_path
+    return rmse_png_path, trend_png_path
 
 def prequential_rolling_evaluate(
     encoder,
@@ -1740,13 +1700,12 @@ def prequential_rolling_evaluate(
         writer.writeheader()
         writer.writerows(score_rows)
 
-    test_mse = float(np.mean((all_preds - all_targets) ** 2))
-    test_mae = float(np.mean(np.abs(all_preds - all_targets)))
+    test_rmse = float(rmse(all_targets, all_preds))
 
     print(f"Locked forecasts saved to: {forecast_csv_path}")
     print(f"Scores saved to: {score_csv_path}")
 
-    return test_mse, test_mae, all_preds, all_targets, forecast_csv_path, score_csv_path
+    return test_rmse, all_preds, all_targets, forecast_csv_path, score_csv_path
 
 
 def evaluate_model(
@@ -1759,9 +1718,6 @@ def evaluate_model(
 ):
     encoder.eval()
     decoder.eval()
-
-    l_mse = []
-    l_mae = []
 
     all_preds = []
     all_targets = []
@@ -1801,27 +1757,11 @@ def evaluate_model(
                 ).reshape(-1)
             )
 
-            batch_mse = mse(
-                pred_np.reshape(-1),
-                target_np.reshape(-1),
-            )
-
-            batch_mae = mae(
-                pred_np.reshape(-1),
-                target_np.reshape(-1),
-            )
-
-            l_mse.append(batch_mse)
-            l_mae.append(batch_mae)
-
     all_preds = np.concatenate(all_preds, axis=0)
     all_targets = np.concatenate(all_targets, axis=0)
     all_origins = np.concatenate(all_origins, axis=0)
 
-    mean_mse = float(np.mean(l_mse))
-    mean_mae = float(np.mean(l_mae))
-
-    return mean_mse, mean_mae, all_preds, all_targets, all_origins
+    return float(rmse(all_targets, all_preds)), all_preds, all_targets, all_origins
 
 
 def compute_trend_accuracy(
@@ -2115,7 +2055,7 @@ if __name__ == "__main__":
             ),
         }[forecast_target],
         "metric_definition": (
-            "MSE and MAE over every saved rolling-step/horizon target value"
+            "RMSE over every saved rolling-step/horizon target value"
         ),
         "direction_accuracy_definition": (
             "sign of consecutive forecast-horizon differences equals sign of "
@@ -2392,10 +2332,9 @@ if __name__ == "__main__":
     print("Start downstream decoder training")
 
     loss_history = []
-    mse_loss_history = []
+    rmse_loss_history = []
     trend_loss_history = []
-    val_mse_history = []
-    val_mae_history = []
+    val_rmse_history = []
     val_trend_history = []
 
     best_val_score = float("inf")
@@ -2414,7 +2353,7 @@ if __name__ == "__main__":
         decoder.train()
 
         epoch_losses = []
-        epoch_mse_losses = []
+        epoch_rmse_losses = []
         epoch_trend_losses = []
 
         for context_patches, target_patch in train_loader:
@@ -2442,11 +2381,7 @@ if __name__ == "__main__":
 
             predicted_next_patch = decoder(context_embedding)
 
-            mse_loss = torch.nn.functional.mse_loss(
-                predicted_next_patch,
-                target_patch,
-                reduction="mean",
-            )
+            forecast_rmse_loss = rmse_loss(predicted_next_patch, target_patch)
 
             trend_loss = directional_auxiliary_loss(
                 predicted_patch=predicted_next_patch,
@@ -2467,27 +2402,27 @@ if __name__ == "__main__":
                 ),
             )
 
-            loss = mse_loss + trend_weight * trend_loss
+            loss = forecast_rmse_loss + trend_weight * trend_loss
 
             loss.backward()
             optimizer.step()
 
             epoch_losses.append(loss.detach())
-            epoch_mse_losses.append(mse_loss.detach())
+            epoch_rmse_losses.append(forecast_rmse_loss.detach())
             epoch_trend_losses.append(trend_loss.detach())
 
         avg_train_loss = ordered_scalar_mean(epoch_losses)
-        avg_train_mse_loss = ordered_scalar_mean(epoch_mse_losses)
+        avg_train_rmse_loss = ordered_scalar_mean(epoch_rmse_losses)
         avg_train_trend_loss = ordered_scalar_mean(epoch_trend_losses)
         loss_history.append(avg_train_loss)
-        mse_loss_history.append(avg_train_mse_loss)
+        rmse_loss_history.append(avg_train_rmse_loss)
         trend_loss_history.append(avg_train_trend_loss)
 
         # =========================
         # Validation
         # =========================
 
-        val_mse, val_mae, val_preds, val_targets, val_origins = evaluate_model(
+        val_rmse, val_preds, val_targets, val_origins = evaluate_model(
             encoder=encoder,
             decoder=decoder,
             loader=val_loader,
@@ -2503,10 +2438,9 @@ if __name__ == "__main__":
             in ("cumulative_log_return", "excess_log_return"),
             origins=val_origins,
         )
-        val_score = val_mse + trend_selection_weight * (1.0 - val_trend_acc)
+        val_score = val_rmse + trend_selection_weight * (1.0 - val_trend_acc)
 
-        val_mse_history.append(val_mse)
-        val_mae_history.append(val_mae)
+        val_rmse_history.append(val_rmse)
         val_trend_history.append(val_trend_acc)
 
         if val_score < best_val_score:
@@ -2524,10 +2458,9 @@ if __name__ == "__main__":
             print(
                 f"Epoch {epoch}: "
                 f"train_loss={avg_train_loss:.6f}, "
-                f"mse_loss={avg_train_mse_loss:.6f}, "
+                f"rmse_loss={avg_train_rmse_loss:.6f}, "
                 f"trend_loss={avg_train_trend_loss:.6f}, "
-                f"val_mse={val_mse:.6f}, "
-                f"val_mae={val_mae:.6f}, "
+                f"val_rmse={val_rmse:.6f}, "
                 f"val_trend_acc={val_trend_acc:.4f}"
             )
 
@@ -2546,15 +2479,14 @@ if __name__ == "__main__":
     save_path = os.path.join(results_dir, "loss.txt")
 
     with open(save_path, "w") as f:
-        f.write("epoch,train_loss,mse_loss,trend_loss,val_mse,val_mae,val_trend_acc\n")
+        f.write("epoch,train_loss,rmse_loss,trend_loss,val_rmse,val_trend_acc\n")
         for epoch in range(len(loss_history)):
             f.write(
                 f"{epoch},"
                 f"{loss_history[epoch]},"
-                f"{mse_loss_history[epoch]},"
+                f"{rmse_loss_history[epoch]},"
                 f"{trend_loss_history[epoch]},"
-                f"{val_mse_history[epoch]},"
-                f"{val_mae_history[epoch]},"
+                f"{val_rmse_history[epoch]},"
                 f"{val_trend_history[epoch]}\n"
             )
 
@@ -2575,7 +2507,7 @@ if __name__ == "__main__":
         lr=config.get("gru_lr", 1e-3),
     )
 
-    best_gru_val_mse = float("inf")
+    best_gru_val_rmse = float("inf")
     best_gru_state = None
 
     for epoch in range(config.get("gru_num_epochs", config["num_epochs"])):
@@ -2595,11 +2527,7 @@ if __name__ == "__main__":
 
             pred = gru_model(context_patches)
 
-            loss = torch.nn.functional.mse_loss(
-                pred,
-                target_patch,
-                reduction="mean",
-            )
+            loss = rmse_loss(pred, target_patch)
 
             gru_optimizer.zero_grad()
             loss.backward()
@@ -2609,14 +2537,14 @@ if __name__ == "__main__":
 
         avg_gru_loss = ordered_scalar_mean(epoch_gru_losses)
 
-        gru_val_mse, gru_val_mae, _, _ = evaluate_gru_model(
+        gru_val_rmse, _, _ = evaluate_gru_model(
             model=gru_model,
             loader=val_loader,
             device=device,
         )
 
-        if gru_val_mse < best_gru_val_mse:
-            best_gru_val_mse = gru_val_mse
+        if gru_val_rmse < best_gru_val_rmse:
+            best_gru_val_rmse = gru_val_rmse
             best_gru_state = {
                 k: v.detach().cpu().clone()
                 for k, v in gru_model.state_dict().items()
@@ -2626,8 +2554,7 @@ if __name__ == "__main__":
             print(
                 f"GRU Epoch {epoch}: "
                 f"train_loss={avg_gru_loss:.6f}, "
-                f"val_mse={gru_val_mse:.6f}, "
-                f"val_mae={gru_val_mae:.6f}"
+                f"val_rmse={gru_val_rmse:.6f}"
             )
 
     if best_gru_state is not None:
@@ -2640,7 +2567,7 @@ if __name__ == "__main__":
     # Split-specific downstream evaluation after validation checkpoint selection
     # =========================
 
-    test_mse, test_mae, all_preds, all_targets, forecast_csv_path, score_csv_path = (
+    test_rmse, all_preds, all_targets, forecast_csv_path, score_csv_path = (
         prequential_rolling_evaluate(
             encoder=encoder,
             decoder=decoder,
@@ -2663,11 +2590,10 @@ if __name__ == "__main__":
 
     evaluation_label = "Validation Selection" if evaluation_split == "validation" else "Final Test"
     print(f"========== {evaluation_label} ({data_title(config)}) ==========")
-    print("TS-JEPA MSE is: {:.6f}".format(test_mse))
-    print("TS-JEPA MAE is: {:.6f}".format(test_mae))
+    print("TS-JEPA RMSE is: {:.6f}".format(test_rmse))
     print("TS-JEPA Trend Accuracy is: {:.4f}".format(trend_accuracy))
 
-    gru_test_mse, gru_test_mae, gru_preds, gru_targets, _, _ = (
+    gru_test_rmse, gru_preds, gru_targets, _, _ = (
         prequential_gru_evaluate(
             model=gru_model,
             dataset=evaluation_loader.dataset,
@@ -2687,8 +2613,7 @@ if __name__ == "__main__":
     )
 
     print(f"========== GRU {evaluation_label} ({data_title(config)}) ==========")
-    print("GRU MSE is: {:.6f}".format(gru_test_mse))
-    print("GRU MAE is: {:.6f}".format(gru_test_mae))
+    print("GRU RMSE is: {:.6f}".format(gru_test_rmse))
     print("GRU Trend Accuracy is: {:.4f}".format(gru_trend_accuracy))
 
     # =========================
@@ -2715,15 +2640,13 @@ if __name__ == "__main__":
         {
             "model": "TS-JEPA",
             "forecast_target": forecast_target,
-            "mse": test_mse,
-            "mae": test_mae,
+            "rmse": test_rmse,
             "trend_accuracy": trend_accuracy,
         },
         {
             "model": "GRU",
             "forecast_target": forecast_target,
-            "mse": gru_test_mse,
-            "mae": gru_test_mae,
+            "rmse": gru_test_rmse,
             "trend_accuracy": gru_trend_accuracy,
         },
     ] + baseline_summary_rows
@@ -2735,8 +2658,7 @@ if __name__ == "__main__":
         seed=config["seed"],
         strategy=config.get("mask_strategy", "random"),
         metrics={
-            "mse": test_mse,
-            "mae": test_mae,
+            "rmse": test_rmse,
             "direction_accuracy": trend_accuracy,
         },
     )
@@ -2763,12 +2685,10 @@ if __name__ == "__main__":
     # Rolling error over time
     # =========================
 
-    rolling_mse = ((all_preds - all_targets) ** 2).mean(axis=1)
-    rolling_mae = np.abs(all_preds - all_targets).mean(axis=1)
+    rolling_rmse = np.sqrt(((all_preds - all_targets) ** 2).mean(axis=1))
 
     plt.figure(figsize=(12, 5))
-    plt.plot(rolling_mse, label="Rolling MSE")
-    plt.plot(rolling_mae, label="Rolling MAE")
+    plt.plot(rolling_rmse, label="Rolling RMSE")
     plt.legend()
     plt.xlabel("Rolling evaluation step")
     plt.ylabel("Error")

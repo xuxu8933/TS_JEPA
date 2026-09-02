@@ -27,7 +27,7 @@ class PackageExperimentResultsTest(unittest.TestCase):
         run_dir.mkdir(parents=True)
         comparison_name = "last_model_comparison_20260101_000000.csv"
         (run_dir / comparison_name).write_text(
-            "model,mse\nTS-JEPA,0.1\n",
+            "model,rmse\nTS-JEPA,0.1\n",
             encoding="utf-8",
         )
         (run_dir / "run_manifest.json").write_text(

@@ -737,13 +737,13 @@ def parse_args(argv=None):
     parser.add_argument("--lambda-mae", type=float, default=0.5)
     parser.add_argument(
         "--jepa-loss",
-        choices=("mse", "l1", "smooth_l1"),
-        default="mse",
+        choices=("rmse",),
+        default="rmse",
     )
     parser.add_argument(
         "--mae-loss",
-        choices=("mse", "l1", "smooth_l1"),
-        default="mse",
+        choices=("rmse",),
+        default="rmse",
     )
     parser.add_argument("--mae-window-patches", type=int, default=1)
     parser.add_argument("--jepa-gap-patches", type=int, default=4)

@@ -31,8 +31,8 @@
       }
     },
     "objectives": {
-      "jepa": {"weight": 1.0, "loss": "mse"},
-      "mae": {"weight": 1.0, "loss": "mse"}
+      "jepa": {"weight": 1.0, "loss": "rmse"},
+      "mae": {"weight": 1.0, "loss": "rmse"}
     },
     "pretraining": {
       "skip": false,

@@ -52,8 +52,8 @@ RAW_MODEL_METHODS = {
     "mean_context": "Mean-context",
 }
 REFERENCE_METHOD = "Naive-last"
-METRICS = ("mse", "mae", "direction_accuracy")
-LOWER_IS_BETTER = {"mse": True, "mae": True, "direction_accuracy": False}
+METRICS = ("rmse", "direction_accuracy")
+LOWER_IS_BETTER = {"rmse": True, "direction_accuracy": False}
 DIRECTION_DEFINITION = (
     "project_within_trajectory_v1: sign of consecutive forecast-horizon "
     "differences equals sign of consecutive target differences; relative-return "
@@ -67,8 +67,7 @@ TIDY_COLUMNS = (
     "method",
     "strategy",
     "split",
-    "mse",
-    "mae",
+    "rmse",
     "direction_accuracy",
     "forecast_horizon",
     "checkpoint_path",
@@ -130,14 +129,10 @@ PAIRED_RUN_COLUMNS = (
     "model",
     "strategy",
     "test_signature",
-    "model_mse",
-    "naive_mse",
-    "delta_mse",
-    "relative_mse_improvement_pct",
-    "model_mae",
-    "naive_mae",
-    "delta_mae",
-    "relative_mae_improvement_pct",
+    "model_rmse",
+    "naive_rmse",
+    "delta_rmse",
+    "relative_rmse_improvement_pct",
     "model_source_file",
     "naive_source_file",
 )
@@ -153,20 +148,17 @@ THESIS_TABLE_FILES = (
     "table_reproducibility.tex",
 )
 THESIS_FIGURE_STEMS = (
-    "fig_paired_mse_forest",
-    "fig_paired_mae_forest",
-    "fig_relative_mse_heatmap",
-    "fig_relative_mae_heatmap",
+    "fig_paired_rmse_forest",
+    "fig_relative_rmse_heatmap",
     "fig_direction_accuracy_heatmap",
-    "fig_mse_by_horizon",
-    "fig_mae_by_horizon",
+    "fig_rmse_by_horizon",
     "fig_direction_by_horizon",
-    "fig_seed_level_delta_mse_distribution",
+    "fig_seed_level_delta_rmse_distribution",
     "fig_representative_prediction_trajectory",
 )
 THESIS_DIAGNOSTIC_STEMS = (
     "diagnostic_downstream_training_loss",
-    "diagnostic_downstream_validation_mse",
+    "diagnostic_downstream_validation_rmse",
     "diagnostic_pretraining_losses",
 )
 TIMESTAMP_RE = re.compile(r"(\d{8}_\d{6})")
@@ -848,7 +840,7 @@ def _normalise_metadata(
         }.get(target),
     )
     normalized["metric_definition"] = (
-        "MSE and MAE over all saved rolling-step/horizon target values; "
+        "RMSE over all saved rolling-step/horizon target values; "
         + DIRECTION_DEFINITION
     )
     normalized.setdefault("experiment_id", normalized.get("config_fingerprint"))
@@ -1090,7 +1082,7 @@ def discover_bundles(
             )
             bundles.append(bundle)
             continue
-        required_columns = {"model", "mse", "mae", "trend_accuracy"}
+        required_columns = {"model", "rmse", "trend_accuracy"}
         if not required_columns.issubset(comparison.columns):
             bundle.issues.append(
                 issue(
@@ -1135,8 +1127,7 @@ def discover_bundles(
                     )
                 )
                 continue
-            summary_mse = finite_or_nan(comparison_row.get("mse"))
-            summary_mae = finite_or_nan(comparison_row.get("mae"))
+            summary_rmse = finite_or_nan(comparison_row.get("rmse"))
             summary_direction = finite_or_nan(comparison_row.get("trend_accuracy"))
             score_path = _score_path_for_model(bundle, raw_model)
             score_frame = None
@@ -1145,8 +1136,7 @@ def discover_bundles(
                 try:
                     score_frame = _load_score_frame(score_path, raw_model)
                     pred, true = _arrays_from_scores(score_frame)
-                    recomputed_mse = float(np.mean((pred - true) ** 2))
-                    recomputed_mae = float(np.mean(np.abs(pred - true)))
+                    recomputed_rmse = float(np.sqrt(np.mean((pred - true) ** 2)))
                     if "forecast_target" in score_frame and not score_frame.empty:
                         forecast_target_value = score_frame["forecast_target"].iloc[0]
                     else:
@@ -1175,8 +1165,7 @@ def discover_bundles(
                             pred, true, forecast_target
                         )
                     for metric_name, stored, recomputed in (
-                        ("mse", summary_mse, recomputed_mse),
-                        ("mae", summary_mae, recomputed_mae),
+                        ("rmse", summary_rmse, recomputed_rmse),
                         ("direction_accuracy", summary_direction, recomputed_direction),
                     ):
                         if (
@@ -1197,8 +1186,7 @@ def discover_bundles(
                                     source_file=str(score_path),
                                 )
                             )
-                    summary_mse = recomputed_mse
-                    summary_mae = recomputed_mae
+                    summary_rmse = recomputed_rmse
                     summary_direction = recomputed_direction
                     metadata["forecast_horizon"] = int(score_frame["horizon"].max())
                     if forecast_target is not None:
@@ -1249,8 +1237,7 @@ def discover_bundles(
                 "method": method,
                 "strategy": strategy,
                 "split": metadata.get("split", "test"),
-                "mse": summary_mse,
-                "mae": summary_mae,
+                "rmse": summary_rmse,
                 "direction_accuracy": summary_direction,
                 "forecast_horizon": metadata.get("forecast_horizon"),
                 "checkpoint_path": metadata.get("checkpoint_path"),
@@ -1279,11 +1266,11 @@ def discover_bundles(
                 "raw_model": raw_model,
                 "metadata_sources": metadata.get("metadata_sources", ""),
             }
-            if not all(math.isfinite(float(row[name])) for name in ("mse", "mae")):
+            if not math.isfinite(float(row["rmse"])):
                 bundle.issues.append(
                     issue(
                         "non_finite_metric",
-                        "MSE or MAE is missing/non-finite",
+                        "RMSE is missing/non-finite",
                         stock=stock,
                         seed=seed,
                         method=method,
@@ -1525,7 +1512,7 @@ def build_canonical_data(
                         )
                     )
                     continue
-                if not all(math.isfinite(float(row[name])) for name in ("mse", "mae")):
+                if not math.isfinite(float(row["rmse"])):
                     continue
                 canonical_rows.append({key: row.get(key) for key in TIDY_COLUMNS})
                 included_ids.add(
@@ -1589,7 +1576,7 @@ def build_canonical_data(
     if not baseline_frame.empty:
         baseline_frame = baseline_frame[baseline_frame["method"].isin(deterministic)]
         for (stock, method), group in baseline_frame.groupby(["stock", "method"]):
-            for metric in ("mse", "mae", "direction_accuracy"):
+            for metric in METRICS:
                 values = group[metric].dropna().to_numpy(float)
                 if len(values) > 1 and not np.allclose(values, values[0], rtol=1e-8, atol=1e-10):
                     issues.append(
@@ -1739,7 +1726,7 @@ def build_canonical_data(
                     "model_source_file": model["original_source_file"],
                     "naive_source_file": reference["original_source_file"],
                 }
-                for metric in ("mse", "mae"):
+                for metric in ("rmse",):
                     model_value = float(model[metric])
                     naive_value = float(reference[metric])
                     paired_row[f"model_{metric}"] = model_value
@@ -1759,10 +1746,8 @@ def build_stock_summary(tidy: pd.DataFrame) -> pd.DataFrame:
     columns = (
         "stock",
         "method",
-        "mse_mean",
-        "mse_std",
-        "mae_mean",
-        "mae_std",
+        "rmse_mean",
+        "rmse_std",
         "direction_accuracy_mean",
         "direction_accuracy_std",
         "n_valid_seeds",
@@ -1773,10 +1758,8 @@ def build_stock_summary(tidy: pd.DataFrame) -> pd.DataFrame:
     summary = (
         tidy.groupby(["stock", "method"], as_index=False)
         .agg(
-            mse_mean=("mse", "mean"),
-            mse_std=("mse", "std"),
-            mae_mean=("mae", "mean"),
-            mae_std=("mae", "std"),
+            rmse_mean=("rmse", "mean"),
+            rmse_std=("rmse", "std"),
             direction_accuracy_mean=("direction_accuracy", "mean"),
             direction_accuracy_std=("direction_accuracy", "std"),
             n_valid_seeds=("seed", "nunique"),
@@ -1784,7 +1767,7 @@ def build_stock_summary(tidy: pd.DataFrame) -> pd.DataFrame:
         )
         .reset_index(drop=True)
     )
-    for column in ("mse_std", "mae_std", "direction_accuracy_std"):
+    for column in ("rmse_std", "direction_accuracy_std"):
         summary[column] = summary[column].fillna(0.0)
     method_index = {method: index for index, method in enumerate(METHOD_ORDER)}
     summary["_method_order"] = summary["method"].map(method_index)
@@ -1798,19 +1781,14 @@ def build_stock_summary(tidy: pd.DataFrame) -> pd.DataFrame:
 def build_overall_summary(stock_summary: pd.DataFrame) -> pd.DataFrame:
     columns = (
         "method",
-        "mse",
-        "mse_std_across_stocks",
-        "mae",
-        "mae_std_across_stocks",
+        "rmse",
+        "rmse_std_across_stocks",
         "direction_accuracy",
         "direction_accuracy_std_across_stocks",
-        "mse_average_rank",
-        "mae_average_rank",
+        "rmse_average_rank",
         "direction_accuracy_average_rank",
-        "mse_stock_wins",
-        "mse_stock_second_places",
-        "mae_stock_wins",
-        "mae_stock_second_places",
+        "rmse_stock_wins",
+        "rmse_stock_second_places",
         "direction_accuracy_stock_wins",
         "direction_accuracy_stock_second_places",
         "n_stocks",
@@ -1849,10 +1827,8 @@ def build_overall_summary(stock_summary: pd.DataFrame) -> pd.DataFrame:
             continue
         row = {
             "method": method,
-            "mse": float(group["mse_mean"].mean()),
-            "mse_std_across_stocks": float(group["mse_mean"].std(ddof=1)) if len(group) > 1 else 0.0,
-            "mae": float(group["mae_mean"].mean()),
-            "mae_std_across_stocks": float(group["mae_mean"].std(ddof=1)) if len(group) > 1 else 0.0,
+            "rmse": float(group["rmse_mean"].mean()),
+            "rmse_std_across_stocks": float(group["rmse_mean"].std(ddof=1)) if len(group) > 1 else 0.0,
             "direction_accuracy": float(group["direction_accuracy_mean"].mean()),
             "direction_accuracy_std_across_stocks": (
                 float(group["direction_accuracy_mean"].std(ddof=1))
@@ -1891,45 +1867,28 @@ def build_paired_summary(
     columns = (
         "model",
         "n_stocks",
-        "mean_delta_mse",
-        "median_delta_mse",
-        "relative_mse_improvement_pct",
-        "mse_ci_low",
-        "mse_ci_high",
-        "mse_wilcoxon_statistic",
-        "mse_p_value",
-        "mse_holm_p_value",
-        "mse_rank_biserial",
-        "mse_wilcoxon_n",
-        "mse_stock_wins",
-        "mse_stock_losses",
-        "mse_stock_ties",
-        "mse_run_wins",
-        "mse_run_total",
-        "mean_delta_mae",
-        "median_delta_mae",
-        "relative_mae_improvement_pct",
-        "mae_ci_low",
-        "mae_ci_high",
-        "mae_wilcoxon_statistic",
-        "mae_p_value",
-        "mae_holm_p_value",
-        "mae_rank_biserial",
-        "mae_wilcoxon_n",
-        "mae_stock_wins",
-        "mae_stock_losses",
-        "mae_stock_ties",
-        "mae_run_wins",
-        "mae_run_total",
+        "mean_delta_rmse",
+        "median_delta_rmse",
+        "relative_rmse_improvement_pct",
+        "rmse_ci_low",
+        "rmse_ci_high",
+        "rmse_wilcoxon_statistic",
+        "rmse_p_value",
+        "rmse_holm_p_value",
+        "rmse_rank_biserial",
+        "rmse_wilcoxon_n",
+        "rmse_stock_wins",
+        "rmse_stock_losses",
+        "rmse_stock_ties",
+        "rmse_run_wins",
+        "rmse_run_total",
     )
     stock_columns = (
         "stock",
         "model",
         "n_paired_seeds",
-        "delta_mse",
-        "relative_mse_improvement_pct",
-        "delta_mae",
-        "relative_mae_improvement_pct",
+        "delta_rmse",
+        "relative_rmse_improvement_pct",
     )
     if paired_runs.empty:
         return pd.DataFrame(columns=columns), pd.DataFrame(columns=stock_columns)
@@ -1938,10 +1897,8 @@ def build_paired_summary(
         learned.groupby(["stock", "model"], as_index=False)
         .agg(
             n_paired_seeds=("seed", "nunique"),
-            delta_mse=("delta_mse", "mean"),
-            relative_mse_improvement_pct=("relative_mse_improvement_pct", "mean"),
-            delta_mae=("delta_mae", "mean"),
-            relative_mae_improvement_pct=("relative_mae_improvement_pct", "mean"),
+            delta_rmse=("delta_rmse", "mean"),
+            relative_rmse_improvement_pct=("relative_rmse_improvement_pct", "mean"),
         )
         .reset_index(drop=True)
     )
@@ -1952,7 +1909,7 @@ def build_paired_summary(
         if stock_group.empty:
             continue
         row: dict[str, Any] = {"model": model, "n_stocks": stock_group["stock"].nunique()}
-        for metric in ("mse", "mae"):
+        for metric in ("rmse",):
             deltas = stock_group[f"delta_{metric}"].to_numpy(float)
             relative = stock_group[f"relative_{metric}_improvement_pct"].to_numpy(float)
             seed_offset = int(stable_hash([model, metric])[:8], 16)
@@ -1983,7 +1940,7 @@ def build_paired_summary(
             )
         rows.append(row)
     summary = pd.DataFrame(rows)
-    for metric in ("mse", "mae"):
+    for metric in ("rmse",):
         adjusted = holm_adjust(
             dict(zip(summary["model"], summary[f"{metric}_p_value"]))
             if not summary.empty
@@ -2005,12 +1962,9 @@ def build_shared_vs_local_comparison(
         "stock",
         "n_matched_seeds",
         "matched_seeds",
-        "shared_mse",
-        "local_mse",
-        "delta_mse",
-        "shared_mae",
-        "local_mae",
-        "delta_mae",
+        "shared_rmse",
+        "local_rmse",
+        "delta_rmse",
     )
     summary_columns = (
         "metric",
@@ -2028,7 +1982,7 @@ def build_shared_vs_local_comparison(
             pd.DataFrame(columns=stock_columns),
             pd.DataFrame(columns=summary_columns),
         )
-    required = {"stock", "seed", "method", "mse", "mae"}
+    required = {"stock", "seed", "method", "rmse"}
     missing = sorted(required - set(tidy.columns))
     if missing:
         raise ValueError(f"Canonical data are missing Shared-vs-Local columns: {missing}")
@@ -2111,7 +2065,7 @@ def build_shared_vs_local_comparison(
             "n_matched_seeds": len(matched),
             "matched_seeds": ";".join(str(seed) for seed, _, _ in matched),
         }
-        for metric in ("mse", "mae"):
+        for metric in ("rmse",):
             shared_value = float(np.mean([float(row[metric]) for _, row, _ in matched]))
             local_value = float(np.mean([float(row[metric]) for _, _, row in matched]))
             stock_row[f"shared_{metric}"] = shared_value
@@ -2121,7 +2075,7 @@ def build_shared_vs_local_comparison(
 
     stock_pairs = pd.DataFrame(stock_rows, columns=stock_columns)
     summary_rows = []
-    for metric in ("mse", "mae"):
+    for metric in ("rmse",):
         values = (
             stock_pairs[f"delta_{metric}"].to_numpy(float)
             if not stock_pairs.empty
@@ -2138,8 +2092,7 @@ def build_relative_stock_data(paired_runs: pd.DataFrame) -> pd.DataFrame:
     columns = (
         "stock",
         "method",
-        "relative_mse_improvement_pct",
-        "relative_mae_improvement_pct",
+        "relative_rmse_improvement_pct",
         "n_paired_seeds",
     )
     if paired_runs.empty:
@@ -2147,8 +2100,7 @@ def build_relative_stock_data(paired_runs: pd.DataFrame) -> pd.DataFrame:
     summary = (
         paired_runs.groupby(["stock", "model"], as_index=False)
         .agg(
-            relative_mse_improvement_pct=("relative_mse_improvement_pct", "mean"),
-            relative_mae_improvement_pct=("relative_mae_improvement_pct", "mean"),
+            relative_rmse_improvement_pct=("relative_rmse_improvement_pct", "mean"),
             n_paired_seeds=("seed", "nunique"),
         )
         .rename(columns={"model": "method"})
@@ -2159,8 +2111,7 @@ def build_relative_stock_data(paired_runs: pd.DataFrame) -> pd.DataFrame:
             {
                 "stock": stock,
                 "method": REFERENCE_METHOD,
-                "relative_mse_improvement_pct": 0.0,
-                "relative_mae_improvement_pct": 0.0,
+                "relative_rmse_improvement_pct": 0.0,
                 "n_paired_seeds": int(
                     summary.loc[summary["stock"] == stock, "n_paired_seeds"].max()
                 ),
@@ -2181,12 +2132,9 @@ def build_horizon_metrics(
     columns = (
         "method",
         "horizon",
-        "mse",
-        "mse_ci_low",
-        "mse_ci_high",
-        "mae",
-        "mae_ci_low",
-        "mae_ci_high",
+        "rmse",
+        "rmse_ci_low",
+        "rmse_ci_high",
         "direction_accuracy",
         "direction_ci_low",
         "direction_ci_high",
@@ -2213,8 +2161,7 @@ def build_horizon_metrics(
                     "seed": int(seed),
                     "method": method,
                     "horizon": int(horizon),
-                    "mse": float(np.mean(error**2)),
-                    "mae": float(np.mean(np.abs(error))),
+                    "rmse": float(np.sqrt(np.mean(error**2))),
                     "direction_accuracy": direction.get(int(horizon), float("nan")),
                 }
             )
@@ -2222,8 +2169,7 @@ def build_horizon_metrics(
     stock_level = (
         runs.groupby(["stock", "method", "horizon"], as_index=False)
         .agg(
-            mse=("mse", "mean"),
-            mae=("mae", "mean"),
+            rmse=("rmse", "mean"),
             direction_accuracy=("direction_accuracy", "mean"),
             n_runs=("seed", "nunique"),
         )
@@ -2238,8 +2184,7 @@ def build_horizon_metrics(
             "n_runs": int(group["n_runs"].sum()),
         }
         for metric, prefix in (
-            ("mse", "mse"),
-            ("mae", "mae"),
+            ("rmse", "rmse"),
             ("direction_accuracy", "direction"),
         ):
             values = group[metric].dropna().to_numpy(float)
@@ -2270,8 +2215,7 @@ def validate_summaries(
     comparable_columns = [
         "stock",
         "method",
-        "mse_mean",
-        "mae_mean",
+        "rmse_mean",
         "direction_accuracy_mean",
         "n_valid_seeds",
     ]
@@ -2478,22 +2422,11 @@ def plot_relative_heatmaps(relative: pd.DataFrame, figures_dir: Path) -> list[Pa
     paths.extend(
         _heatmap(
             relative,
-            value_column="relative_mse_improvement_pct",
-            title="Relative MSE performance versus naive-last",
+            value_column="relative_rmse_improvement_pct",
+            title="Relative RMSE performance versus naive-last",
             colorbar_label="Improvement (%) — positive favours method",
             figures_dir=figures_dir,
-            stem="fig_relative_mse_heatmap",
-            centered=True,
-        )
-    )
-    paths.extend(
-        _heatmap(
-            relative,
-            value_column="relative_mae_improvement_pct",
-            title="Relative MAE performance versus naive-last",
-            colorbar_label="Improvement (%) — positive favours method",
-            figures_dir=figures_dir,
-            stem="fig_relative_mae_heatmap",
+            stem="fig_relative_rmse_heatmap",
             centered=True,
         )
     )
@@ -2519,8 +2452,7 @@ def plot_horizon_metrics(horizon_metrics: pd.DataFrame, figures_dir: Path) -> li
     plt = _configure_matplotlib()
     paths: list[Path] = []
     specifications = (
-        ("mse", "mse_ci_low", "mse_ci_high", "MSE", "fig_mse_by_horizon"),
-        ("mae", "mae_ci_low", "mae_ci_high", "MAE", "fig_mae_by_horizon"),
+        ("rmse", "rmse_ci_low", "rmse_ci_high", "RMSE", "fig_rmse_by_horizon"),
         (
             "direction_accuracy",
             "direction_ci_low",
@@ -2577,7 +2509,7 @@ def plot_seed_difference_distribution(
         return []
     plt = _configure_matplotlib()
     methods = [method for method in LEARNED_METHODS if method in set(frame["model"])]
-    data = [frame.loc[frame["model"] == method, "delta_mse"].to_numpy(float) for method in methods]
+    data = [frame.loc[frame["model"] == method, "delta_rmse"].to_numpy(float) for method in methods]
     fig, axis = plt.subplots(figsize=(7.2, 4.3))
     box = axis.boxplot(
         data,
@@ -2597,19 +2529,19 @@ def plot_seed_difference_distribution(
         jitter = rng.uniform(-0.15, 0.15, size=len(rows))
         axis.scatter(
             method_index + jitter,
-            rows["delta_mse"],
+            rows["delta_rmse"],
             c=[stock_colors[stock] for stock in rows["stock"]],
             s=12,
             alpha=0.65,
             linewidths=0,
         )
     axis.axhline(0.0, color="black", linestyle="--", linewidth=0.9)
-    axis.set_ylabel("$\\Delta$MSE (model $-$ naive-last)")
-    axis.set_title("Seed-level paired MSE differences (descriptive)")
+    axis.set_ylabel("$\\Delta$RMSE (model $-$ naive-last)")
+    axis.set_title("Seed-level paired RMSE differences (descriptive)")
     axis.tick_params(axis="x", rotation=20)
     axis.grid(axis="y", color="#e0e0e0", linewidth=0.6)
     fig.tight_layout()
-    return _save_figure(fig, figures_dir, "fig_seed_level_delta_mse_distribution")
+    return _save_figure(fig, figures_dir, "fig_seed_level_delta_rmse_distribution")
 
 
 def plot_representative_trajectory(
@@ -2634,8 +2566,8 @@ def plot_representative_trajectory(
     ].copy()
     valid_seeds = {seed for candidate_stock, seed in complete_keys if candidate_stock == stock}
     stock_shared = stock_shared[stock_shared["seed"].astype(int).isin(valid_seeds)]
-    median_mse = float(stock_shared["mse"].median())
-    stock_shared["distance_to_median"] = (stock_shared["mse"] - median_mse).abs()
+    median_rmse = float(stock_shared["rmse"].median())
+    stock_shared["distance_to_median"] = (stock_shared["rmse"] - median_rmse).abs()
     selected_row = stock_shared.sort_values(["distance_to_median", "seed"]).iloc[0]
     seed = int(selected_row["seed"])
     rolling_step = int(
@@ -2692,7 +2624,7 @@ def plot_representative_trajectory(
         "selection_rule": (
             "Use NVDA when it has complete saved predictions (otherwise the "
             "alphabetically first complete stock); select the Shared-target seed "
-            "whose overall test MSE is closest to that stock's median, breaking "
+            "whose overall test RMSE is closest to that stock's median, breaking "
             "ties by smaller seed; plot the first saved rolling step."
         ),
     }
@@ -2709,7 +2641,7 @@ def plot_downstream_diagnostics(tidy: pd.DataFrame, diagnostics_dir: Path) -> li
             history = pd.read_csv(path)
         except Exception:
             continue
-        required = {"epoch", "train_loss", "val_mse"}
+        required = {"epoch", "train_loss", "val_rmse"}
         if not required.issubset(history.columns):
             continue
         history = history.copy()
@@ -2723,15 +2655,15 @@ def plot_downstream_diagnostics(tidy: pd.DataFrame, diagnostics_dir: Path) -> li
     histories = pd.concat(history_rows, ignore_index=True)
     per_stock = (
         histories.groupby(["method", "stock", "epoch"], as_index=False)
-        .agg(train_loss=("train_loss", "mean"), val_mse=("val_mse", "mean"))
+        .agg(train_loss=("train_loss", "mean"), val_rmse=("val_rmse", "mean"))
     )
     overall = (
         per_stock.groupby(["method", "epoch"], as_index=False)
         .agg(
             train_loss=("train_loss", "mean"),
             train_loss_std=("train_loss", "std"),
-            val_mse=("val_mse", "mean"),
-            val_mse_std=("val_mse", "std"),
+            val_rmse=("val_rmse", "mean"),
+            val_rmse_std=("val_rmse", "std"),
         )
         .fillna(0.0)
     )
@@ -2739,7 +2671,7 @@ def plot_downstream_diagnostics(tidy: pd.DataFrame, diagnostics_dir: Path) -> li
     paths = []
     for metric, std_column, ylabel, stem in (
         ("train_loss", "train_loss_std", "Downstream training loss", "diagnostic_downstream_training_loss"),
-        ("val_mse", "val_mse_std", "Validation MSE", "diagnostic_downstream_validation_mse"),
+        ("val_rmse", "val_rmse_std", "Validation RMSE", "diagnostic_downstream_validation_rmse"),
     ):
         fig, axis = plt.subplots(figsize=(6.5, 3.8))
         for method in METHOD_ORDER[:2]:
@@ -2889,11 +2821,9 @@ def write_main_table(overall: pd.DataFrame, tables_dir: Path) -> list[Path]:
     best_second = {
         column: _best_second_methods(overall, column, lower=lower)
         for column, lower in (
-            ("mse", True),
-            ("mae", True),
+            ("rmse", True),
             ("direction_accuracy", False),
-            ("mse_average_rank", True),
-            ("mae_average_rank", True),
+            ("rmse_average_rank", True),
             ("direction_accuracy_average_rank", True),
         )
     }
@@ -2903,9 +2833,9 @@ def write_main_table(overall: pd.DataFrame, tables_dir: Path) -> list[Path]:
         r"\small",
         r"\caption{Overall forecasting performance. Each metric is first averaged across seeds within an equity and then across equities; $\pm$ denotes the standard deviation across equity-level means. Best values are bold and second-best values are underlined.}",
         r"\label{tab:main_metrics}",
-        r"\begin{tabular}{lrrr}",
+        r"\begin{tabular}{lrr}",
         r"\toprule",
-        r"Method & MSE $\downarrow$ & MAE $\downarrow$ & Direction $\uparrow$ \\",
+        r"Method & RMSE $\downarrow$ & Direction $\uparrow$ \\",
         r"\midrule",
     ]
     indexed = overall.set_index("method")
@@ -2915,12 +2845,11 @@ def write_main_table(overall: pd.DataFrame, tables_dir: Path) -> list[Path]:
         row = indexed.loc[method]
         formatted: dict[str, str] = {}
         for metric, std_column in (
-            ("mse", "mse_std_across_stocks"),
-            ("mae", "mae_std_across_stocks"),
+            ("rmse", "rmse_std_across_stocks"),
             ("direction_accuracy", "direction_accuracy_std_across_stocks"),
         ):
             if math.isfinite(float(row[metric])):
-                precision = 5 if metric in ("mse", "mae") else 3
+                precision = 5 if metric == "rmse" else 3
                 value = rf"${float(row[metric]):.{precision}f} \pm {float(row[std_column]):.{precision}f}$"
                 formatted[metric] = _decorate(
                     value, method, *best_second[metric]
@@ -2931,8 +2860,7 @@ def write_main_table(overall: pd.DataFrame, tables_dir: Path) -> list[Path]:
             " & ".join(
                 [
                     latex_escape(method),
-                    formatted["mse"],
-                    formatted["mae"],
+                    formatted["rmse"],
                     formatted["direction_accuracy"],
                 ]
             )
@@ -2943,9 +2871,9 @@ def write_main_table(overall: pd.DataFrame, tables_dir: Path) -> list[Path]:
             r"\bottomrule",
             r"\end{tabular}",
             r"\par\medskip",
-            r"\begin{tabular}{lrrr}",
+            r"\begin{tabular}{lrr}",
             r"\toprule",
-            r"Method & MSE rank $\downarrow$ & MAE rank $\downarrow$ & Direction rank $\downarrow$ \\",
+            r"Method & RMSE rank $\downarrow$ & Direction rank $\downarrow$ \\",
             r"\midrule",
         ]
     )
@@ -2985,7 +2913,7 @@ def write_paired_table(summary: pd.DataFrame, tables_dir: Path) -> list[Path]:
     csv_path = tables_dir / "table_paired_vs_naive.csv"
     summary.to_csv(csv_path, index=False)
     lines: list[str] = []
-    for metric in ("mse", "mae"):
+    for metric in ("rmse",):
         metric_upper = metric.upper()
         lines.extend(
             [
@@ -3050,7 +2978,7 @@ def write_shared_vs_local_table(
         r"\begin{table}[t]",
         r"\centering",
         r"\small",
-        r"\caption{Stock-level paired comparison of Shared-target JEPA--MAE and Local-MAE/Long-JEPA. Differences are Shared minus Local, so negative values favour Shared for both error metrics.}",
+        r"\caption{Stock-level paired RMSE comparison of Shared-target JEPA--MAE and Local-MAE/Long-JEPA. Differences are Shared minus Local, so negative values favour Shared.}",
         r"\label{tab:shared_vs_local}",
         r"\begin{tabular}{lrrrrrrl}",
         r"\toprule",
@@ -3110,14 +3038,14 @@ def write_appendix_table(stock_summary: pd.DataFrame, tables_dir: Path) -> list[
     csv_path = tables_dir / "table_appendix_stock_metrics.csv"
     stock_summary.to_csv(csv_path, index=False)
     lines = [
-        r"\begin{longtable}{llrrrr}",
+        r"\begin{longtable}{llrrr}",
         r"\caption{Complete stock-level forecasting results. Standard deviations are across valid seeds.}\label{tab:appendix_stock_metrics}\\",
         r"\toprule",
-        r"Equity & Method & MSE & MAE & Direction & Seeds \\",
+        r"Equity & Method & RMSE & Direction & Seeds \\",
         r"\midrule",
         r"\endfirsthead",
         r"\toprule",
-        r"Equity & Method & MSE & MAE & Direction & Seeds \\",
+        r"Equity & Method & RMSE & Direction & Seeds \\",
         r"\midrule",
         r"\endhead",
     ]
@@ -3136,8 +3064,7 @@ def write_appendix_table(stock_summary: pd.DataFrame, tables_dir: Path) -> list[
                 [
                     latex_escape(row.stock),
                     latex_escape(row.method),
-                    rf"${row.mse_mean:.5f} \pm {row.mse_std:.5f}$",
-                    rf"${row.mae_mean:.5f} \pm {row.mae_std:.5f}$",
+                    rf"${row.rmse_mean:.5f} \pm {row.rmse_std:.5f}$",
                     direction,
                     str(int(row.n_valid_seeds)),
                 ]
@@ -3401,7 +3328,7 @@ def write_analysis_readme(
             "",
             "## Metrics and direction-accuracy audit",
             "",
-            "MSE and MAE are recomputed over all saved rolling-step × horizon values whenever score files exist. Stored summary values are checked against those reconstructions.",
+            "RMSE is recomputed over all saved rolling-step × horizon values whenever score files exist. Stored summary values are checked against that reconstruction.",
             "",
             f"Direction accuracy uses `{DIRECTION_DEFINITION}`. The identical implementation is applied to learned models and baselines. Naive-last and mean-context therefore have valid direction scores when trajectories are saved; a constant predicted value path generally produces zero-valued predicted differences for a value target, which only count as correct when the corresponding true difference is also zero. Unsupported values remain missing.",
             "",
@@ -3413,9 +3340,9 @@ def write_analysis_readme(
             "",
             "Paired differences use Δ = method − naive-last, so negative values favour the method. Relative improvement is `100 × (naive − method) / naive`, so positive values favour the method. Pairing requires the same equity, seed, strategy-specific run bundle, target definition, normalization, metric definition, horizon, and saved target signature whenever available.",
             "",
-            "Primary inference averages seed-level paired differences within each equity and uses equities as the statistical units. The 95% interval is a percentile bootstrap that resamples equity-level means. The Wilcoxon result is an exact two-sided signed-rank sign-permutation test (zero differences removed); rank-biserial correlation is signed in Δ coordinates, so a negative effect favours the model. P-values are Holm-adjusted separately for the three learned-model MSE and MAE comparisons. Seed-level win counts and distribution figures are descriptive only.",
+            "Primary inference averages seed-level paired differences within each equity and uses equities as the statistical units. The 95% interval is a percentile bootstrap that resamples equity-level means. The Wilcoxon result is an exact two-sided signed-rank sign-permutation test (zero differences removed); rank-biserial correlation is signed in Δ coordinates, so a negative effect favours the model. RMSE p-values are Holm-adjusted across the three learned-model comparisons. Seed-level win counts and distribution figures are descriptive only.",
             "",
-            "The separate Shared-vs-Local comparison first retains compatible seeds matched by equity, seed, target definition, normalization, metric definition, forecast horizon, test period, and saved target signature. Shared and Local MSE/MAE are averaged over the same matched seeds within each equity. A two-sided paired Student t-test and signed Cohen's dz then use the resulting equity-level values only, with Δ = Shared − Local; negative values favour Shared for these error metrics. No Direction Accuracy test or multiple-comparison correction is applied to this separate comparison.",
+            "The separate Shared-vs-Local comparison first retains compatible seeds matched by equity, seed, target definition, normalization, metric definition, forecast horizon, test period, and saved target signature. Shared and Local RMSE are averaged over the same matched seeds within each equity. A two-sided paired Student t-test and signed Cohen's dz then use the resulting equity-level values only, with Δ = Shared − Local; negative values favour Shared. No Direction Accuracy test or multiple-comparison correction is applied to this separate comparison.",
             "",
             "## Paired results snapshot",
             "",
@@ -3423,13 +3350,13 @@ def write_analysis_readme(
                 paired_summary,
                 [
                     "model",
-                    "mean_delta_mse",
-                    "mse_ci_low",
-                    "mse_ci_high",
-                    "mse_holm_p_value",
-                    "mse_stock_wins",
-                    "mse_run_wins",
-                    "mse_run_total",
+                    "mean_delta_rmse",
+                    "rmse_ci_low",
+                    "rmse_ci_high",
+                    "rmse_holm_p_value",
+                    "rmse_stock_wins",
+                    "rmse_run_wins",
+                    "rmse_run_total",
                 ],
             ),
             "",
@@ -3564,7 +3491,7 @@ def _console_report(
     else:
         for row in overall.itertuples():
             print(
-                f"  {row.method}: MSE={row.mse:.6g}, MAE={row.mae:.6g}, "
+                f"  {row.method}: RMSE={row.rmse:.6g}, "
                 f"direction={row.direction_accuracy:.4g}"
             )
     print("Paired learned models vs naive-last:")
@@ -3573,11 +3500,11 @@ def _console_report(
     else:
         for row in paired.itertuples():
             print(
-                f"  {row.model}: delta_MSE={row.mean_delta_mse:.6g}, "
-                f"CI=[{row.mse_ci_low:.6g}, {row.mse_ci_high:.6g}], "
-                f"Holm p={row.mse_holm_p_value:.4g}, "
-                f"stock wins={row.mse_stock_wins}/{row.n_stocks}, "
-                f"run wins={row.mse_run_wins}/{row.mse_run_total}"
+                f"  {row.model}: delta_RMSE={row.mean_delta_rmse:.6g}, "
+                f"CI=[{row.rmse_ci_low:.6g}, {row.rmse_ci_high:.6g}], "
+                f"Holm p={row.rmse_holm_p_value:.4g}, "
+                f"stock wins={row.rmse_stock_wins}/{row.n_stocks}, "
+                f"run wins={row.rmse_run_wins}/{row.rmse_run_total}"
             )
     print("Paired Shared-target vs Local-MAE/Long-JEPA:")
     for row in shared_local.itertuples():
@@ -3705,17 +3632,7 @@ def run_analysis(args: argparse.Namespace) -> int:
                     paired_runs,
                     paired_summary,
                     figures_dir,
-                    metric="mse",
-                    analysis_seed=args.analysis_seed,
-                    bootstrap_samples=args.bootstrap_samples,
-                )
-            )
-            generated_figures.extend(
-                plot_paired_forest(
-                    paired_runs,
-                    paired_summary,
-                    figures_dir,
-                    metric="mae",
+                    metric="rmse",
                     analysis_seed=args.analysis_seed,
                     bootstrap_samples=args.bootstrap_samples,
                 )
@@ -3767,18 +3684,15 @@ def run_analysis(args: argparse.Namespace) -> int:
         "tables/table_shared_vs_local.tex": "Compatible Shared-vs-Local stock pairs were unavailable.",
         "tables/table_appendix_stock_metrics.tex": "No compatible stock-level summaries were available.",
         "tables/table_reproducibility.tex": "No included run metadata were available.",
-        "figures/fig_paired_mse_forest.pdf": "Paired stock-level MSE observations were unavailable.",
-        "figures/fig_paired_mae_forest.pdf": "Paired stock-level MAE observations were unavailable.",
-        "figures/fig_relative_mse_heatmap.pdf": "Paired stock-level relative MSE observations were unavailable.",
-        "figures/fig_relative_mae_heatmap.pdf": "Paired stock-level relative MAE observations were unavailable.",
+        "figures/fig_paired_rmse_forest.pdf": "Paired stock-level RMSE observations were unavailable.",
+        "figures/fig_relative_rmse_heatmap.pdf": "Paired stock-level relative RMSE observations were unavailable.",
         "figures/fig_direction_accuracy_heatmap.pdf": "Direction-accuracy observations were unavailable.",
-        "figures/fig_mse_by_horizon.pdf": "Raw horizon predictions were unavailable.",
-        "figures/fig_mae_by_horizon.pdf": "Raw horizon predictions were unavailable.",
+        "figures/fig_rmse_by_horizon.pdf": "Raw horizon predictions were unavailable.",
         "figures/fig_direction_by_horizon.pdf": "Raw horizon predictions or supported horizon directions were unavailable.",
-        "figures/fig_seed_level_delta_mse_distribution.pdf": "Seed-level paired observations were unavailable.",
+        "figures/fig_seed_level_delta_rmse_distribution.pdf": "Seed-level paired observations were unavailable.",
         "figures/fig_representative_prediction_trajectory.pdf": "Complete aligned raw predictions were unavailable.",
         "figures/diagnostics/diagnostic_downstream_training_loss.pdf": "Timestamp-aligned downstream histories were unavailable.",
-        "figures/diagnostics/diagnostic_downstream_validation_mse.pdf": "Timestamp-aligned downstream validation histories were unavailable.",
+        "figures/diagnostics/diagnostic_downstream_validation_rmse.pdf": "Timestamp-aligned downstream validation histories were unavailable.",
         "figures/diagnostics/diagnostic_pretraining_losses.pdf": "Pre-training JEPA/MAE/total histories were unavailable.",
     }
     recorded_names = {record["artifact"] for record in artifact_records}

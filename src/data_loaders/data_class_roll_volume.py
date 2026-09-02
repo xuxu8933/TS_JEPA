@@ -822,21 +822,54 @@ class EvaluationDataLoader(Dataset):
             self.normalization_mean = None
             self.normalization_std = None
 
+        context_length = self.context_size * self.patch_size
         if split == "train":
             self.series = self.train_df
             self.close_series = self.train_close
             self.market_close_series = self.train_market_close
             self.dates = self.train_dates
-        elif split == "val":
-            self.series = self.val_df
-            self.close_series = self.val_close
-            self.market_close_series = self.val_market_close
-            self.dates = self.val_dates
-        elif split == "test":
-            self.series = self.test_df
-            self.close_series = self.test_close
-            self.market_close_series = self.test_market_close
-            self.dates = self.test_dates
+        elif split in ("val", "test"):
+            # Targets stay inside the requested split; prior splits supply only
+            # history that was available at each forecast origin.
+            if split == "val":
+                prior_series, current_series = self.train_df, self.val_df
+                prior_close, current_close = self.train_close, self.val_close
+                prior_market, current_market = (
+                    self.train_market_close,
+                    self.val_market_close,
+                )
+                prior_dates, current_dates = self.train_dates, self.val_dates
+            else:
+                prior_series = torch.cat([self.train_df, self.val_df], dim=0)
+                current_series = self.test_df
+                prior_close = torch.cat([self.train_close, self.val_close], dim=0)
+                current_close = self.test_close
+                prior_market = (
+                    torch.cat(
+                        [self.train_market_close, self.val_market_close], dim=0
+                    )
+                    if self.train_market_close is not None
+                    else None
+                )
+                current_market = self.test_market_close
+                prior_dates = self.train_dates + self.val_dates
+                current_dates = self.test_dates
+
+            self.series = torch.cat(
+                [prior_series[-context_length:], current_series], dim=0
+            )
+            self.close_series = torch.cat(
+                [prior_close[-context_length:], current_close], dim=0
+            )
+            self.market_close_series = (
+                torch.cat(
+                    [prior_market[-context_length:], current_market],
+                    dim=0,
+                )
+                if prior_market is not None
+                else None
+            )
+            self.dates = prior_dates[-context_length:] + current_dates
         elif split == "all":
             self.series = torch.cat([self.train_df, self.val_df, self.test_df], dim=0)
             self.close_series = torch.cat(
@@ -858,7 +891,6 @@ class EvaluationDataLoader(Dataset):
         else:
             raise ValueError(f"Unknown split: {split}. Use 'train', 'val', 'test', or 'all'.")
 
-        context_length = self.context_size * self.patch_size
         sample_length = context_length + self.forecast_horizon
         self.sample_starts, self.stride = _sample_starts(
             series_length=len(self.series),

@@ -35,7 +35,7 @@ from config.experiment import (
     resolve_feature_selection,
     validate_data_config,
 )
-from main.utils import init_weights, ordered_scalar_mean, set_seed
+from main.utils import init_weights, ordered_scalar_mean, rmse_loss, set_seed
 from src.data_loaders.data_loader_mnist_rows import get_mnist_row_loader
 from src.data_loaders.data_loader_roll_volume import get_jepa_loaders
 from src.models.decoder import ResidualMLPDecoder, build_reconstruction_decoder
@@ -522,15 +522,15 @@ def parse_args(config, default_mask_strategy=None, argv=None):
         "--jepa_loss",
         "--jepa-loss",
         dest="jepa_loss",
-        choices=("mse", "l1", "smooth_l1"),
-        default=config.get("jepa_loss", "mse"),
+        choices=("rmse",),
+        default=config.get("jepa_loss", "rmse"),
     )
     parser.add_argument(
         "--mae_loss",
         "--mae-loss",
         dest="mae_loss",
-        choices=("mse", "l1", "smooth_l1"),
-        default=config.get("mae_loss", "mse"),
+        choices=("rmse",),
+        default=config.get("mae_loss", "rmse"),
     )
     parser.add_argument(
         "--decoder_type",
@@ -1116,12 +1116,8 @@ def ema_momentum_at_step(base_momentum, step, total_steps):
 
 
 def loss_value(pred, target, kind):
-    if kind == "mse":
-        return F.mse_loss(pred, target)
-    if kind == "l1":
-        return F.l1_loss(pred, target)
-    if kind == "smooth_l1":
-        return F.smooth_l1_loss(pred, target)
+    if kind == "rmse":
+        return rmse_loss(pred, target)
     raise ValueError(f"Unknown loss kind: {kind}")
 
 

@@ -30,7 +30,7 @@ class MakeCleanTest(unittest.TestCase):
             Path(nested, "table.tex").write_text("generated", encoding="utf-8")
             Path(analysis_dir, "extensionless").write_text("generated", encoding="utf-8")
             published = Path(thesis_dir, "overall_summary.csv")
-            published.write_text("model,mse\nTS-JEPA,0.1\n", encoding="utf-8")
+            published.write_text("model,rmse\nTS-JEPA,0.1\n", encoding="utf-8")
 
             completed = subprocess.run(
                 [

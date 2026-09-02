@@ -1,0 +1,6 @@
+model,forecast_target,rmse,trend_accuracy
+naive_last,relative_return,0.06089822202920914,0.0
+GRU,relative_return,0.06361271440982819,0.536
+mean_context,relative_return,0.06584280729293823,0.524
+drift,relative_return,0.06710299849510193,0.516
+TS-JEPA,relative_return,0.0772882029414177,0.532

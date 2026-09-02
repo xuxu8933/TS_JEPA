@@ -1,0 +1,229 @@
+{
+  "aggregation_hierarchy": "seeds_within_stock_then_stocks",
+  "artifact_type": "chapter5_validation_selection",
+  "complete": false,
+  "manifest": "selection_manifest.json",
+  "metric_split": "validation",
+  "primary_metric": "rmse",
+  "ranking_rule": [
+    "rmse_ascending",
+    "direction_accuracy_descending",
+    "candidate_id_ascending"
+  ],
+  "schema_version": 1,
+  "secondary_metrics": [
+    "direction_accuracy"
+  ],
+  "selected_candidate_id": "sentiment_included",
+  "selection_id": "chapter5_stage2",
+  "stages": [
+    {
+      "candidates": [
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/01_preprocessing_train_zscore.json",
+          "config_sha256": "da02112c24f7939f455531f0e57896cf46829018518b93cb16078d0a286f1bf8",
+          "config_signature": "b643221e52a1b973503c434ca88a520df9618b40f20ef15c37e10b8188bd5279",
+          "id": "preprocessing_train_zscore",
+          "overall": {
+            "direction_accuracy": 0.5355555555555556,
+            "rmse": 0.05659790510932604
+          },
+          "parent_candidate_id": null,
+          "parent_config_sha256": null,
+          "per_stock": {
+            "AAPL": {
+              "direction_accuracy": 0.5833333333333334,
+              "rmse": 0.021136509254574776
+            },
+            "AVGO": {
+              "direction_accuracy": 0.5166666666666667,
+              "rmse": 0.0818871408700943
+            },
+            "NVDA": {
+              "direction_accuracy": 0.5555555555555556,
+              "rmse": 0.05199984088540077
+            },
+            "TSLA": {
+              "direction_accuracy": 0.5666666666666668,
+              "rmse": 0.10370219747225444
+            },
+            "WMT": {
+              "direction_accuracy": 0.45555555555555555,
+              "rmse": 0.024263837064305942
+            }
+          },
+          "seeds": [
+            42,
+            44,
+            46
+          ],
+          "status": "eligible",
+          "stocks": [
+            "NVDA",
+            "AAPL",
+            "AVGO",
+            "TSLA",
+            "WMT"
+          ],
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_train_zscore/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/01_preprocessing_window_return.json",
+          "config_sha256": "d537537b06b2ae6ad71b4e299ee583636a5b8297b9367ab8eb300271ae1281fc",
+          "config_signature": "568f317f7e2c279981c492aee18a2fb81ba131e4d8373394658fe14e3c806abd",
+          "id": "preprocessing_window_return",
+          "overall": {
+            "direction_accuracy": 0.5477777777777778,
+            "rmse": 0.05263439764579138
+          },
+          "parent_candidate_id": null,
+          "parent_config_sha256": null,
+          "per_stock": {
+            "AAPL": {
+              "direction_accuracy": 0.5277777777777778,
+              "rmse": 0.020048625767230988
+            },
+            "AVGO": {
+              "direction_accuracy": 0.55,
+              "rmse": 0.07844109584887822
+            },
+            "NVDA": {
+              "direction_accuracy": 0.5777777777777778,
+              "rmse": 0.04638657967249552
+            },
+            "TSLA": {
+              "direction_accuracy": 0.5277777777777778,
+              "rmse": 0.10068344324827194
+            },
+            "WMT": {
+              "direction_accuracy": 0.5555555555555556,
+              "rmse": 0.01761224369208018
+            }
+          },
+          "seeds": [
+            42,
+            44,
+            46
+          ],
+          "status": "eligible",
+          "stocks": [
+            "NVDA",
+            "AAPL",
+            "AVGO",
+            "TSLA",
+            "WMT"
+          ],
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_window_return/random"
+        }
+      ],
+      "name": "preprocessing_normalization",
+      "selected_candidate_id": "preprocessing_window_return"
+    },
+    {
+      "candidates": [
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/02_sentiment_excluded.json",
+          "config_sha256": "aa42015ef631eebe08c5deefa4f8ecd0c03efb18aadde7463a5fda091f7cb461",
+          "config_signature": "568f317f7e2c279981c492aee18a2fb81ba131e4d8373394658fe14e3c806abd",
+          "id": "sentiment_excluded",
+          "overall": {
+            "direction_accuracy": 0.5477777777777778,
+            "rmse": 0.05263439764579138
+          },
+          "parent_candidate_id": "preprocessing_window_return",
+          "parent_config_sha256": "d537537b06b2ae6ad71b4e299ee583636a5b8297b9367ab8eb300271ae1281fc",
+          "per_stock": {
+            "AAPL": {
+              "direction_accuracy": 0.5277777777777778,
+              "rmse": 0.020048625767230988
+            },
+            "AVGO": {
+              "direction_accuracy": 0.55,
+              "rmse": 0.07844109584887822
+            },
+            "NVDA": {
+              "direction_accuracy": 0.5777777777777778,
+              "rmse": 0.04638657967249552
+            },
+            "TSLA": {
+              "direction_accuracy": 0.5277777777777778,
+              "rmse": 0.10068344324827194
+            },
+            "WMT": {
+              "direction_accuracy": 0.5555555555555556,
+              "rmse": 0.01761224369208018
+            }
+          },
+          "seeds": [
+            42,
+            44,
+            46
+          ],
+          "status": "eligible",
+          "stocks": [
+            "NVDA",
+            "AAPL",
+            "AVGO",
+            "TSLA",
+            "WMT"
+          ],
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_window_return/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/02_sentiment_included.json",
+          "config_sha256": "baf9c2b3d6ee325fa3fe319a348e26d5b19a607a8600ba228e92a99f33376604",
+          "config_signature": "afc29d4b16b6c81a80c2e79a634dc8cee178c8d06e012918c7fde10dfdd28241",
+          "id": "sentiment_included",
+          "overall": {
+            "direction_accuracy": 0.5233333333333333,
+            "rmse": 0.04924664031714201
+          },
+          "parent_candidate_id": "preprocessing_window_return",
+          "parent_config_sha256": "d537537b06b2ae6ad71b4e299ee583636a5b8297b9367ab8eb300271ae1281fc",
+          "per_stock": {
+            "AAPL": {
+              "direction_accuracy": 0.5555555555555556,
+              "rmse": 0.021404912695288658
+            },
+            "AVGO": {
+              "direction_accuracy": 0.47222222222222227,
+              "rmse": 0.06920143713553746
+            },
+            "NVDA": {
+              "direction_accuracy": 0.5611111111111111,
+              "rmse": 0.044858591010173164
+            },
+            "TSLA": {
+              "direction_accuracy": 0.5611111111111111,
+              "rmse": 0.09527041763067245
+            },
+            "WMT": {
+              "direction_accuracy": 0.46666666666666673,
+              "rmse": 0.015497843114038309
+            }
+          },
+          "seeds": [
+            42,
+            44,
+            46
+          ],
+          "status": "eligible",
+          "stocks": [
+            "NVDA",
+            "AAPL",
+            "AVGO",
+            "TSLA",
+            "WMT"
+          ],
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/02_sentiment_included/random"
+        }
+      ],
+      "name": "sentiment",
+      "selected_candidate_id": "sentiment_included"
+    }
+  ]
+}

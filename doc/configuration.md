@@ -257,8 +257,8 @@ does not apply to that stage. Defaults below are the repository values in
 | `ema_momentum` | Training | float | `0.998` | — | Target-encoder EMA base momentum | Methodological |
 | `lambda_jepa` | Training | float | `1.0` | `1.0` identity | JEPA loss weight | Methodological |
 | `lambda_mae` | Training | float | `0.5` | `1.0` identity | MAE loss weight | Methodological |
-| `jepa_loss` | Training | str | `mse` | — | JEPA distance (`mse`, `l1`, `smooth_l1`) | Methodological |
-| `mae_loss` | Training | str | `mse` | — | Reconstruction distance | Methodological |
+| `jepa_loss` | Training | str | `rmse` | — | JEPA RMSE distance | Methodological |
+| `mae_loss` | Training | str | `rmse` | — | Reconstruction RMSE distance | Methodological |
 | `clip_grad` | Training | float | `1` | — | Gradient norm clipping threshold | Training |
 | `validation_interval` | Training | int | `10` | — | Epochs between SSL validation passes | Training |
 | `validation_max_batches` | Training | int/null | `null` | — | Optional validation-batch cap | Runtime |

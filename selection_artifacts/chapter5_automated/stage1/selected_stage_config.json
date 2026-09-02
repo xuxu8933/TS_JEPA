@@ -1,0 +1,135 @@
+{
+  "analysis": {
+    "allow_incomplete": false,
+    "models": [
+      "TS-JEPA",
+      "GRU",
+      "naive_last",
+      "drift",
+      "mean_context"
+    ],
+    "skip_plot": false
+  },
+  "common": {
+    "seeds": [
+      42,
+      44,
+      46
+    ],
+    "stocks": [
+      "NVDA",
+      "AAPL",
+      "AVGO",
+      "TSLA",
+      "WMT"
+    ]
+  },
+  "provenance": {
+    "artifact_type": "selected_chapter5_stage_config",
+    "metric_split": "validation",
+    "schema_version": 1,
+    "selected_candidate_id": "preprocessing_window_return",
+    "selected_stage": "preprocessing_normalization",
+    "selection_id": "chapter5_stage1",
+    "selection_summary_sha256": "2096911683da170ebd923b56c288731f0ca14c87ac63875046714167b0d49f85",
+    "source_config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/01_preprocessing_window_return.json",
+    "source_config_sha256": "d537537b06b2ae6ad71b4e299ee583636a5b8297b9367ab8eb300271ae1281fc",
+    "source_config_signature": "568f317f7e2c279981c492aee18a2fb81ba131e4d8373394658fe14e3c806abd"
+  },
+  "runner": {
+    "checkpoint": {
+      "encoder_weights": "ema",
+      "selection": {
+        "mode": "best"
+      }
+    },
+    "download": {
+      "end_date": "2026-01-01",
+      "news": {
+        "chunk_days": 7,
+        "max_articles": null,
+        "request_delay": 0.5,
+        "skip": true
+      },
+      "skip": true,
+      "start_date": "2015-01-01",
+      "write_mode": "append"
+    },
+    "downstream": {
+      "context_size": 12,
+      "epochs": 501,
+      "evaluation_split": "validation",
+      "forecast_horizon": 5
+    },
+    "execution": {
+      "dry_run": false,
+      "max_parallel_jobs": 2,
+      "max_seeds": 3,
+      "max_stocks": 5,
+      "verbose": false
+    },
+    "masking": {
+      "strategies": {
+        "random": {
+          "enabled": true
+        }
+      }
+    },
+    "objectives": {
+      "jepa": {
+        "loss": "rmse",
+        "weight": 1.0
+      },
+      "mae": {
+        "loss": "rmse",
+        "weight": 0.5
+      }
+    },
+    "output": {
+      "skip_combined_plot": false
+    },
+    "preprocessing": {
+      "custom": {
+        "feature_transform": "raw",
+        "features": {
+          "market": [
+            "Close",
+            "Volume",
+            "MA10",
+            "MA50"
+          ],
+          "sentiment": {
+            "columns": [
+              "sentiment_mean"
+            ],
+            "enabled": false
+          }
+        },
+        "forecast": {
+          "market_data": {
+            "enabled": false,
+            "name": "NASDAQ100"
+          },
+          "target": "relative_return"
+        },
+        "normalization": {
+          "method": "window_return",
+          "robust_zscore": {
+            "clip": 5.0
+          }
+        }
+      },
+      "preset": null
+    },
+    "pretraining": {
+      "epochs": 2001,
+      "skip": false,
+      "windows": {
+        "patch_size": 5,
+        "sampling_mode": "sliding_window",
+        "series_size": 60,
+        "stride": 5
+      }
+    }
+  }
+}

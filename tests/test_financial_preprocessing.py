@@ -140,6 +140,29 @@ class FinancialPreprocessingTest(unittest.TestCase):
                 torch.allclose(target, torch.arange(1, 6) * 0.01, atol=2e-6)
             )
 
+    def test_validation_targets_use_prior_train_context(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "prices.csv"
+            _write_price_csv(path, np.linspace(100.0, 220.0, 180))
+            dataset = EvaluationDataLoader(
+                path_data=str(path),
+                patch_size=5,
+                context_size=4,
+                stride=5,
+                split="val",
+                normalization="none",
+                feature_cols=("Close", "Volume"),
+                validation_fraction=0.1,
+                test_start_date="2020-05-25",
+            )
+
+            self.assertGreater(20, len(dataset.val_df))
+            self.assertEqual(dataset.dates[20], dataset.val_dates[0])
+            self.assertEqual(len(dataset), (len(dataset.val_df) - 5) // 5 + 1)
+            self.assertTrue(
+                torch.equal(dataset.samples[0][0], dataset.train_df[-20:])
+            )
+
     def test_market_alignment_is_a_deterministic_date_intersection(self):
         with tempfile.TemporaryDirectory() as tmp:
             stock_path = Path(tmp) / "stock.csv"

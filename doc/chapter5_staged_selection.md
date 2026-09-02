@@ -10,7 +10,7 @@ This workflow runs three validation-only stages and performs one held-out test e
 - Pretraining/downstream epochs: 2001/501
 - Forecast horizon: 5
 - Objective weights: JEPA 1.0, MAE 0.5
-- Selection metric: downstream validation MSE
+- Selection metric: downstream validation RMSE
 - Expected wall time on the detected RTX 3060: 6--10 hours
 
 Sentiment CSVs must already be cached. The timed candidate configs do not download market or news data.

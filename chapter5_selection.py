@@ -23,7 +23,7 @@ from run_top_nasdaq100_stocks import (
 
 
 VALIDATION_ARTIFACT_FILENAME = "validation_metrics.json"
-METRIC_NAMES = ("mse", "mae", "direction_accuracy")
+METRIC_NAMES = ("rmse", "direction_accuracy")
 STAGE_NAMES = (
     "preprocessing_normalization",
     "sentiment",
@@ -87,7 +87,7 @@ def load_validation_artifact(
         )
     if artifact.get("artifact_type") != "downstream_forecast_metrics":
         raise ValueError(f"Unexpected artifact_type in {artifact_path}")
-    if artifact.get("schema_version") != 1:
+    if artifact.get("schema_version") != 2:
         raise ValueError(f"Unsupported validation artifact schema in {artifact_path}")
     if artifact.get("artifact_filename") != VALIDATION_ARTIFACT_FILENAME:
         raise ValueError(f"Artifact filename metadata mismatch in {artifact_path}")
@@ -322,8 +322,7 @@ def _candidate_summary(
 def _ranking_key(candidate: Mapping[str, Any]) -> tuple[Any, ...]:
     overall = candidate["overall"]
     return (
-        overall["mse"],
-        overall["mae"],
+        overall["rmse"],
         -overall["direction_accuracy"],
         candidate["id"],
     )
@@ -436,12 +435,11 @@ def select_stages(manifest_path: Path) -> dict[str, Any]:
         "selection_id": selection_id,
         "manifest": resolved_manifest.name,
         "metric_split": "validation",
-        "primary_metric": "mse",
-        "secondary_metrics": ["mae", "direction_accuracy"],
+        "primary_metric": "rmse",
+        "secondary_metrics": ["direction_accuracy"],
         "aggregation_hierarchy": "seeds_within_stock_then_stocks",
         "ranking_rule": [
-            "mse_ascending",
-            "mae_ascending",
+            "rmse_ascending",
             "direction_accuracy_descending",
             "candidate_id_ascending",
         ],

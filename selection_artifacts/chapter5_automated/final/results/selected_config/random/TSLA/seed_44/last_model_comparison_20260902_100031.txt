@@ -1,0 +1,16 @@
+Data source: TSLA
+Evaluation type: last
+Forecast target: relative_return
+Feature transform: raw
+Features: Close,Volume,MA10,MA50,sentiment_mean
+Normalization: window_return
+Market data: disabled
+Generated at: 20260902_100031
+
+Model Comparison
+model,forecast_target,rmse,trend_accuracy
+naive_last,relative_return,0.060898,0.0000
+GRU,relative_return,0.063613,0.5360
+mean_context,relative_return,0.065843,0.5240
+drift,relative_return,0.067103,0.5160
+TS-JEPA,relative_return,0.077288,0.5320

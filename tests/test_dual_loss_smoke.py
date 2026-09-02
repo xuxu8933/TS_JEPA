@@ -98,9 +98,9 @@ def _target_context_values(context_patches):
     )
 
 
-def _naive_last_mse(loader):
+def _naive_last_rmse(loader):
     preds, targets = _naive_last_predictions(loader)
-    return ((preds - targets) ** 2).mean().item()
+    return ((preds - targets) ** 2).mean().sqrt().item()
 
 
 def _naive_last_predictions(loader):
@@ -120,7 +120,7 @@ def _naive_last_predictions(loader):
 def _fit_downstream_and_predict(checkpoint_path, data_path):
     import torch
 
-    from main.utils import init_weights
+    from main.utils import init_weights, rmse_loss
     from src.models.decoder import MLPDecoder
     from src.models.encoder import Encoder
 
@@ -167,7 +167,7 @@ def _fit_downstream_and_predict(checkpoint_path, data_path):
             optimizer.zero_grad()
             encoded_patches = encoder(context_patches)
             predicted_patch = decoder(encoded_patches.mean(dim=1))
-            loss = torch.nn.functional.mse_loss(predicted_patch, target_patch)
+            loss = rmse_loss(predicted_patch, target_patch)
             loss.backward()
             optimizer.step()
 
@@ -186,21 +186,21 @@ def _fit_downstream_and_predict(checkpoint_path, data_path):
     model_targets = torch.cat(model_targets, dim=0)
     naive_preds, naive_targets = _naive_last_predictions(test_loader)
 
-    model_mse = ((model_preds - model_targets) ** 2).mean().item()
-    naive_mse = ((naive_preds - naive_targets) ** 2).mean().item()
+    model_rmse = ((model_preds - model_targets) ** 2).mean().sqrt().item()
+    naive_rmse = ((naive_preds - naive_targets) ** 2).mean().sqrt().item()
 
     return {
-        "model_mse": model_mse,
-        "naive_mse": naive_mse,
+        "model_rmse": model_rmse,
+        "naive_rmse": naive_rmse,
         "model_preds": model_preds.detach().cpu().numpy(),
         "targets": model_targets.detach().cpu().numpy(),
         "naive_preds": naive_preds.detach().cpu().numpy(),
     }
 
 
-def _model_mse_after_downstream_fit(checkpoint_path, data_path):
+def _model_rmse_after_downstream_fit(checkpoint_path, data_path):
     result = _fit_downstream_and_predict(checkpoint_path, data_path)
-    return result["model_mse"], result["naive_mse"]
+    return result["model_rmse"], result["naive_rmse"]
 
 
 def _run_command(cmd, cwd, timeout=120):
@@ -412,14 +412,14 @@ def _eval_mnist_row_case(
         command.extend(["--prediction-output", str(prediction_output)])
     output = _run_command(command, cwd=workdir, timeout=120)
     match = re.search(
-        r"model_mse=([0-9.]+), naive_previous_row_mse=([0-9.]+)",
+        r"model_rmse=([0-9.]+), naive_previous_row_rmse=([0-9.]+)",
         output,
     )
     if match is None:
         raise RuntimeError(f"Could not find MNIST metrics in output:\n{output}")
     return {
-        "model_mse": float(match.group(1)),
-        "naive_mse": float(match.group(2)),
+        "model_rmse": float(match.group(1)),
+        "naive_rmse": float(match.group(2)),
         "output": output,
     }
 
@@ -493,18 +493,18 @@ class DualLossSmokeTest(unittest.TestCase):
         self.assertIn("--pretrain_checkpoint_path", output)
 
     def _assert_better_than_naive_last(self, checkpoint_path, data_path):
-        model_mse, naive_mse = _model_mse_after_downstream_fit(
+        model_rmse, naive_rmse = _model_rmse_after_downstream_fit(
             checkpoint_path=checkpoint_path,
             data_path=data_path,
         )
         print(
             f"{checkpoint_path.parent.name}: "
-            f"model_mse={model_mse:.6f}, naive_last_mse={naive_mse:.6f}"
+            f"model_rmse={model_rmse:.6f}, naive_last_rmse={naive_rmse:.6f}"
         )
         self.assertLess(
-            model_mse,
-            naive_mse,
-            f"model_mse={model_mse:.6f}, naive_last_mse={naive_mse:.6f}",
+            model_rmse,
+            naive_rmse,
+            f"model_rmse={model_rmse:.6f}, naive_last_rmse={naive_rmse:.6f}",
         )
 
     def _run_case(self, data_name, rows):
@@ -550,10 +550,10 @@ class DualLossSmokeTest(unittest.TestCase):
             )
             print(
                 "SMOKE_MNIST_ROWS: "
-                f"model_mse={result['model_mse']:.6f}, "
-                f"naive_previous_row_mse={result['naive_mse']:.6f}"
+                f"model_rmse={result['model_rmse']:.6f}, "
+                f"naive_previous_row_rmse={result['naive_rmse']:.6f}"
             )
-            self.assertLess(result["model_mse"], result["naive_mse"])
+            self.assertLess(result["model_rmse"], result["naive_rmse"])
 
 
 if __name__ == "__main__":

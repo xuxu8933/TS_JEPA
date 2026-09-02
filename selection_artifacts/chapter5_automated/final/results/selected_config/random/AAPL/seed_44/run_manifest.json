@@ -1,0 +1,48 @@
+{
+  "checkpoint_path": "logs/output_model/AAPL/lr_1e-05_ema_momentum_0.998_mask_ratio_0.7_ratio_patches_10_encoder_256_2_1_predictor_128_2_1_dual_jepa_mae_ljepa_1.0_lmae_0.5_cfg_3ca03269cd4a_best.pt",
+  "comparison_files": [
+    "last_model_comparison_20260902_095742.csv",
+    "last_model_comparison_20260902_095742.txt"
+  ],
+  "config_signature": "3a801a1db0ab3532c44d0e8c4e2c86bb66a38073c0f9305c6b4fa9c6059402e4",
+  "effective_config": {
+    "context_size": 6,
+    "encoder_weights": "ema",
+    "eval_num_epochs": 501,
+    "feature_transform": "raw",
+    "forecast_target": "relative_return",
+    "jepa_loss": "rmse",
+    "lambda_jepa": 1.0,
+    "lambda_mae": 0.5,
+    "mae_loss": "rmse",
+    "market_data": null,
+    "market_features": [
+      "Close",
+      "Volume",
+      "MA10",
+      "MA50"
+    ],
+    "mask_strategies": [
+      "random"
+    ],
+    "normalization": "window_return",
+    "patch_size": 5,
+    "preprocessing_preset": null,
+    "pretrain_num_epochs": 2001,
+    "pretrain_stride": 5,
+    "sampling_mode": "sliding_window",
+    "sentiment_features": [
+      "sentiment_mean"
+    ],
+    "series_split_size": 60,
+    "skip_download": true,
+    "use_best_checkpoint": true,
+    "use_sentiment": true
+  },
+  "evaluation_split": "test",
+  "metrics_artifact": "test_metrics.json",
+  "seed": 44,
+  "status": "complete",
+  "stock": "AAPL",
+  "strategy": "random"
+}

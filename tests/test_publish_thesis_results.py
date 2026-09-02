@@ -51,11 +51,11 @@ class PublishThesisResultsTest(unittest.TestCase):
             encoding="utf-8",
         )
         (analysis_dir / "data" / "overall_summary.csv").write_text(
-            "model,mse\nTS-JEPA,0.1\n",
+            "model,rmse\nTS-JEPA,0.1\n",
             encoding="utf-8",
         )
         (analysis_dir / "tables" / "table_main_metrics.tex").write_text(
-            "\\begin{tabular}{lr}model & mse\\\\\\end{tabular}\n",
+            "\\begin{tabular}{lr}model & rmse\\\\\\end{tabular}\n",
             encoding="utf-8",
         )
         (analysis_dir / "figures" / "main.png").write_bytes(b"png")

@@ -18,7 +18,7 @@ from plot_top_stock_metrics import (
 
 
 DEFAULT_MASK_STRATEGIES = ("random", "local_long")
-METRICS = ("mse", "mae", "trend_accuracy")
+METRICS = ("rmse", "trend_accuracy")
 RAW_COLUMNS = ("strategy", "stock", "seed", "model", *METRICS, "source_file")
 ISSUE_COLUMNS = ("strategy", "stock", "seed", "model", "status", "details")
 
@@ -399,7 +399,7 @@ def paired_strategy_differences(per_seed_summary, strategies):
                 mean_delta = float(deltas.mean())
                 if mean_delta == 0.0:
                     better_strategy = "tie"
-                elif metric in ("mse", "mae"):
+                elif metric == "rmse":
                     better_strategy = strategy_a if mean_delta > 0 else strategy_b
                 else:
                     better_strategy = strategy_b if mean_delta > 0 else strategy_a
@@ -423,7 +423,7 @@ def save_strategy_comparison_plot(overall_summary, strategies, output_path):
     import numpy as np
 
     models = list(dict.fromkeys(overall_summary["model"]))
-    fig, axes = plt.subplots(3, 1, figsize=(13, 13))
+    fig, axes = plt.subplots(len(METRICS), 1, figsize=(13, 9))
     x = np.arange(len(models))
     width = 0.8 / max(len(strategies), 1)
 

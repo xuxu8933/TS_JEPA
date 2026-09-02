@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "selection_id": "chapter5_stage1",
+  "stages": [
+    {
+      "candidates": [
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/01_preprocessing_window_return.json",
+          "id": "preprocessing_window_return",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_window_return/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/01_preprocessing_train_zscore.json",
+          "id": "preprocessing_train_zscore",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_train_zscore/random"
+        }
+      ],
+      "name": "preprocessing_normalization"
+    }
+  ]
+}
