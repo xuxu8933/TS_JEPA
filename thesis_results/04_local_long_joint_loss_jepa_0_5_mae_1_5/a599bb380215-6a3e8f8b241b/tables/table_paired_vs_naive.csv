@@ -1,0 +1,3 @@
+model,n_stocks,mean_delta_rmse,median_delta_rmse,relative_rmse_improvement_pct,rmse_ci_low,rmse_ci_high,rmse_wilcoxon_statistic,rmse_p_value,rmse_holm_p_value,rmse_rank_biserial,rmse_wilcoxon_n,rmse_stock_wins,rmse_stock_losses,rmse_stock_ties,rmse_run_wins,rmse_run_total
+Local-MAE/Long-JEPA,5,-0.0035165610022407146,-0.0004860723920388106,3.619663884321782,-0.008427631335755664,0.0003452665869854645,3.0,0.3125,0.3125,-0.6,5,4,1,0,10,15
+GRU,5,-0.002358097920327229,-0.0021791649838766164,5.385600259067823,-0.0034947058254814834,-0.0014487538699775768,0.0,0.0625,0.125,-1.0,5,5,0,0,15,15

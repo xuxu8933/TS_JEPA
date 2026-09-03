@@ -1,0 +1,29 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Overall forecasting performance. Each metric is first averaged across seeds within an equity and then across equities; $\pm$ denotes the standard deviation across equity-level means. Best values are bold and second-best values are underlined.}
+\label{tab:main_metrics}
+\begin{tabular}{lrr}
+\toprule
+Method & RMSE $\downarrow$ & Direction $\uparrow$ \\
+\midrule
+Local-MAE/Long-JEPA & \textbf{$0.04802 \pm 0.02572$} & $0.526 \pm 0.033$ \\
+GRU & \underline{$0.04918 \pm 0.02974$} & $0.500 \pm 0.037$ \\
+Naive-last & $0.05154 \pm 0.03051$ & $0.003 \pm 0.005$ \\
+Drift & $0.05253 \pm 0.03043$ & \underline{$0.542 \pm 0.069$} \\
+Mean-context & $0.05282 \pm 0.03032$ & \textbf{$0.547 \pm 0.056$} \\
+\bottomrule
+\end{tabular}
+\par\medskip
+\begin{tabular}{lrr}
+\toprule
+Method & RMSE rank $\downarrow$ & Direction rank $\downarrow$ \\
+\midrule
+Local-MAE/Long-JEPA & \underline{2.20} & 2.60 \\
+GRU & \textbf{1.40} & 3.40 \\
+Naive-last & 3.60 & 5.00 \\
+Drift & 3.40 & \underline{2.20} \\
+Mean-context & 4.40 & \textbf{1.80} \\
+\bottomrule
+\end{tabular}
+\end{table}

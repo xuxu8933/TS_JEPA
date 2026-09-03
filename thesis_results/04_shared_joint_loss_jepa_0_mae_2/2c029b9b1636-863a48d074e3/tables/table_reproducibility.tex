@@ -1,0 +1,46 @@
+\begin{table}[p]
+\centering
+\small
+\caption{Reproducibility information recovered from saved run metadata, runner commands, and checkpoint references. Unrecoverable fields are stated explicitly rather than inferred from current defaults.}
+\label{tab:reproducibility}
+\begin{tabular}{p{0.32\linewidth}p{0.60\linewidth}}
+\toprule
+Parameter & Recovered value \\
+\midrule
+Equities & AAPL, AVGO, NVDA, TSLA, WMT \\
+Seeds & 42, 44, 46 \\
+Train period end & 2024-12-31 \\
+Test period & 2025-01-01 to 2026-01-01 \\
+Historical context length (rows) & 30 \\
+Forecast horizon & 5 \\
+Patch size & 5 \\
+Pre-training stride & 5 \\
+Downstream stride & 5 \\
+Input features & ["Close", "Volume", "MA10", "MA50", "sentiment\_mean"] \\
+Normalization & window\_return \\
+Batch size & 32 \\
+Encoder dimension & Not recoverable from saved run artifacts \\
+Encoder layers & Not recoverable from saved run artifacts \\
+Attention heads & Not recoverable from saved run artifacts \\
+Predictor configuration & \{"predictor\_dim": null, "predictor\_heads": null, "predictor\_layers": null\} \\
+Mask ratio & Not recoverable from saved run artifacts \\
+Local/long target settings & \{"jepa\_gap\_patches": 4, "jepa\_target\_patches": 4, "mae\_window\_patches": 1\} \\
+JEPA loss weight & 0.0 \\
+MAE loss weight & 2.0 \\
+EMA momentum & Not recoverable from saved run artifacts \\
+Transferred encoder weights & ema \\
+Fine-tune encoder & True \\
+Encoder learning rate & 1e-05 \\
+Forecast-head learning rate & 0.001 \\
+Trend-loss settings & \{"trend\_loss\_temperature": 0.01, "trend\_loss\_threshold": 1e-05, "trend\_selection\_weight": 0.0005, "trend\_weight": 0.001\} \\
+Checkpoint selection & best\_pretraining\_validation \\
+Pre-training epochs & 2001 \\
+Downstream epochs & 501 \\
+Run Python version & 3.11.15 \\
+Run PyTorch version & 2.11.0+cu130 \\
+Run CUDA version & 13.0 \\
+Run hardware & Linux-7.0.0-30-generic-x86\_64-with-glibc2.39; GPU=NVIDIA GeForce RTX 3060 \\
+Run Git commit & e4131dbdad4b37b9d4db6f1dae204b25e233155d \\
+\bottomrule
+\end{tabular}
+\end{table}
