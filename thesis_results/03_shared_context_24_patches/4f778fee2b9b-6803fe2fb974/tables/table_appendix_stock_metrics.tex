@@ -1,0 +1,37 @@
+\begin{longtable}{llrrr}
+\caption{Complete stock-level forecasting results. Standard deviations are across valid seeds.}\label{tab:appendix_stock_metrics}\\
+\toprule
+Equity & Method & RMSE & Direction & Seeds \\
+\midrule
+\endfirsthead
+\toprule
+Equity & Method & RMSE & Direction & Seeds \\
+\midrule
+\endhead
+AAPL & Shared-target JEPA--MAE & $0.02210 \pm 0.00093$ & $0.531 \pm 0.105$ & 3 \\
+AAPL & GRU & $0.02139 \pm 0.00031$ & $0.528 \pm 0.021$ & 3 \\
+AAPL & Naive-last & $0.02222 \pm 0.00000$ & $0.008 \pm 0.000$ & 3 \\
+AAPL & Drift & $0.02195 \pm 0.00000$ & $0.617 \pm 0.000$ & 3 \\
+AAPL & Mean-context & $0.02208 \pm 0.00000$ & $0.617 \pm 0.000$ & 3 \\
+AVGO & Shared-target JEPA--MAE & $0.06525 \pm 0.00259$ & $0.494 \pm 0.021$ & 3 \\
+AVGO & GRU & $0.06593 \pm 0.00082$ & $0.475 \pm 0.014$ & 3 \\
+AVGO & Naive-last & $0.07197 \pm 0.00000$ & $0.000 \pm 0.000$ & 3 \\
+AVGO & Drift & $0.07195 \pm 0.00000$ & $0.508 \pm 0.000$ & 3 \\
+AVGO & Mean-context & $0.07187 \pm 0.00000$ & $0.500 \pm 0.000$ & 3 \\
+NVDA & Shared-target JEPA--MAE & $0.05491 \pm 0.00446$ & $0.558 \pm 0.008$ & 3 \\
+NVDA & GRU & $0.05650 \pm 0.00056$ & $0.528 \pm 0.019$ & 3 \\
+NVDA & Naive-last & $0.05760 \pm 0.00000$ & $0.000 \pm 0.000$ & 3 \\
+NVDA & Drift & $0.05853 \pm 0.00000$ & $0.525 \pm 0.000$ & 3 \\
+NVDA & Mean-context & $0.05951 \pm 0.00000$ & $0.525 \pm 0.000$ & 3 \\
+TSLA & Shared-target JEPA--MAE & $0.08754 \pm 0.00063$ & $0.536 \pm 0.034$ & 3 \\
+TSLA & GRU & $0.08431 \pm 0.00019$ & $0.486 \pm 0.038$ & 3 \\
+TSLA & Naive-last & $0.08764 \pm 0.00000$ & $0.000 \pm 0.000$ & 3 \\
+TSLA & Drift & $0.08604 \pm 0.00000$ & $0.542 \pm 0.000$ & 3 \\
+TSLA & Mean-context & $0.08538 \pm 0.00000$ & $0.542 \pm 0.000$ & 3 \\
+WMT & Shared-target JEPA--MAE & $0.01757 \pm 0.00057$ & $0.481 \pm 0.064$ & 3 \\
+WMT & GRU & $0.01679 \pm 0.00039$ & $0.531 \pm 0.054$ & 3 \\
+WMT & Naive-last & $0.01827 \pm 0.00000$ & $0.008 \pm 0.000$ & 3 \\
+WMT & Drift & $0.01720 \pm 0.00000$ & $0.608 \pm 0.000$ & 3 \\
+WMT & Mean-context & $0.01732 \pm 0.00000$ & $0.608 \pm 0.000$ & 3 \\
+\bottomrule
+\end{longtable}
