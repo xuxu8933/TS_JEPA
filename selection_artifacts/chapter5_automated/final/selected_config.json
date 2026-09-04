@@ -29,7 +29,7 @@
     "artifact_type": "frozen_chapter5_experiment_config",
     "experiment_config_sha256": "e1f169520cfd7c0ae08b28282e7a3953768e6be30f2a1254d0640bad09d876e8",
     "final_evaluation_split": "test",
-    "git_commit": "3ff0ad5e2f0871b0066fc164a44dc14930978329",
+    "git_commit": "6d21ae148593d522e4aca3bfc5f4207a589ac5e8",
     "metric_split": "validation",
     "ranking_rule": [
       "rmse_ascending",

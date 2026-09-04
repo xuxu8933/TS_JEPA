@@ -3,6 +3,9 @@
 This directory contains validated, immutable thesis-analysis snapshots that are
 intended to be committed to Git and shared between devices.
 
+Directories prefixed with `00_` contain diagnostic smoke-test artifacts. They
+verify that the pipeline runs, but they are not thesis experiment evidence.
+
 Generate disposable analysis output under `analysis_artifacts/`, then publish a
 validated snapshot with:
 
