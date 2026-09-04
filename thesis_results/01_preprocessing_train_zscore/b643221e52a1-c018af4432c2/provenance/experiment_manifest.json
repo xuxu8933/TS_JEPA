@@ -1,0 +1,161 @@
+{
+  "arguments": {
+    "causal_block_gap_patches": 1,
+    "causal_block_patches": 2,
+    "causal_num_blocks": 2,
+    "checkpoint_to_use": 2000,
+    "config": "config/experiments/chapter5_candidates/01_preprocessing_train_zscore.json",
+    "context_size": 12,
+    "download_end_date": "2026-09-03",
+    "download_start_date": "2015-01-01",
+    "dry_run": false,
+    "encoder_weights": "ema",
+    "eval_num_epochs": 501,
+    "evaluation_split": "validation",
+    "feature_transform": "raw",
+    "forecast_horizon": 5,
+    "forecast_target": "relative_return",
+    "future_target_patches": 4,
+    "jepa_gap_patches": 4,
+    "jepa_loss": "rmse",
+    "jepa_target_patches": 4,
+    "lambda_jepa": 1.0,
+    "lambda_mae": 0.5,
+    "mae_loss": "rmse",
+    "mae_window_patches": 1,
+    "market_data": null,
+    "market_features": [
+      "Close",
+      "Volume",
+      "MA10",
+      "MA50"
+    ],
+    "mask_strategies": [
+      "random"
+    ],
+    "max_news_articles": null,
+    "max_parallel_jobs": 2,
+    "max_seeds": 3,
+    "max_stocks": 5,
+    "news_chunk_days": 7,
+    "normalization": "train_zscore",
+    "patch_size": 5,
+    "preprocessing_preset": null,
+    "pretrain_num_epochs": 2001,
+    "pretrain_stride": 5,
+    "request_delay": 0.5,
+    "results_dir": "results/01_preprocessing_train_zscore",
+    "robust_zscore_clip": null,
+    "sampling_mode": "sliding_window",
+    "seeds": [
+      42,
+      44,
+      46
+    ],
+    "sentiment_features": null,
+    "sentiment_normalization": "none",
+    "series_split_size": 60,
+    "skip_combined_plot": false,
+    "skip_download": true,
+    "skip_news": false,
+    "skip_pretrain": false,
+    "stocks": [
+      "NVDA",
+      "AAPL",
+      "AVGO",
+      "TSLA",
+      "WMT"
+    ],
+    "use_best_checkpoint": true,
+    "use_sentiment": false,
+    "verbose": false,
+    "write_mode": "append"
+  },
+  "checkpoint_to_use": 2000,
+  "config_name": "01_preprocessing_train_zscore",
+  "config_signature": "b643221e52a1b973503c434ca88a520df9618b40f20ef15c37e10b8188bd5279",
+  "effective_config": {
+    "context_size": 12,
+    "encoder_weights": "ema",
+    "eval_num_epochs": 501,
+    "evaluation_split": "validation",
+    "feature_transform": "raw",
+    "forecast_target": "relative_return",
+    "jepa_loss": "rmse",
+    "lambda_jepa": 1.0,
+    "lambda_mae": 0.5,
+    "mae_loss": "rmse",
+    "market_data": null,
+    "market_features": [
+      "Close",
+      "Volume",
+      "MA10",
+      "MA50"
+    ],
+    "mask_strategies": [
+      "random"
+    ],
+    "normalization": "train_zscore",
+    "patch_size": 5,
+    "preprocessing_preset": null,
+    "pretrain_num_epochs": 2001,
+    "pretrain_stride": 5,
+    "sampling_mode": "sliding_window",
+    "series_split_size": 60,
+    "skip_download": true,
+    "use_best_checkpoint": true,
+    "use_sentiment": false
+  },
+  "eval_num_epochs": 501,
+  "feature_transform": "raw",
+  "forecast_target": "relative_return",
+  "jepa_loss": "rmse",
+  "lambda_jepa": 1.0,
+  "lambda_mae": 0.5,
+  "mae_loss": "rmse",
+  "market_features": [
+    "Close",
+    "Volume",
+    "MA10",
+    "MA50"
+  ],
+  "mask_strategies": [
+    "random"
+  ],
+  "normalization": "train_zscore",
+  "pretrain_num_epochs": 2001,
+  "pretrain_stride": 5,
+  "results_dir": "results/01_preprocessing_train_zscore",
+  "run_seeds": [
+    42,
+    44,
+    46
+  ],
+  "run_stocks": [
+    "NVDA",
+    "AAPL",
+    "AVGO",
+    "TSLA",
+    "WMT"
+  ],
+  "runner": "run_top_nasdaq100_stocks.py",
+  "sampling_mode": "sliding_window",
+  "seeds": [
+    42,
+    44,
+    46
+  ],
+  "sentiment_features": null,
+  "stocks": [
+    "NVDA",
+    "AAPL",
+    "AVGO",
+    "TSLA",
+    "WMT"
+  ],
+  "strategy_results_dirs": {
+    "random": "results/01_preprocessing_train_zscore/random"
+  },
+  "use_best_checkpoint": true,
+  "use_sentiment": false
+}

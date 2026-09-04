@@ -1,0 +1,83 @@
+{
+  "common": {
+    "stocks": ["NVDA", "AAPL", "AVGO", "TSLA", "WMT"],
+    "seeds": [42, 44, 46]
+  },
+  "runner": {
+    "execution": {
+      "max_stocks": 5,
+      "max_seeds": 3,
+      "max_parallel_jobs": 2,
+      "dry_run": false,
+      "verbose": false
+    },
+    "download": {
+      "skip": true,
+      "start_date": "2015-01-01",
+      "end_date": "2026-01-01",
+      "write_mode": "append",
+      "news": {
+        "skip": true,
+        "max_articles": null,
+        "chunk_days": 7,
+        "request_delay": 0.5
+      }
+    },
+    "masking": {
+      "strategies": {
+        "random": {"enabled": true}
+      }
+    },
+    "objectives": {
+      "jepa": {"weight": 1.0, "loss": "rmse"},
+      "mae": {"weight": 0.5, "loss": "rmse"}
+    },
+    "pretraining": {
+      "skip": false,
+      "epochs": 2001,
+      "windows": {
+        "series_size": 60,
+        "patch_size": 5,
+        "stride": 5,
+        "sampling_mode": "sliding_window"
+      }
+    },
+    "preprocessing": {
+      "preset": null,
+      "custom": {
+        "feature_transform": "raw",
+        "normalization": {
+          "method": "train_zscore",
+          "robust_zscore": {"clip": 5.0}
+        },
+        "features": {
+          "market": ["Close", "Volume", "MA10", "MA50"],
+          "sentiment": {
+            "enabled": false,
+            "columns": ["sentiment_mean"]
+          }
+        },
+        "forecast": {
+          "target": "relative_return",
+          "market_data": {"enabled": false, "name": "NASDAQ100"}
+        }
+      }
+    },
+    "checkpoint": {
+      "selection": {"mode": "best"},
+      "encoder_weights": "ema"
+    },
+    "downstream": {
+      "epochs": 501,
+      "forecast_horizon": 5,
+      "context_size": 12,
+      "evaluation_split": "validation"
+    },
+    "output": {"skip_combined_plot": false}
+  },
+  "analysis": {
+    "models": ["TS-JEPA", "GRU", "naive_last", "drift", "mean_context"],
+    "allow_incomplete": false,
+    "skip_plot": false
+  }
+}
