@@ -1,0 +1,3 @@
+case,model_rmse,naive_last_rmse,plot_path
+MNIST_ROWS,0.1110850000,0.1886410000,smoke_mnist_rows_reconstruction.png
+SIN_COS,0.0102686705,0.0895966440,smoke_sin_cos_predictions.png
