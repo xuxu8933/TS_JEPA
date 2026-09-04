@@ -13,7 +13,7 @@ import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 TEST_HELPERS_PATH = REPO_ROOT / "tests" / "test_dual_loss_smoke.py"
-OUTPUT_DIR = REPO_ROOT / "results" / "dual_loss_smoke"
+OUTPUT_DIR = REPO_ROOT / "results" / "00_dual_loss_smoke"
 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -129,7 +129,7 @@ def main():
                 "case": "MNIST_ROWS",
                 "model_rmse": f"{mnist_result['model_rmse']:.10f}",
                 "naive_last_rmse": f"{mnist_result['naive_rmse']:.10f}",
-                "plot_path": str(mnist_plot),
+                "plot_path": mnist_plot.name,
             }
         )
         print(
@@ -158,7 +158,7 @@ def main():
                 "case": "SIN_COS",
                 "model_rmse": f"{result['model_rmse']:.10f}",
                 "naive_last_rmse": f"{result['naive_rmse']:.10f}",
-                "plot_path": str(sin_plot),
+                "plot_path": sin_plot.name,
             }
         )
         print(
