@@ -1,0 +1,32 @@
+{
+  "analysis_git_branch": "single-dim",
+  "analysis_git_commit": "893e2dc763995706b98ed82e480499c781dd6381",
+  "analysis_numpy": "2.4.3",
+  "analysis_pandas": "3.0.1",
+  "analysis_python": "3.11.15",
+  "analysis_seed": 20260822,
+  "bootstrap_samples": 20000,
+  "canonical_rows": 75,
+  "error_issues": 0,
+  "results_dir": "results/03_shared_context_12_patches",
+  "scope": {
+    "config_path": "config/experiments/chapter5_candidates/03_shared_context_12_patches.json",
+    "reference_strategy": "random",
+    "seeds": [
+      42,
+      44,
+      46
+    ],
+    "stocks": [
+      "NVDA",
+      "AAPL",
+      "AVGO",
+      "TSLA",
+      "WMT"
+    ],
+    "strategies": [
+      "random"
+    ]
+  },
+  "warning_issues": 0
+}
