@@ -1,0 +1,3 @@
+model,n_stocks,mean_delta_rmse,median_delta_rmse,relative_rmse_improvement_pct,rmse_ci_low,rmse_ci_high,rmse_wilcoxon_statistic,rmse_p_value,rmse_holm_p_value,rmse_rank_biserial,rmse_wilcoxon_n,rmse_stock_wins,rmse_stock_losses,rmse_stock_ties,rmse_run_wins,rmse_run_total
+Shared-target JEPA--MAE,5,-0.003786621368070832,-0.000976625403310447,4.470017642312027,-0.008441328002679941,0.0003613281055925071,3.0,0.3125,0.3125,-0.6,5,4,1,0,10,15
+GRU,5,-0.002358097920327229,-0.0021791649838766164,5.385600259067823,-0.0034947058254814834,-0.0014487538699775768,0.0,0.0625,0.125,-1.0,5,5,0,0,15,15
