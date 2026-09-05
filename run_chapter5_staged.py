@@ -3,24 +3,34 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import subprocess
 import sys
 import tempfile
+from collections import Counter
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from chapter5_prepare_candidates import materialize_candidates
-from chapter5_selection import main as run_selection
+from chapter5_selection import load_validation_coverage, main as run_selection
 from run_top_nasdaq100_stocks import (
+    build_experiment_manifest,
+    execute_tasks,
     experiment_config_signature,
     parse_args as parse_runner_args,
+    plan_incremental_execution,
     resolve_mask_strategies,
+    resolve_seeds,
+    resolve_stocks,
     strategy_results_dir,
+    validate_existing_experiment,
 )
 
 
 REPO_ROOT = Path(__file__).resolve().parent
+DEFAULT_ARTIFACTS_DIR = "selection_artifacts/chapter5_automated"
+REPAIR_ARTIFACTS_DIR = "selection_artifacts/chapter5_stage3_validation_repair"
 CHECKED_IN_CANDIDATE_DIR = (
     REPO_ROOT / "config" / "experiments" / "chapter5_candidates"
 )
@@ -134,6 +144,148 @@ def _select_stage(
     summary_path = output_dir / "selection_summary.json"
     summary = json.loads(summary_path.read_text(encoding="utf-8"))
     return summary, output_dir
+
+
+def _resolved_path(root: Path, value: str) -> Path:
+    path = Path(value)
+    return path.resolve() if path.is_absolute() else (root / path).resolve()
+
+
+def _candidate_coverage(candidate: dict[str, Any], manifest_root: Path) -> tuple:
+    args = parse_runner_args(
+        ["--config", str(_resolved_path(manifest_root, candidate["config"]))]
+    )
+    validation_root = _resolved_path(manifest_root, candidate["validation_root"])
+    return tuple(
+        (
+            stock,
+            seed,
+            *load_validation_coverage(
+                validation_root
+                / stock
+                / f"seed_{seed}"
+                / "validation_metrics.json"
+            ).values(),
+        )
+        for stock in resolve_stocks(args)
+        for seed in resolve_seeds(args)
+    )
+
+
+def repair_stage3_validation(
+    *,
+    manifest_path: Path,
+    artifacts_dir: Path,
+    repair_results_dir: Path,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Rerun only Stage 3 candidates whose validation coverage is inconsistent."""
+    resolved_manifest = Path(manifest_path).resolve()
+    manifest = json.loads(resolved_manifest.read_text(encoding="utf-8"))
+    stage = next(
+        item
+        for item in manifest["stages"]
+        if item["name"] == "architecture_context"
+    )
+    candidates = stage["candidates"]
+    observed = {}
+    for candidate in candidates:
+        try:
+            observed[candidate["id"]] = _candidate_coverage(
+                candidate, resolved_manifest.parent
+            )
+        except (OSError, ValueError):
+            pass
+    if not observed:
+        raise RuntimeError("No complete Stage 3 validation coverage was found")
+    ranked = Counter(observed.values()).most_common()
+    if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
+        raise RuntimeError("Stage 3 validation coverage has no unique consensus")
+    expected_coverage, agreement = ranked[0]
+    if agreement <= len(candidates) // 2:
+        raise RuntimeError("Stage 3 validation coverage has no majority consensus")
+
+    repaired_manifest = copy.deepcopy(manifest)
+    repaired_stage = next(
+        item
+        for item in repaired_manifest["stages"]
+        if item["name"] == "architecture_context"
+    )
+    repaired_by_id = {
+        candidate["id"]: candidate for candidate in repaired_stage["candidates"]
+    }
+    affected = [
+        candidate
+        for candidate in candidates
+        if observed.get(candidate["id"]) != expected_coverage
+    ]
+    reused = [
+        candidate["id"] for candidate in candidates if candidate not in affected
+    ]
+
+    if not dry_run:
+        for candidate in affected:
+            config_path = _resolved_path(resolved_manifest.parent, candidate["config"])
+            args = parse_runner_args(["--config", str(config_path)])
+            candidate_root = Path(repair_results_dir).resolve() / config_path.stem
+            args.results_dir = str(candidate_root)
+            args.skip_pretrain = True
+            args.skip_combined_plot = True
+            stocks = resolve_stocks(args)
+            seeds = resolve_seeds(args)
+            strategies = resolve_mask_strategies(args)
+            legacy_compatible = validate_existing_experiment(args)
+            plan = plan_incremental_execution(
+                args,
+                stocks,
+                seeds,
+                strategies,
+                legacy_manifest_compatible=legacy_compatible,
+            )
+            _write_json_atomic(
+                candidate_root / "experiment_manifest.json",
+                build_experiment_manifest(args, stocks, seeds, strategies),
+            )
+            execute_tasks(args, plan["tasks"])
+            validation_root = strategy_results_dir(args, candidate["strategy"])
+            repaired_entry = repaired_by_id[candidate["id"]]
+            repaired_entry["validation_root"] = str(validation_root.resolve())
+            if (
+                _candidate_coverage(repaired_entry, resolved_manifest.parent)
+                != expected_coverage
+            ):
+                raise RuntimeError(
+                    f"Repaired coverage is still invalid for {candidate['id']}"
+                )
+
+        resolved_artifacts = Path(artifacts_dir).resolve()
+        repaired_manifest_path = resolved_artifacts / "selection_manifest.json"
+        _write_json_atomic(repaired_manifest_path, repaired_manifest)
+        run_selection(
+            [
+                "--manifest",
+                str(repaired_manifest_path),
+                "--output-dir",
+                str(resolved_artifacts),
+            ]
+        )
+        selected = json.loads(
+            (resolved_artifacts / "selection_summary.json").read_text(
+                encoding="utf-8"
+            )
+        )["selected_candidate_id"]
+    else:
+        selected = None
+
+    return {
+        "artifact_type": "chapter5_stage3_validation_repair",
+        "schema_version": 1,
+        "affected_candidates": [candidate["id"] for candidate in affected],
+        "reused_candidates": reused,
+        "pretraining_reused": True,
+        "test_evaluation_performed": False,
+        "selected_candidate_id": selected,
+    }
 
 
 def _run_candidates(
@@ -352,20 +504,38 @@ def parse_args(argv=None):
         description="Automate the three-stage Chapter 5 experiment workflow."
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--repair-stage3", action="store_true")
     parser.add_argument(
         "--artifacts-dir",
-        default="selection_artifacts/chapter5_automated",
+        default=None,
+    )
+    parser.add_argument(
+        "--manifest",
+        default="selection_artifacts/chapter5_automated/final/selection_manifest.json",
+    )
+    parser.add_argument(
+        "--repair-results-dir",
+        default="results/chapter5_stage3_validation_repair",
     )
     return parser.parse_args(argv)
 
 
 def main(argv=None) -> int:
     args = parse_args(argv)
-    if args.dry_run:
+    if args.repair_stage3:
+        artifacts_dir = args.artifacts_dir or REPAIR_ARTIFACTS_DIR
+        report = repair_stage3_validation(
+            manifest_path=REPO_ROOT / args.manifest,
+            artifacts_dir=REPO_ROOT / artifacts_dir,
+            repair_results_dir=REPO_ROOT / args.repair_results_dir,
+            dry_run=args.dry_run,
+        )
+        marker = "CHAPTER5_STAGE3_REPAIR_SUMMARY"
+    elif args.dry_run:
         report = run_dry_run()
         marker = "CHAPTER5_DRY_RUN_SUMMARY"
     else:
-        artifacts_dir = Path(args.artifacts_dir)
+        artifacts_dir = Path(args.artifacts_dir or DEFAULT_ARTIFACTS_DIR)
         if not artifacts_dir.is_absolute():
             artifacts_dir = REPO_ROOT / artifacts_dir
         report = run_complete_process(artifacts_dir=artifacts_dir)

@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from config.file_options import read_config_file
 from eval_forecast_prequential_with_baselines_gru_volume import (
@@ -91,6 +92,60 @@ class Chapter5AutomationDryRunTest(unittest.TestCase):
                         )
                     )
 
+    def test_stage3_repair_dry_run_targets_only_mismatched_candidates(self):
+        from run_chapter5_staged import repair_stage3_validation
+
+        candidates = [
+            {
+                "id": candidate_id,
+                "config": f"{candidate_id}.json",
+                "validation_root": candidate_id,
+            }
+            for candidate_id in (
+                "shared_context_6",
+                "shared_context_12",
+                "shared_context_24",
+                "local_long_context_6",
+                "local_long_context_12",
+                "local_long_context_24",
+            )
+        ]
+        manifest = {
+            "schema_version": 1,
+            "selection_id": "repair_fixture",
+            "stages": [
+                {"name": "architecture_context", "candidates": candidates}
+            ],
+        }
+        full = (("NVDA", 42, 24, "2024-07-09", "2024-12-26"),)
+        partial = {
+            "shared_context_6": (("NVDA", 42, 18, "2024-08-20", "2024-12-26"),),
+            "shared_context_12": (("NVDA", 42, 12, "2024-10-02", "2024-12-26"),),
+        }
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest_path = root / "selection_manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            with patch(
+                "run_chapter5_staged._candidate_coverage",
+                side_effect=lambda candidate, _: partial.get(candidate["id"], full),
+            ):
+                report = repair_stage3_validation(
+                    manifest_path=manifest_path,
+                    artifacts_dir=root / "artifacts",
+                    repair_results_dir=root / "results",
+                    dry_run=True,
+                )
+
+            self.assertEqual(
+                report["affected_candidates"],
+                ["shared_context_6", "shared_context_12"],
+            )
+            self.assertEqual(len(report["reused_candidates"]), 4)
+            self.assertFalse((root / "artifacts").exists())
+            self.assertFalse((root / "results").exists())
+
 
 class Chapter5CompleteAutomationTest(unittest.TestCase):
     def test_complete_process_selects_each_stage_before_one_final_test(self):
@@ -166,6 +221,23 @@ class Chapter5CompleteAutomationTest(unittest.TestCase):
                             write_downstream_metrics_artifact(
                                 validation_root / stock / f"seed_{seed}",
                                 artifact,
+                            )
+                            metadata_path = (
+                                validation_root
+                                / stock
+                                / f"seed_{seed}"
+                                / "preprocessing_config.json"
+                            )
+                            metadata_path.write_text(
+                                json.dumps(
+                                    {
+                                        "evaluation_split": "validation",
+                                        "evaluation_sample_count": 2,
+                                        "evaluation_target_start": "2024-01-02T00:00:00",
+                                        "evaluation_target_end": "2024-01-10T00:00:00",
+                                    }
+                                ),
+                                encoding="utf-8",
                             )
 
             report = run_complete_process(

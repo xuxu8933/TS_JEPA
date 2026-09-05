@@ -10,6 +10,7 @@ import pandas as pd
 
 from analysis.thesis_results import (
     METHOD_ORDER,
+    _normalise_metadata,
     _student_t_cdf,
     build_shared_vs_local_comparison,
     compute_direction_accuracy,
@@ -70,6 +71,24 @@ class ThesisStatisticsTest(unittest.TestCase):
         self.assertEqual(scope["stocks"], ["NVDA", "AAPL"])
         self.assertEqual(scope["seeds"], [42, 43])
         self.assertEqual(results_dir.name, "template_experiment")
+
+    def test_validation_metadata_uses_actual_evaluation_period(self):
+        normalized = _normalise_metadata(
+            {
+                "evaluation_split": "validation",
+                "evaluation_target_start": "2024-07-09T00:00:00",
+                "evaluation_target_end": "2024-12-26T00:00:00",
+                "test_start": "2025-01-01",
+                "test_end": "2026-01-01",
+                "patch_size": 5,
+            },
+            strategy="random",
+            comparison_text={},
+        )
+
+        self.assertEqual(normalized["split"], "validation")
+        self.assertEqual(normalized["test_start"], "2024-07-09T00:00:00")
+        self.assertEqual(normalized["test_end"], "2024-12-26T00:00:00")
 
     def test_exact_signed_rank_and_effect_direction(self):
         statistic, p_value, effect, count = exact_wilcoxon([-1.0, -2.0, -3.0])

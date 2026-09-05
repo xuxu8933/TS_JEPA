@@ -33,8 +33,8 @@
       "mae_weight": 1.5,
       "strategy": "random"
     },
-    "parent_candidate_id": "shared_context_6",
-    "parent_config_sha256": "5dc2ca0e920fcc9867d371c2011e52b68972e1e9bdb1c9b2f63ce5ad7cc670c2",
+    "parent_candidate_id": "shared_context_12",
+    "parent_config_sha256": "262e2c9165276819b3f49f4c2cfd7c86646aa702f7bddce51e9eb8fa936487d5",
     "schema_version": 1,
     "stage": "joint_loss_weights"
   },
@@ -58,7 +58,7 @@
       "write_mode": "append"
     },
     "downstream": {
-      "context_size": 6,
+      "context_size": 12,
       "epochs": 501,
       "evaluation_split": "validation",
       "forecast_horizon": 5

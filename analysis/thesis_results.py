@@ -796,11 +796,17 @@ def _normalise_metadata(
         normalized["feature_cols"] = [
             item.strip() for item in comparison_text["features"].split(",") if item.strip()
         ]
-    normalized["split"] = "test"
+    normalized["split"] = normalized.get("evaluation_split") or normalized.get(
+        "split", "test"
+    )
     normalized["strategy"] = strategy
-    if normalized.get("test_target_start"):
+    if normalized.get("evaluation_target_start"):
+        normalized["test_start"] = normalized["evaluation_target_start"]
+    elif normalized.get("test_target_start"):
         normalized["test_start"] = normalized["test_target_start"]
-    if normalized.get("test_target_end"):
+    if normalized.get("evaluation_target_end"):
+        normalized["test_end"] = normalized["evaluation_target_end"]
+    elif normalized.get("test_target_end"):
         normalized["test_end"] = normalized["test_target_end"]
     patch_size = normalized.get("patch_size")
     try:
@@ -3107,7 +3113,7 @@ def write_reproducibility_table(
         ("Equities", ", ".join(sorted(tidy["stock"].unique()))),
         ("Seeds", ", ".join(map(str, sorted(tidy["seed"].astype(int).unique())))),
         ("Train period end", _display_unique(metadata.get("train_end") for metadata in selected_metadata)),
-        ("Test period", f"{_display_unique(tidy['test_start'])} to {_display_unique(tidy['test_end'])}"),
+        ("Evaluation period", f"{_display_unique(tidy['test_start'])} to {_display_unique(tidy['test_end'])}"),
         ("Historical context length (rows)", _display_unique(metadata.get("window_length") for metadata in selected_metadata)),
         ("Forecast horizon", _display_unique(tidy["forecast_horizon"])),
         ("Patch size", _display_unique(metadata.get("patch_size") for metadata in selected_metadata)),
@@ -3817,3 +3823,7 @@ def run_analysis(args: argparse.Namespace) -> int:
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(argv)
     return run_analysis(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

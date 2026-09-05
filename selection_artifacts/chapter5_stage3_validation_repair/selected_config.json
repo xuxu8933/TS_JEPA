@@ -25,18 +25,38 @@
     ]
   },
   "provenance": {
-    "artifact_type": "chapter5_candidate_config",
-    "candidate_filename": "04_shared_joint_loss_jepa_1_5_mae_0_5.json",
-    "candidate_id": "shared_joint_loss_jepa_1_5_mae_0_5",
-    "delta": {
-      "jepa_weight": 1.5,
-      "mae_weight": 0.5,
-      "strategy": "random"
-    },
-    "parent_candidate_id": "shared_context_12",
-    "parent_config_sha256": "262e2c9165276819b3f49f4c2cfd7c86646aa702f7bddce51e9eb8fa936487d5",
+    "aggregation_hierarchy": "seeds_within_stock_then_stocks",
+    "artifact_type": "frozen_chapter5_experiment_config",
+    "experiment_config_sha256": "f94b2051d96e35de1be757914633b3b4970b6397ba8c4291763dc621dda06ec2",
+    "final_evaluation_split": "test",
+    "git_commit": "893e2dc763995706b98ed82e480499c781dd6381",
+    "metric_split": "validation",
+    "ranking_rule": [
+      "rmse_ascending",
+      "direction_accuracy_descending",
+      "candidate_id_ascending"
+    ],
     "schema_version": 1,
-    "stage": "joint_loss_weights"
+    "selected_candidate_id": "shared_context_12",
+    "selection_id": "chapter5_final",
+    "selection_summary_sha256": "ffcda096bc790c93ef0e300f6ffdfb6ea9a4b145653d7394818d06a3494368b0",
+    "source_config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/03_shared_context_12_patches.json",
+    "source_config_sha256": "262e2c9165276819b3f49f4c2cfd7c86646aa702f7bddce51e9eb8fa936487d5",
+    "source_config_signature": "afc29d4b16b6c81a80c2e79a634dc8cee178c8d06e012918c7fde10dfdd28241",
+    "stage_winners": [
+      {
+        "candidate_id": "preprocessing_window_return",
+        "stage": "preprocessing_normalization"
+      },
+      {
+        "candidate_id": "sentiment_included",
+        "stage": "sentiment"
+      },
+      {
+        "candidate_id": "shared_context_12",
+        "stage": "architecture_context"
+      }
+    ]
   },
   "runner": {
     "checkpoint": {
@@ -60,7 +80,7 @@
     "downstream": {
       "context_size": 12,
       "epochs": 501,
-      "evaluation_split": "validation",
+      "evaluation_split": "test",
       "forecast_horizon": 5
     },
     "execution": {
@@ -80,7 +100,7 @@
     "objectives": {
       "jepa": {
         "loss": "rmse",
-        "weight": 1.5
+        "weight": 1.0
       },
       "mae": {
         "loss": "rmse",

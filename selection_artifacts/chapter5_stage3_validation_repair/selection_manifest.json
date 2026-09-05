@@ -1,0 +1,89 @@
+{
+  "schema_version": 1,
+  "selection_id": "chapter5_final",
+  "stages": [
+    {
+      "candidates": [
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/01_preprocessing_window_return.json",
+          "id": "preprocessing_window_return",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_window_return/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/01_preprocessing_train_zscore.json",
+          "id": "preprocessing_train_zscore",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_train_zscore/random"
+        }
+      ],
+      "name": "preprocessing_normalization"
+    },
+    {
+      "candidates": [
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/02_sentiment_excluded.json",
+          "id": "sentiment_excluded",
+          "parent_candidate_id": "preprocessing_window_return",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/01_preprocessing_window_return/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/02_sentiment_included.json",
+          "id": "sentiment_included",
+          "parent_candidate_id": "preprocessing_window_return",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/02_sentiment_included/random"
+        }
+      ],
+      "name": "sentiment"
+    },
+    {
+      "candidates": [
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/03_shared_context_6_patches.json",
+          "id": "shared_context_6",
+          "parent_candidate_id": "sentiment_included",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/03_shared_context_6_patches/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/03_shared_context_12_patches.json",
+          "id": "shared_context_12",
+          "parent_candidate_id": "sentiment_included",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/03_shared_context_12_patches/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/03_shared_context_24_patches.json",
+          "id": "shared_context_24",
+          "parent_candidate_id": "sentiment_included",
+          "strategy": "random",
+          "validation_root": "/home/xujiang/TS_JEPA/results/03_shared_context_24_patches/random"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/03_local_long_context_6_patches.json",
+          "id": "local_long_context_6",
+          "parent_candidate_id": "sentiment_included",
+          "strategy": "local_long",
+          "validation_root": "/home/xujiang/TS_JEPA/results/03_local_long_context_6_patches/local_long"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/03_local_long_context_12_patches.json",
+          "id": "local_long_context_12",
+          "parent_candidate_id": "sentiment_included",
+          "strategy": "local_long",
+          "validation_root": "/home/xujiang/TS_JEPA/results/03_local_long_context_12_patches/local_long"
+        },
+        {
+          "config": "/home/xujiang/TS_JEPA/config/experiments/chapter5_candidates/03_local_long_context_24_patches.json",
+          "id": "local_long_context_24",
+          "parent_candidate_id": "sentiment_included",
+          "strategy": "local_long",
+          "validation_root": "/home/xujiang/TS_JEPA/results/03_local_long_context_24_patches/local_long"
+        }
+      ],
+      "name": "architecture_context"
+    }
+  ]
+}

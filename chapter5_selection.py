@@ -23,6 +23,7 @@ from run_top_nasdaq100_stocks import (
 
 
 VALIDATION_ARTIFACT_FILENAME = "validation_metrics.json"
+PREPROCESSING_ARTIFACT_FILENAME = "preprocessing_config.json"
 METRIC_NAMES = ("rmse", "direction_accuracy")
 STAGE_NAMES = (
     "preprocessing_normalization",
@@ -134,6 +135,38 @@ def load_validation_artifact(
     if not 0.0 <= normalized_metrics["direction_accuracy"] <= 1.0:
         raise ValueError("direction_accuracy must be between 0 and 1")
     return normalized_metrics
+
+
+def load_validation_coverage(path: Path) -> dict[str, Any]:
+    """Load the target coverage associated with one validation metric artifact."""
+    metadata_path = Path(path).with_name(PREPROCESSING_ARTIFACT_FILENAME)
+    try:
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(
+            f"Could not read validation coverage metadata {metadata_path}: {exc}"
+        ) from exc
+    if metadata.get("evaluation_split") != "validation":
+        raise ValueError(
+            f"Validation coverage split must be 'validation' in {metadata_path}"
+        )
+    try:
+        sample_count = int(metadata["evaluation_sample_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            f"Invalid evaluation_sample_count in {metadata_path}"
+        ) from exc
+    target_start = metadata.get("evaluation_target_start")
+    target_end = metadata.get("evaluation_target_end")
+    if sample_count <= 0 or not isinstance(target_start, str) or not isinstance(
+        target_end, str
+    ):
+        raise ValueError(f"Invalid validation target coverage in {metadata_path}")
+    return {
+        "sample_count": sample_count,
+        "target_start": target_start,
+        "target_end": target_end,
+    }
 
 
 def canonical_sha256(value: Any) -> str:
@@ -283,6 +316,7 @@ def _candidate_summary(
         "strategy": strategy,
         "stocks": stocks,
         "seeds": seeds,
+        "evaluation_coverage": None,
         "per_stock": None,
         "overall": None,
     }
@@ -295,8 +329,10 @@ def _candidate_summary(
         f"{candidate_id}.validation_root",
     )
     metrics_by_stock = {}
+    coverage_by_stock = {}
     for stock in stocks:
         metrics_by_stock[stock] = {}
+        stock_coverage = None
         for seed in seeds:
             artifact_path = (
                 validation_root
@@ -313,7 +349,17 @@ def _candidate_summary(
                     "strategy": strategy,
                 },
             )
+            coverage = load_validation_coverage(artifact_path)
+            if stock_coverage is None:
+                stock_coverage = coverage
+            elif coverage != stock_coverage:
+                raise ValueError(
+                    f"{candidate_id}: validation target coverage differs across "
+                    f"seeds for {stock}"
+                )
+        coverage_by_stock[stock] = stock_coverage
     aggregation = aggregate_candidate(metrics_by_stock)
+    summary["evaluation_coverage"] = coverage_by_stock
     summary["per_stock"] = aggregation["per_stock"]
     summary["overall"] = aggregation["overall"]
     return summary
@@ -414,6 +460,14 @@ def select_stages(manifest_path: Path) -> dict[str, Any]:
             if coverage != expected_coverage:
                 raise ValueError(
                     f"Stage {expected_name} candidates use different stock/seed coverage"
+                )
+            if (
+                candidate["evaluation_coverage"]
+                != eligible_candidates[0]["evaluation_coverage"]
+            ):
+                raise ValueError(
+                    f"Stage {expected_name} candidates use different validation "
+                    "target coverage"
                 )
         selected = min(eligible_candidates, key=_ranking_key)
         previous_winner = selected["id"]

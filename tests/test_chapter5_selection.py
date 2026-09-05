@@ -661,6 +661,17 @@ class DeterministicSelectionTest(unittest.TestCase):
             },
         )
         write_downstream_metrics_artifact(artifact_path, artifact)
+        (artifact_path / "preprocessing_config.json").write_text(
+            json.dumps(
+                {
+                    "evaluation_split": "validation",
+                    "evaluation_sample_count": 2,
+                    "evaluation_target_start": "2024-01-02T00:00:00",
+                    "evaluation_target_end": "2024-01-10T00:00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
         candidate = {
             "id": candidate_id,
             "config": config_path.name,
@@ -756,6 +767,28 @@ class DeterministicSelectionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             manifest = self._write_workflow(Path(tmp), invalid_best=True)
             with self.assertRaisesRegex(ValueError, "checkpoint.selection.mode.*best"):
+                select_stages(manifest)
+
+    def test_selection_rejects_different_validation_target_coverage(self):
+        from chapter5_selection import select_stages
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            manifest = self._write_workflow(root, stage_count=1)
+            metadata_path = (
+                root
+                / "validation"
+                / "stage1_loser"
+                / "random"
+                / "NVDA"
+                / "seed_42"
+                / "preprocessing_config.json"
+            )
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+            metadata["evaluation_sample_count"] = 1
+            metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "validation target coverage"):
                 select_stages(manifest)
 
     def test_selection_rejects_removed_architecture_objective_stage(self):
