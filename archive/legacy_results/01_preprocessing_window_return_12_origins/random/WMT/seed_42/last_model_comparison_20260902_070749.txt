@@ -1,0 +1,16 @@
+Data source: WMT
+Evaluation type: last
+Forecast target: relative_return
+Feature transform: raw
+Features: Close,Volume,MA10,MA50
+Normalization: window_return
+Market data: disabled
+Generated at: 20260902_070749
+
+Model Comparison
+model,forecast_target,rmse,trend_accuracy
+GRU,relative_return,0.014324,0.5167
+drift,relative_return,0.015825,0.6167
+mean_context,relative_return,0.016087,0.6167
+naive_last,relative_return,0.016130,0.0167
+TS-JEPA,relative_return,0.017272,0.5500

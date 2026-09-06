@@ -3,10 +3,14 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")"
 python_bin="${PYTHON_BIN:-python}"
-analysis_dirs=(
+candidate_dirs=(
   analysis_artifacts/04_shared_joint_loss_*
   analysis_artifacts/04_local_long_joint_loss_*
 )
+analysis_dirs=()
+for analysis_dir in "${candidate_dirs[@]}"; do
+  [[ $analysis_dir == *_market_only ]] || analysis_dirs+=("$analysis_dir")
+done
 
 [[ ${#analysis_dirs[@]} -eq 10 ]] || {
   printf 'Expected 10 joint-loss analysis directories, found %d\n' "${#analysis_dirs[@]}" >&2

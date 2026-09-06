@@ -1,0 +1,16 @@
+Data source: NVDA
+Evaluation type: last
+Forecast target: relative_return
+Feature transform: raw
+Features: Close,Volume,MA10,MA50
+Normalization: window_return
+Market data: disabled
+Generated at: 20260902_064238
+
+Model Comparison
+model,forecast_target,rmse,trend_accuracy
+GRU,relative_return,0.039035,0.6167
+TS-JEPA,relative_return,0.046187,0.5500
+naive_last,relative_return,0.049850,0.0000
+drift,relative_return,0.053212,0.4667
+mean_context,relative_return,0.053440,0.4667

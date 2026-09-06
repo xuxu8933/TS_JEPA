@@ -1,0 +1,16 @@
+Data source: AAPL
+Evaluation type: last
+Forecast target: relative_return
+Feature transform: raw
+Features: Close,Volume,MA10,MA50
+Normalization: window_return
+Market data: disabled
+Generated at: 20260902_065103
+
+Model Comparison
+model,forecast_target,rmse,trend_accuracy
+GRU,relative_return,0.019357,0.5333
+TS-JEPA,relative_return,0.019648,0.5500
+naive_last,relative_return,0.020592,0.0167
+mean_context,relative_return,0.020753,0.5500
+drift,relative_return,0.020775,0.5500

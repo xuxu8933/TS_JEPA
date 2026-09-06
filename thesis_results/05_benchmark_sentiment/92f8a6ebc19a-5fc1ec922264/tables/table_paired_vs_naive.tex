@@ -1,0 +1,14 @@
+\begin{table}[t]
+\centering
+\small
+\caption{Stock-level paired RMSE comparison against naive-last. Negative $\Delta$ and positive relative improvement favour the model. Confidence intervals bootstrap equity-level seed means; adjusted $p$ values use Holm correction across the three learned procedures.}
+\label{tab:paired_rmse_naive}
+\begin{tabular}{lrrrrrrr}
+\toprule
+Model & $\Delta$RMSE & 95\% CI & Rel. impr. & Adj. $p$ & $r_{rb}$ & Stocks & Runs \\
+\midrule
+Shared-target JEPA--MAE & 0.01419 & [0.00284, 0.03006] & -26.3\% & 0.125 & 1.00 & 0/5 & 0/15 \\
+GRU & 0.00369 & [0.00144, 0.00582] & -7.5\% & 0.125 & 0.87 & 1/4 & 4/15 \\
+\bottomrule
+\end{tabular}
+\end{table}

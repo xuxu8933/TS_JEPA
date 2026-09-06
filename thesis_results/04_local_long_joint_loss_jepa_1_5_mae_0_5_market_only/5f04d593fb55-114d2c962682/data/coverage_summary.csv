@@ -1,0 +1,6 @@
+method,strategy,expected_stocks,available_stocks,expected_seeds_per_stock,available_unique_seeds,expected_runs,available_runs,coverage_pct
+Local-MAE/Long-JEPA,local_long,5,5,3,3,15,15,100.0
+GRU,local_long,5,5,3,3,15,15,100.0
+Naive-last,local_long,5,5,3,3,15,15,100.0
+Drift,local_long,5,5,3,3,15,15,100.0
+Mean-context,local_long,5,5,3,3,15,15,100.0
