@@ -1,4 +1,0 @@
-model,forecast_target,rmse,trend_accuracy
-naive_last,relative_return,0.02059226855635643,0.016666666666666666
-mean_context,relative_return,0.020752906799316406,0.55
-drift,relative_return,0.020775405690073967,0.55
