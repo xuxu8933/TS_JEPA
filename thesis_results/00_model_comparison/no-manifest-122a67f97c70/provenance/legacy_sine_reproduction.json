@@ -1,0 +1,6 @@
+{
+  "torch_num_threads": 12,
+  "model_rmse": 0.01026867050677538,
+  "naive_rmse": 0.08959664404392242,
+  "pretrain_checkpoint": "results/00_stage00_legacy_threads/logs/output_model/SMOKE_SIN_COS/lr_0.001_ema_momentum_0.9_mask_ratio_0.4_ratio_patches_5_encoder_16_2_1_predictor_8_2_1_dual_jepa_mae_ljepa_0.7_lmae_0.3_cfg_05bf38a844ad_epoch_0.pt"
+}

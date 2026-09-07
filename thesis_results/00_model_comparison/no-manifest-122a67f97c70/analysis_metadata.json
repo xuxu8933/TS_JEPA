@@ -1,0 +1,19 @@
+{
+  "error_issues": 0,
+  "canonical_rows": 14,
+  "results_dir": "results/00_model_comparison_repeat",
+  "scope": {
+    "config_path": "analysis_artifacts/00_model_comparison/00_model_comparison.json"
+  },
+  "evidence_class": "single-seed controlled diagnostic",
+  "warnings": [
+    "One independent seed",
+    "Sine SSL budget is one update",
+    "No matching scratch Transformer control",
+    "Overlapping sine test windows",
+    "MNIST is reconstruction, not causal forecasting"
+  ],
+  "repeat_predictions_exact": true,
+  "pooled_rmse_recomputed": true,
+  "analysis_source_sha256": "f7d2326c1e72972a0e35cc80c981ec45be7254a2719b29bd313e94280c914a7b"
+}

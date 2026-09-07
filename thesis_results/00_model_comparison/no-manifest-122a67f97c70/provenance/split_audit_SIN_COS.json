@@ -1,0 +1,55 @@
+{
+  "target_splits_disjoint": true,
+  "context_precedes_target": true,
+  "row_counts": [
+    119,
+    13,
+    79
+  ],
+  "sample_counts": [
+    96,
+    10,
+    76
+  ],
+  "date_ranges": [
+    [
+      "2021-02-19",
+      "2021-06-17"
+    ],
+    [
+      "2021-06-18",
+      "2021-06-30"
+    ],
+    [
+      "2021-07-01",
+      "2021-09-17"
+    ]
+  ],
+  "target_date_ranges": [
+    [
+      "2021-03-11",
+      "2021-06-17"
+    ],
+    [
+      "2021-06-18",
+      "2021-06-30"
+    ],
+    [
+      "2021-07-01",
+      "2021-09-17"
+    ]
+  ],
+  "context_length": 20,
+  "forecast_horizon": 4,
+  "normalization": "window_return",
+  "warmup_report": {
+    "ma50_warmup": 49,
+    "return_5_warmup": 0,
+    "volatility_20_warmup": 0,
+    "other_required_transformations": 0,
+    "total_rows_removed": 49
+  },
+  "pretraining_equals_supervised_training_split": true,
+  "pretraining_windows": 25,
+  "pretraining_validation": "unavailable: 13 validation rows < 20-row SSL window; fixed one-step checkpoint"
+}

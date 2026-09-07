@@ -1,0 +1,23 @@
+{
+  "purpose": "post-run analysis scope; not a new training configuration",
+  "datasets": [
+    "MNIST_ROWS",
+    "SIN_COS"
+  ],
+  "models": [
+    "JEPA-MAE",
+    "JEPA-only",
+    "MAE-only",
+    "GRU",
+    "Naive-last",
+    "Drift",
+    "Mean-context"
+  ],
+  "seeds": [
+    7
+  ],
+  "results_dir": "results/00_model_comparison_repeat",
+  "repeat_dir": "results/00_model_comparison",
+  "protocol": "protocol.md",
+  "runtime_manifest": "provenance/runtime_manifest.json"
+}

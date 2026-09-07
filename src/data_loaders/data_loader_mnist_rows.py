@@ -37,6 +37,7 @@ class MNISTRowDataset(Dataset):
         indices = torch.randperm(len(dataset), generator=generator)[
             sample_offset:sample_offset + sample_count
         ]
+        self.sample_indices = indices
         self.images = dataset.data[indices].float().div_(255.0)
         self.mask_ratio = float(mask_ratio)
         self.seed = int(seed)

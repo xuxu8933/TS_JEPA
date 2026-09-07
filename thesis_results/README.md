@@ -3,8 +3,14 @@
 This directory contains validated, immutable thesis-analysis snapshots that are
 intended to be committed to Git and shared between devices.
 
-Directories prefixed with `00_` contain diagnostic smoke-test artifacts. They
-verify that the pipeline runs, but they are not thesis experiment evidence.
+Directories prefixed with `00_` contain diagnostic smoke-test artifacts and
+controlled model comparisons. They are not financial forecasting evidence.
+
+The [Stage 00 controlled comparison](00_model_comparison/no-manifest-122a67f97c70/README.md)
+publishes all seven methods on MNIST masked-row reconstruction and sine-cosine
+forecasting. It includes the objective-ablation analysis, corrected baselines,
+CSV/LaTeX tables, a figure, and reproducibility records. This snapshot has one
+independent seed; repeated execution is not an estimate of seed uncertainty.
 
 Generate disposable analysis output under `analysis_artifacts/`, then publish a
 validated snapshot with:

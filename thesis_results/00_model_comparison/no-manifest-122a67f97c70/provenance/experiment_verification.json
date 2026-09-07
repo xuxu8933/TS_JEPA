@@ -1,0 +1,14 @@
+{
+  "primary_runs": 14,
+  "repeated_runs": 14,
+  "learned_checkpoints_verified": 8,
+  "test_predictions_identical_on_repeat": true,
+  "selected_weights_identical_on_repeat": true,
+  "pretrained_weights_identical_on_repeat": true,
+  "all_metrics_and_predictions_finite": true,
+  "test_samples_identical_across_methods": true,
+  "selection_matches_validation_minimum": true,
+  "sine_pretraining_matches_training_split": true,
+  "mnist_frozen_components_unchanged": true,
+  "legacy_sine_reproduced_at_12_threads": true
+}

@@ -1,0 +1,65 @@
+{
+  "argv": [
+    "run_stage00_comparison.py",
+    "--seeds",
+    "7",
+    "--output-dir",
+    "results/00_model_comparison_repeat"
+  ],
+  "cwd": "/home/xujiang/TS_JEPA",
+  "python_executable": "/home/xujiang/miniconda3/envs/ts-jepa/bin/python",
+  "python": "3.11.15",
+  "torch": "2.11.0+cu130",
+  "cuda": "13.0",
+  "gpu": "NVIDIA GeForce RTX 3060",
+  "git_head": "29c61086e5080ce71674ba55876b575ee83d70c1",
+  "seeds": [
+    7
+  ],
+  "downstream_seeds": [
+    123
+  ],
+  "datasets": [
+    "MNIST_ROWS",
+    "SIN_COS"
+  ],
+  "models": [
+    "JEPA-MAE",
+    "JEPA-only",
+    "MAE-only",
+    "GRU",
+    "Naive-last",
+    "Drift",
+    "Mean-context"
+  ],
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "MKL_NUM_THREADS": "1",
+    "CUBLAS_WORKSPACE_CONFIG": ":4096:8"
+  },
+  "protocol": "Stage 00 controlled comparison v1; legacy reconstruction preserved; see doc/stage00_comparison.md",
+  "source_sha256": {
+    "run_stage00_comparison.py": "17935d488ed641cb7e4d5508614a7310c7ff3696a48ad669f0fc22ece424b2b8",
+    "src/stage00_baselines.py": "03444e96e967578c99f5ed69a3b801e82e79eb6d555b618ae24ff63e70d95740",
+    "src/stage00_comparison.py": "9b78dbbb6401acdacd72f18c8a28cd59e0296238281c1b6190c436cf9ccaccee",
+    "src/stage00_legacy.py": "4b543b671dddd3f587dd62892ae41b590663776a6db948efb7a0eac7cf888e7d",
+    "pretrain_dual_loss.py": "a8c43d3f4563d1a54baaf38e36a77bc431f7eeec1a37a0cee4a78dd544820b19",
+    "main/utils.py": "92fa3cf0ff3cdef6d7799965695c4d82c277ca51658c7684fb55067b0608c634",
+    "eval_forecast_prequential_with_baselines_gru_volume.py": "47778d6fc806a3a4d4cff4f0b78b3e01eb296a841eb0891ffaa165a51d7046f8",
+    "config/config_downstream.py": "808032de379675c5583e50b7e0c84d73f99e498c3bafe092ec2cb2748f8d4299",
+    "config/config_pretrain.py": "87b93b6f927cf69110ca99fb5dd6f8e8be6ab2d0ea6140d1be79b434c00a4250",
+    "config/experiment.py": "18199875c36b3bd30c1bd668f13ff8d7d522ef06a32190a8b880be4b19f10dce",
+    "config/file_options.py": "240d41da2f1509f368ffc160b329104f31aa92a80bb8d13104c385b12787a7bc",
+    "config/preprocessing_presets.py": "cab6a5ab2aa7aeb3a1f2f3d62e646181160d8ffbdee61a5864a0740ad096f8ed",
+    "src/data_loaders/data_class_roll_volume.py": "70765a7b2dfc8f36dcfc4f388efcb327fa7983a4f4048ac3de23873b00a94c2d",
+    "src/data_loaders/data_loader_mnist_rows.py": "fa6928e192a94f0c4dbcaf1a4b31cc2e7dadcbca570dbd381f084d3360c352a3",
+    "src/data_loaders/data_loader_roll_volume.py": "af897005e42dccb29ea8640fd56d8371bcd15746d16600c33237b9052b4d6e0c",
+    "src/data_loaders/financial_preprocessing.py": "59fe32c75d1506011828509c4a3808e933ff786bcd84c7d7434186aaaa760e0b",
+    "src/models/decoder.py": "58b17ce60cdb44b0bfac90a405dc9e8a57d62f5719cbb9573df15bd7e105facf",
+    "src/models/encoder.py": "aa1133c89dea25c2db51338002ddf26e5825bb45c6162020d6550ab5c8aa2790",
+    "src/models/predictor.py": "8fe6a660cfc0862c2332d52b8d19e3cdbf92982f4faa76d6944a71b462b8d756",
+    "src/models/tokenizer.py": "5c01f66de91f0bb4949a89d883f041ebb8a46f11c83aea900f24d2e22f43a642",
+    "src/models/utils/mask_utils.py": "1d8e71406d3b5936331bf2aa501e1e61f17c38e0b30585b08f522093da776d41",
+    "src/models/utils/modules.py": "cbcbe0a039e9539bf2c7c2ee360d3261dbce55967374f9222c453e6609a944d5"
+  }
+}
