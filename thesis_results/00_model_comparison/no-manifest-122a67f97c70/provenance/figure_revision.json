@@ -1,0 +1,13 @@
+{
+  "artifact": "figures/rmse_comparison.png",
+  "change": "User-requested presentation revision at the existing path",
+  "title": "Stage 00 Model Comparison",
+  "footnote_removed": true,
+  "previous_figure_sha256": "2bd678ce7efcd205e140e736a5a90da73cdb35109d19f57f4c23813e994c6c62",
+  "figure_sha256": "7deda1256a273aba881130ab80b3064415ed803d10921d96ce9d1a62b4267cc8",
+  "generator": "analysis/analyze_stage00_results.py",
+  "generator_sha256": "3ef379da60d32ec033482d319d733c713bc730d27ee5cfdda9160564f54fed6e",
+  "plot_source": "    import matplotlib\n    matplotlib.use(\"Agg\")\n    import matplotlib.pyplot as plt\n    colors = [\"#246394\", \"#759ab6\", \"#abc4d6\", \"#b76332\", \"#777777\", \"#999999\", \"#bbbbbb\"]\n    fig, axes = plt.subplots(1, 2, figsize=(11, 4.8))\n    for ax, dataset, title, unit in zip(axes, DATASETS, (\"MNIST masked-row reconstruction\", \"Sine-cosine forecasting\"),\n                                       (\"Pixel-intensity RMSE\", \"Window-relative Close RMSE\")):\n        values = [scores[dataset, method] for method in METHODS]\n        ax.barh(METHODS, values, color=colors)\n        ax.invert_yaxis()\n        ax.set_xlim(0, max(values) * 1.32)\n        ax.set_title(title, fontsize=11)\n        ax.set_xlabel(unit)\n        ax.spines[[\"top\", \"right\"]].set_visible(False)\n        for index, value in enumerate(values):\n            ax.text(value + max(values) * .02, index, f\"{value:.6f}\", va=\"center\", fontsize=9)\n    fig.suptitle(\"Stage 00 Model Comparison\", fontsize=13)\n    fig.tight_layout(rect=(0, 0, 1, .94))\n    fig.savefig(output / \"figures/rmse_comparison.png\", dpi=180)\n    plt.close(fig)\n\n",
+  "numerical_data_unchanged": true,
+  "original_analysis_provenance_retained": true
+}

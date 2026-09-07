@@ -179,10 +179,8 @@ def analyze(results, repeat, output):
         ax.spines[["top", "right"]].set_visible(False)
         for index, value in enumerate(values):
             ax.text(value + max(values) * .02, index, f"{value:.6f}", va="center", fontsize=9)
-    fig.suptitle("Stage 00: seed 7; lower RMSE is better", fontsize=13)
-    fig.text(.5, .015, "One independent seed; no uncertainty bars. These are diagnostic tasks, not financial evidence.",
-             ha="center", fontsize=9)
-    fig.tight_layout(rect=(0, .045, 1, .94))
+    fig.suptitle("Stage 00 Model Comparison", fontsize=13)
+    fig.tight_layout(rect=(0, 0, 1, .94))
     fig.savefig(output / "figures/rmse_comparison.png", dpi=180)
     plt.close(fig)
 

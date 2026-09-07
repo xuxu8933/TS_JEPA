@@ -65,3 +65,4 @@ Use a new `--output-dir` to regenerate analysis staging. Publication is local to
 - `SHA256SUMS` verifies every published file.
 - Files omitted by publication policy: 0. See `publication_manifest.csv`.
 - Large/raw artifacts should be attached to the matching GitHub Release.
+- User-requested figure presentation revision: simplified title and removed footnote; numerical data are unchanged. See `provenance/figure_revision.json`.
