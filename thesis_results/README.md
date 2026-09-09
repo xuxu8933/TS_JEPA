@@ -3,6 +3,10 @@
 This directory contains validated, immutable thesis-analysis snapshots that are
 intended to be committed to Git and shared between devices.
 
+The [Stage 04 local-long market-only context-12 analysis](../doc/chapter5_stage04_local_long_market_only_context_12_analysis.md)
+compares all five loss weights across five stocks and three seeds, links the
+published snapshots, and records the exploratory validation limits.
+
 Directories prefixed with `00_` contain diagnostic smoke-test artifacts and
 controlled model comparisons. They are not financial forecasting evidence.
 
