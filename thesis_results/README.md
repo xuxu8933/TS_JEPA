@@ -7,6 +7,10 @@ The [Stage 04 local-long market-only context-12 analysis](../doc/chapter5_stage0
 compares all five loss weights across five stocks and three seeds, links the
 published snapshots, and records the exploratory validation limits.
 
+The [Stage 05 local-long market-only context-12 benchmark](../doc/chapter5_stage05_local_long_market_only_context_12_analysis.md)
+reports the selected 1.5:0.5 objective on the retrospective 2025 test period,
+including its RMSE deterioration versus naive-last and the published artifacts.
+
 Directories prefixed with `00_` contain diagnostic smoke-test artifacts and
 controlled model comparisons. They are not financial forecasting evidence.
 
